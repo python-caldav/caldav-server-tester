@@ -367,7 +367,7 @@ class PrepareCalendar(Check):
         else:
             self.set_feature('search.comp-type')
         assert self.checker.tasklist.todos(include_completed=True)
-        
+
         simple_event = add_if_not_existing(
             Event,
             summary="Simple event with a start time and an end time",
@@ -378,6 +378,7 @@ class PrepareCalendar(Check):
         simple_event.load()
         self.set_feature("save-load.event")
 
+                                                    
         if not self.checker.features_checked.is_supported("save-load.todo.mixed-calendar"):
             try:
                 journals = self.checker.principal.make_calendar(
@@ -538,7 +539,7 @@ END:VCALENDAR""",
         simple_event = add_if_not_existing(
             Event,
             description="Simple event without a summary",
-            uid="csc_simple_event_no_summary",
+             uid="csc_simple_event_no_summary",
             dtstart=datetime(2000, 3, 1, 12, 0, 0, tzinfo=utc),
             dtend=datetime(2000, 3, 1, 13, 0, 0, tzinfo=utc),
         )
@@ -550,20 +551,27 @@ END:VCALENDAR""",
         assert self.checker.calendar.events()
         assert self.checker.tasklist.todos(include_completed=True)
 
+
 class SearchMixIn:
     ## Boilerplate
-    def search_find_set(self, cal_or_searcher, feature, num_expected=None, **search_args):
+    def search_find_set(self, cal_or_searcher, feature, num_expected=None, not_so_fast=False, min_num_expected=None, max_num_expected=None, **search_args):
         try:
+            if num_expected is not None:
+                min_num_expected = num_expected
+                max_num_expected = num_expected
+            if min_num_expected is None:
+                min_num_expected=1
+            if max_num_expected is None:
+                max_num_expected=65536
             results = cal_or_searcher.search(**search_args, post_filter=False)
             cnt = len(results)
-            if num_expected is None:
-                is_good = cnt > 0
-            else:
-                is_good = cnt==num_expected
-            self.set_feature(feature, is_good)
+            is_good = cnt >= min_num_expected and cnt <= max_num_expected
+            if not not_so_fast or not is_good:
+                self.set_feature(feature, is_good)
+            return is_good
         except ReportError:
             self.set_feature(feature, "ungraceful")
-    
+            return False
 
 class CheckSearch(Check, SearchMixIn):
     depends_on = {PrepareCalendar}
@@ -585,6 +593,7 @@ class CheckSearch(Check, SearchMixIn):
     def _run_check(self):
         cal = self.checker.calendar
         tasklist = self.checker.tasklist
+
         self.search_find_set(
             cal, "search.time-range.event", 1, 
             start=datetime(2000, 1, 1, tzinfo=utc),
@@ -624,11 +633,19 @@ class CheckSearch(Check, SearchMixIn):
         self.search_find_set(
             searcher, "search.text.case-insensitive", 1, calendar=cal)
 
-        ## is not defined search
+        ## "is not defined"-search
         searcher = CalDAVSearcher(event=True)
         searcher.add_property_filter('summary', None, operator="undef")
-        self.search_find_set(
-            searcher, "search.is-not-defined", 1, calendar=cal)
+        ## bedeworks does not support much - but it supports seaching for events without summary set!
+        ## The unit tests still breaks, because it doesn't support searching for events without category
+        no_summary_found = self.search_find_set(
+            searcher, "search.is-not-defined", 1, calendar=cal, not_so_fast=True)
+        if no_summary_found:
+            found = cal.search(no_categories=True)
+            if len(found) < 3 or any(x.component.categories for x in found):
+                self.set_feature("search.is-not-defined", "fragile")
+            else:
+                self.set_feature("search.is-not-defined")
 
         ## summary search, substring
         ## The RFC says that TextMatch is a subetext search
@@ -637,7 +654,14 @@ class CheckSearch(Check, SearchMixIn):
             summary="Simple event with a start time and",
             event=True)
 
-        ## search by UID
+        ## TODO - we may be testing the wrong thing here!
+        ## 1) if search.text is not supported because the server yields nothing, then AS FOR NOW cal.object_by_uid will raise a NotFoundError.  This will change when https://github.com/python-caldav/caldav/issues/586 is fixed
+        ## 2) if search.text is not supported because the server gives everything, then .object_by_uid will find the right thing through client-side filtering
+        
+        ## TODO - what we really should do:
+        
+        ## 1) Send the XML-query to the server as given in he examples in the RFC, shortcutting all logic in cal.object_by_uid, cal.search etc
+        ## 2) Unless there exist servers with fragile text searching that supports search for uid, then probably the whole feature and check should be yanked
         try:
             event = cal.event_by_uid("csc_simple_event1")
             if event and str(event.component['uid']) == "csc_simple_event1":
@@ -744,6 +768,7 @@ class CheckRecurrenceSearch(Check, SearchMixIn):
     }
 
     def _run_check(self) -> None:
+
         cal = self.checker.calendar
         tl = self.checker.tasklist
         events = cal.search(
@@ -944,14 +969,14 @@ class CheckPrincipalSearch(Check):
         ## List all principals
         try:
             all_principals = client.principals()
-            if isinstance(all_principals, list):
-                ## Some servers return empty list, some return principals
-                ## Both are valid - we just care if it doesn't throw an error
+            ## Some servers return empty list, some return principals
+            ## We know there exists at least one principal (self)
+            if isinstance(all_principals, list) and len(all_principals)>0:
                 self.set_feature("principal-search.list-all", True)
             else:
                 self.set_feature("principal-search.list-all", {
                     "support": "unsupported",
-                    "behaviour": "principals() didn't return a list"
+                    "behaviour": "principals() didn't return a list with at least one element"
                 })
         except (ReportError, DAVError, AuthorizationError) as e:
             self.set_feature("principal-search.list-all", {
@@ -977,6 +1002,7 @@ class CheckDuplicateUID(Check):
 
     def _run_check(self) -> None:
         cal1 = self.checker.calendar
+        
 
         ## Reuse an event from PrepareCalendar instead of creating a new one
         test_uid = "csc_simple_event1"
@@ -991,23 +1017,33 @@ class CheckDuplicateUID(Check):
         except Exception:
             pass
 
+        
+        
         try:
             ## Get existing event from first calendar (created by PrepareCalendar)
             event1 = cal1.event_by_uid(test_uid)
             event1.load()
 
+        
             ## Get the event data for reuse in cal2
             event_ical = event1.data
 
+            
             ## Create second calendar
             cal2 = self.client.principal().make_calendar(name=cal2_name)
+
 
             try:
                 ## Try to save event with same UID to second calendar
                 event2 = cal2.save_object(Event, event_ical)
 
+
                 ## Check if the event actually exists in cal2
                 events_in_cal2 = list(_filter_2000(cal2.events()))
+
+                ## Check if event still exists in cal1 (Zimbra moves it instead of copying)
+                events_in_cal1 = list(_filter_2000(cal1.search(uid=test_uid, event=True, post_filter=False)))
+                event_was_moved = len(events_in_cal1) == 0
 
                 if len(events_in_cal2) == 0:
                     ## Server silently ignored the duplicate
@@ -1015,6 +1051,19 @@ class CheckDuplicateUID(Check):
                         "support": "unsupported",
                         "behaviour": "silently-ignored"
                     })
+                elif len(events_in_cal2) == 1 and event_was_moved:
+                    ## Server moved the event instead of creating a duplicate (Zimbra behavior)
+                    self.set_feature("save.duplicate-uid.cross-calendar", {
+                        "support": "unsupported",
+                        "behaviour": "moved-instead-of-copied"
+                    })
+                    ## Move event back to cal1 to avoid breaking other tests
+                    try:
+                        event2.load()
+                        cal1.save_object(Event, event2.data)
+                        event2.delete()
+                    except Exception:
+                        pass
                 elif len(events_in_cal2) == 1:
                     assert events_in_cal2[0].component['uid'] == test_uid
                     ## Server accepted the duplicate
@@ -1045,6 +1094,7 @@ class CheckDuplicateUID(Check):
                     })
 
             except (DAVError, AuthorizationError) as e:
+
                 ## Server rejected the duplicate with an error
                 self.set_feature("save.duplicate-uid.cross-calendar", {
                     "support": "ungraceful",
@@ -1060,6 +1110,8 @@ class CheckDuplicateUID(Check):
         finally:
             ## No need to cleanup test event - it's owned by PrepareCalendar
             pass
+
+
 
 
 class CheckAlarmSearch(Check):
