@@ -167,7 +167,7 @@ class CheckMakeDeleteCalendar(Check):
                     ## Perhaps it's a "move to thrashbin"-regime on the server
                     self.set_feature(
                         "delete-calendar",
-                        {"support": "unknown", "behaviour": "move to trashbin?"},
+                        {"support": "unsupported", "behaviour": "move to trashbin?"},
                     )
                 except NotFoundError as e:
                     ## Calendar was deleted, it just took some time.
@@ -1042,8 +1042,11 @@ class CheckDuplicateUID(Check):
                 events_in_cal2 = list(_filter_2000(cal2.events()))
 
                 ## Check if event still exists in cal1 (Zimbra moves it instead of copying)
-                events_in_cal1 = list(_filter_2000(cal1.search(uid=test_uid, event=True, post_filter=False)))
-                event_was_moved = len(events_in_cal1) == 0
+                try:
+                    cal1.event_by_uid(test_uid)
+                    event_was_moved = False
+                except NotFoundError:
+                    event_was_moved = True
 
                 if len(events_in_cal2) == 0:
                     ## Server silently ignored the duplicate
@@ -1058,12 +1061,7 @@ class CheckDuplicateUID(Check):
                         "behaviour": "moved-instead-of-copied"
                     })
                     ## Move event back to cal1 to avoid breaking other tests
-                    try:
-                        event2.load()
-                        cal1.save_object(Event, event2.data)
-                        event2.delete()
-                    except Exception:
-                        pass
+                    cal1.save_event(event2.data)
                 elif len(events_in_cal2) == 1:
                     assert events_in_cal2[0].component['uid'] == test_uid
                     ## Server accepted the duplicate
@@ -1215,8 +1213,9 @@ class CheckSyncToken(Check):
         cal = self.checker.calendar
 
         ## Test 1: Check if sync tokens are supported at all
+        ## Use disable_fallback=True to detect true server support
         try:
-            my_objects = cal.objects()
+            my_objects = cal.objects(disable_fallback=True)
             sync_token = my_objects.sync_token
 
             if not sync_token or sync_token == "":
@@ -1226,8 +1225,11 @@ class CheckSyncToken(Check):
             ## Initially assume full support
             sync_support = "full"
             sync_behaviour = None
-        except (ReportError, DAVError, AttributeError):
-            self.set_feature("sync-token", False)
+        except (ReportError, DAVError, AttributeError) as e:
+            self.set_feature("sync-token", {
+                "support": "unsupported",
+                "behaviour": f"Server error on sync-collection REPORT: {type(e).__name__}"
+            })
             return
 
         ## Clean up any leftover test event from previous failed run
@@ -1259,11 +1261,11 @@ class CheckSyncToken(Check):
             )
 
             ## Get objects with new sync token
-            my_objects = cal.objects()
+            my_objects = cal.objects(disable_fallback=True)
             sync_token1 = my_objects.sync_token
 
             ## Immediately check for changes (should be none)
-            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1)
+            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
             immediate_count = len(list(my_changed_objects))
 
             if immediate_count > 0:
@@ -1276,7 +1278,7 @@ class CheckSyncToken(Check):
             test_event.save()
 
             ## Check for changes immediately (time-based tokens need sleep(1))
-            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1)
+            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
             changed_count_no_sleep = len(list(my_changed_objects))
 
             if changed_count_no_sleep == 0:
@@ -1286,7 +1288,7 @@ class CheckSyncToken(Check):
                 test_event.save()
                 time.sleep(1)
 
-                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1)
+                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
                 changed_count_with_sleep = len(list(my_changed_objects))
 
                 if changed_count_with_sleep >= 1:
@@ -1316,12 +1318,12 @@ class CheckSyncToken(Check):
                 time.sleep(1)
 
             try:
-                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token2)
+                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token2, disable_fallback=True)
                 deleted_count = len(list(my_changed_objects))
 
                 ## If we get here without exception, deletion is supported
                 self.set_feature("sync-token.delete", True)
-            except DAVError as e:
+            except (ReportError, DAVError) as e:
                 ## Some servers (like sabre-based) return "418 I'm a teapot" or other errors
                 self.set_feature("sync-token.delete", {
                     "support": "unsupported",
