@@ -28,28 +28,16 @@ class Check:
 
     def set_feature(self, feature, value=True):
         fs = self.checker._features_checked
-        if isinstance(value, dict):
-            fc = {feature: value}
-        elif isinstance(value, str):
-            fc = {feature: {"support": value}}
-        elif value is True:
-            fc = {feature: {"support": "full"}}
-        elif value is False:
-            fc = {feature: {"support": "unsupported"}}
-        elif value is None:
-            fc = {feature: {"support": "unknown"}}
-        else:
-            assert False
-        fs.copyFeatureSet(fc, collapse=False)
-        feat_def = self.checker._features_checked.find_feature(feature)
-        feat_type = feat_def.get('type', 'server-feature')
-        sup = fc[feature].get('support', feat_def.get('default', 'full'))
+        fs.set_feature(feature, value)
 
-        ## The last bit is about verifying that the expectations are met.
+        ## verifying that the expectations are met.
 
         ## We skip this if debug_mode is None
         if self.checker.debug_mode is None:
             return
+
+        feat_def = self.checker._features_checked.find_feature(feature)
+        feat_type = feat_def.get('type', 'server-feature')
         
         if feat_type not in ('server-peculiarity', 'server-feature'):
             ## client-behaviour, tests-behaviour or client-feature
@@ -58,14 +46,17 @@ class Check:
             assert(feat_type in ('server-observation',))
             return
 
+        value_str = fs.is_supported(feature, str)
+        
         ## Fragile support is ... fragile and should be ignored
-        ## same with unknonw
-        if sup in ('fragile', 'unknown') or self.expected_features.is_supported(feature, str) in ('fragile', 'unknown'):
+        ## same with unknown
+        if value_str in ('fragile', 'unknown') or self.expected_features.is_supported(feature, str) in ('fragile', 'unknown'):
             return
 
         expected_ = self.expected_features.is_supported(feature, dict)
         expected = copy.deepcopy(expected_)
-        observed = copy.deepcopy(fc[feature])
+        observed_ = fs.is_supported(feature, dict)
+        observed = copy.deepcopy(observed_)
 
         ## Strip all free-text information from both observed and expected
         for stripdict in observed, expected:
@@ -79,7 +70,7 @@ class Check:
         
         if observed != expected:
             if self.checker.debug_mode == 'logging':
-                logging.error(f"Server checker found something unexpected for {feature}.  Expected: {expected_}, observed: {fc[feature]}")
+                logging.error(f"Server checker found something unexpected for {feature}.  Expected: {expected_}, observed: {observed_}")
             elif self.checker.debug_mode == 'pdb':
                 breakpoint()
             else:

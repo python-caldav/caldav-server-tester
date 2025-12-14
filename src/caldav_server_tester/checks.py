@@ -1030,8 +1030,13 @@ class CheckDuplicateUID(Check):
 
             
             ## Create second calendar
-            cal2 = self.client.principal().make_calendar(name=cal2_name)
-
+            try:
+                cal2 = self.client.principal().make_calendar(name=cal2_name)
+            except DAVError:
+                    self.set_feature("save.duplicate-uid.cross-calendar", {
+                        "support": "unknown",
+                        "behaviour": "cannot test, have access to only one calendar"})
+                    return
 
             try:
                 ## Try to save event with same UID to second calendar
@@ -1227,7 +1232,7 @@ class CheckSyncToken(Check):
             sync_behaviour = None
         except (ReportError, DAVError, AttributeError) as e:
             self.set_feature("sync-token", {
-                "support": "unsupported",
+                "support": "ungraceful",
                 "behaviour": f"Server error on sync-collection REPORT: {type(e).__name__}"
             })
             return
