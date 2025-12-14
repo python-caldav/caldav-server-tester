@@ -1133,25 +1133,29 @@ class CheckAlarmSearch(Check):
         test_event = None
 
         ## Try to find existing event from previous run
+        ## WORKAROUND: Search with parameters is broken in async refactoring
+        ## Use broad search and filter manually
         try:
-            events = list(_filter_2000(cal.search(
-                start=datetime(2000, 5, 1, tzinfo=utc),
-                end=datetime(2000, 5, 2, tzinfo=utc),
-                event=True,
-                post_filter=False,
-            )))
-            for evt in events:
+            all_events = cal.search(event=True)
+            all_events_list = list(all_events)
+            print(f"DEBUG: Found {len(all_events_list)} events, looking for UID={test_uid}")
+            for evt in all_events_list:
                 try:
-                    # Load the event to ensure component is available
                     evt.load()
                     evt_uid = str(evt.icalendar_component.get("UID", ""))
+                    print(f"DEBUG: Checking UID={evt_uid}")
                     if evt_uid == test_uid:
                         test_event = evt
+                        print(f"DEBUG: FOUND IT!")
                         break
-                except:
+                except Exception as e:
+                    print(f"DEBUG: Error: {e}")
                     pass
-        except:
+        except Exception as e:
+            print(f"DEBUG: Search failed: {e}")
             pass
+
+        print(f"DEBUG: test_event is {'FOUND' if test_event else 'NOT FOUND'}")
 
         ## Create event if it doesn't exist yet
         if test_event is None:
@@ -1170,28 +1174,31 @@ class CheckAlarmSearch(Check):
                 ## If save fails with duplicate UID constraint, the event exists
                 ## This is expected on servers that properly enforce uniqueness
                 if "UNIQUE constraint" in str(e) or "duplicate" in str(e).lower():
+                    print(f"DEBUG: Caught duplicate UID error, searching for existing event...")
                     ## Try to find the existing event
+                    ## WORKAROUND: Use broad search since parameterized search is broken
                     try:
-                        events = list(cal.search(
-                            start=datetime(2000, 5, 1, tzinfo=utc),
-                            end=datetime(2000, 5, 2, tzinfo=utc),
-                            event=True,
-                            post_filter=False,
-                        ))
+                        events = list(cal.search(event=True))
+                        print(f"DEBUG: Broad search found {len(events)} events after duplicate error")
                         for evt in events:
                             try:
                                 evt.load()
                                 evt_uid = str(evt.icalendar_component.get("UID", ""))
+                                print(f"DEBUG: Checking UID={evt_uid}")
                                 if evt_uid == test_uid:
                                     test_event = evt
+                                    print(f"DEBUG: Found duplicate event!")
                                     break
-                            except:
+                            except Exception as load_err:
+                                print(f"DEBUG: Load error: {load_err}")
                                 pass
-                    except:
+                    except Exception as search_err:
+                        print(f"DEBUG: Search error: {search_err}")
                         pass
 
                 ## If we still don't have the event, raise the original error
                 if test_event is None:
+                    print(f"DEBUG: Could not find event even after duplicate error - re-raising")
                     raise
 
         try:
