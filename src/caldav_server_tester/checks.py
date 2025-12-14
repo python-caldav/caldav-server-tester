@@ -116,14 +116,14 @@ class CheckMakeDeleteCalendar(Check):
                     name = "A calendar with this name should not exist"
                     self.checker.principal.calendar(name=name).events()
                     breakpoint()  ## TODO - do something better here
-                except:
+                except DAVError:
                     ## This is not the exception, this is the normal
                     try:
                         cal2 = self.checker.principal.calendar(name=kwargs["name"])
                         cal2.events()
                         assert cal2.id == cal.id
                         self.set_feature("create-calendar.set-displayname")
-                    except:
+                    except DAVError:
                         self.set_feature("create-calendar.set-displayname", False)
 
         except DAVError as e:
@@ -132,7 +132,7 @@ class CheckMakeDeleteCalendar(Check):
             cal = self.checker.principal.calendar(cal_id=cal_id)
             try:
                 cal.events()
-            except:
+            except DAVError:
                 cal = None
             if not cal:
                 ## cal not made and does not exist, exception thrown.
