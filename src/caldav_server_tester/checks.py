@@ -1128,11 +1128,11 @@ class CheckAlarmSearch(Check):
     def _run_check(self) -> None:
         cal = self.checker.calendar
 
-        ## Create an event with an alarm
+        ## Use persistent event with an alarm (kept between runs for efficiency)
         test_uid = "csc_alarm_test_event"
         test_event = None
 
-        ## Clean up any leftover from previous run
+        ## Try to find existing event from previous run
         try:
             events = _filter_2000(cal.search(
                 start=datetime(2000, 5, 1, tzinfo=utc),
@@ -1142,24 +1142,46 @@ class CheckAlarmSearch(Check):
             ))
             for evt in events:
                 if evt.component.get("uid") == test_uid:
-                    evt.delete()
+                    test_event = evt
                     break
         except:
             pass
 
-        try:
-            ## Create event with alarm
-            ## Event at 08:00, alarm at 07:45 (15 minutes before)
-            test_event = cal.save_object(
-                Event,
-                summary="Alarm test event",
-                uid=test_uid,
-                dtstart=datetime(2000, 5, 1, 8, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 5, 1, 9, 0, 0, tzinfo=utc),
-                alarm_trigger=timedelta(minutes=-15),
-                alarm_action="AUDIO",
-            )
+        ## Create event if it doesn't exist yet
+        if test_event is None:
+            try:
+                ## Event at 08:00, alarm at 07:45 (15 minutes before)
+                test_event = cal.save_object(
+                    Event,
+                    summary="Alarm test event",
+                    uid=test_uid,
+                    dtstart=datetime(2000, 5, 1, 8, 0, 0, tzinfo=utc),
+                    dtend=datetime(2000, 5, 1, 9, 0, 0, tzinfo=utc),
+                    alarm_trigger=timedelta(minutes=-15),
+                    alarm_action="AUDIO",
+                )
+            except Exception as e:
+                ## If save fails (e.g., duplicate UID), try to find it again
+                ## This can happen if another test run created it concurrently
+                try:
+                    events = cal.search(
+                        start=datetime(2000, 5, 1, tzinfo=utc),
+                        end=datetime(2000, 5, 2, tzinfo=utc),
+                        event=True,
+                        post_filter=False,
+                    )
+                    for evt in events:
+                        if evt.component.get("uid") == test_uid:
+                            test_event = evt
+                            break
+                except:
+                    pass
 
+                ## If we still don't have the event, raise the original error
+                if test_event is None:
+                    raise
+
+        try:
             ## Search for alarms after the event start (should find nothing)
             events_after = cal.search(
                 event=True,
@@ -1188,13 +1210,6 @@ class CheckAlarmSearch(Check):
                 "support": "unsupported",
                 "behaviour": f"alarm search failed: {e}"
             })
-        finally:
-            ## Clean up
-            if test_event is not None:
-                try:
-                    test_event.delete()
-                except:
-                    pass
 
 
 class CheckSyncToken(Check):
