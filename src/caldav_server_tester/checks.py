@@ -1134,16 +1134,22 @@ class CheckAlarmSearch(Check):
 
         ## Try to find existing event from previous run
         try:
-            events = _filter_2000(cal.search(
+            events = list(_filter_2000(cal.search(
                 start=datetime(2000, 5, 1, tzinfo=utc),
                 end=datetime(2000, 5, 2, tzinfo=utc),
                 event=True,
                 post_filter=False,
-            ))
+            )))
             for evt in events:
-                if evt.component.get("uid") == test_uid:
-                    test_event = evt
-                    break
+                try:
+                    # Load the event to ensure component is available
+                    evt.load()
+                    evt_uid = str(evt.icalendar_component.get("UID", ""))
+                    if evt_uid == test_uid:
+                        test_event = evt
+                        break
+                except:
+                    pass
         except:
             pass
 
@@ -1161,21 +1167,28 @@ class CheckAlarmSearch(Check):
                     alarm_action="AUDIO",
                 )
             except Exception as e:
-                ## If save fails (e.g., duplicate UID), try to find it again
-                ## This can happen if another test run created it concurrently
-                try:
-                    events = cal.search(
-                        start=datetime(2000, 5, 1, tzinfo=utc),
-                        end=datetime(2000, 5, 2, tzinfo=utc),
-                        event=True,
-                        post_filter=False,
-                    )
-                    for evt in events:
-                        if evt.component.get("uid") == test_uid:
-                            test_event = evt
-                            break
-                except:
-                    pass
+                ## If save fails with duplicate UID constraint, the event exists
+                ## This is expected on servers that properly enforce uniqueness
+                if "UNIQUE constraint" in str(e) or "duplicate" in str(e).lower():
+                    ## Try to find the existing event
+                    try:
+                        events = list(cal.search(
+                            start=datetime(2000, 5, 1, tzinfo=utc),
+                            end=datetime(2000, 5, 2, tzinfo=utc),
+                            event=True,
+                            post_filter=False,
+                        ))
+                        for evt in events:
+                            try:
+                                evt.load()
+                                evt_uid = str(evt.icalendar_component.get("UID", ""))
+                                if evt_uid == test_uid:
+                                    test_event = evt
+                                    break
+                            except:
+                                pass
+                    except:
+                        pass
 
                 ## If we still don't have the event, raise the original error
                 if test_event is None:
