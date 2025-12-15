@@ -544,6 +544,17 @@ END:VCALENDAR""",
             dtend=datetime(2000, 3, 1, 13, 0, 0, tzinfo=utc),
         )
 
+        ## Event with alarm for alarm search testing
+        alarm_test_event = add_if_not_existing(
+            Event,
+            summary="Alarm test event",
+            uid="csc_alarm_test_event",
+            dtstart=datetime(2000, 5, 1, 8, 0, 0, tzinfo=utc),
+            dtend=datetime(2000, 5, 1, 9, 0, 0, tzinfo=utc),
+            alarm_trigger=timedelta(minutes=-15),
+            alarm_action="AUDIO",
+        )
+
         ## No more existing IDs in the calendar from 2000 ... otherwise,
         ## more work is needed to ensure those won't pollute the tests nor be
         ## deleted by accident
@@ -1128,46 +1139,9 @@ class CheckAlarmSearch(Check):
     def _run_check(self) -> None:
         cal = self.checker.calendar
 
-        ## Use persistent event with an alarm (kept between runs for efficiency)
-        test_uid = "csc_alarm_test_event234"
-        test_event = None
-
-        ## Try to find existing event from previous run using UID search
-        try:
-            events = list(cal.search(uid=test_uid, event=True))
-            if events:
-                test_event = events[0]
-        except Exception:
-            pass
-
-        ## Create event if it doesn't exist yet
-        if test_event is None:
-            try:
-                ## Event at 08:00, alarm at 07:45 (15 minutes before)
-                test_event = cal.save_object(
-                    Event,
-                    summary="Alarm test event",
-                    uid=test_uid,
-                    dtstart=datetime(2000, 5, 1, 8, 0, 0, tzinfo=utc),
-                    dtend=datetime(2000, 5, 1, 9, 0, 0, tzinfo=utc),
-                    alarm_trigger=timedelta(minutes=-15),
-                    alarm_action="AUDIO",
-                )
-            except Exception as e:
-                ## If save fails with duplicate UID constraint, the event exists
-                ## This is expected on servers that properly enforce uniqueness
-                if "UNIQUE constraint" in str(e) or "duplicate" in str(e).lower():
-                    ## Try to find the existing event using UID search
-                    try:
-                        events = list(cal.search(uid=test_uid, event=True))
-                        if events:
-                            test_event = events[0]
-                    except Exception:
-                        pass
-
-                ## If we still don't have the event, raise the original error
-                if test_event is None:
-                    raise
+        ## The alarm test event was created in PrepareCalendar
+        ## Event at 08:00, alarm at 07:45 (15 minutes before)
+        test_uid = "csc_alarm_test_event"
 
         try:
             ## Search for alarms after the event start (should find nothing)
