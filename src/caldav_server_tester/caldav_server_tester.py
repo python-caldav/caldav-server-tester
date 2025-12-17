@@ -6,6 +6,7 @@ This is the CLI - the "click" application
 
 import click
 from caldav.davclient import get_davclient
+
 from .checker import ServerQuirkChecker
 
 
@@ -51,7 +52,6 @@ def check_server_compatibility(verbose, json, name, run_checks, **kwargs):
             obj.check_all()
         for check in run_checks:
             obj.check_one(check)
-    test_cal_info = obj.expected_features.is_supported('test-calendar.compatibility-tests', return_type=dict)
     obj.cleanup(force=False)
     click.echo(obj.report(verbose=verbose, return_what="json" if json else str))
 

@@ -2,24 +2,18 @@
 import os
 import time
 import uuid
-from datetime import date
-from datetime import datetime
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from json import dumps
 
-import click
-
 import caldav
-from caldav.elements import dav
-from caldav.elements import ical
-from caldav.lib.error import AuthorizationError
-from caldav.lib.error import DAVError
-from caldav.lib.error import NotFoundError
+import click
+import icalendar
+from caldav.compatibility_hints import incompatibility_description
+from caldav.davclient import CONNKEYS, auto_conn
+from caldav.elements import dav, ical
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError
 from caldav.lib.python_utilities import to_local
 from caldav.objects import FreeBusy
-from caldav.compatibility_hints import incompatibility_description
-from caldav.davclient import auto_conn
-from caldav.davclient import CONNKEYS
 
 ical_with_exception1 = """BEGIN:VCALENDAR
 VERSION:2.0
@@ -228,14 +222,14 @@ class ServerQuirkChecker:
                     self.set_flag("rate_limited", True)
                     return (calmade, e)
             return (calmade, None)
-        except Exception as e:
+        except Exception:
             self.set_flag("no_delete_calendar", True)
             time.sleep(10)
             try:
                 cal.delete()
                 self.set_flag("no_delete_calendar", False)
                 self.set_flag("rate_limited", True)
-            except Exception as e2:
+            except Exception:
                 pass
             return (calmade, None)
 
@@ -266,7 +260,7 @@ class ServerQuirkChecker:
             self.set_flag("non_existing_calendar_found", True)
         except NotFoundError:
             self.set_flag("non_existing_calendar_found", False)
-        except Exception as e:
+        except Exception:
             _debugger()
             pass
         ## Check on "no_default_calendar" flag
@@ -296,7 +290,7 @@ class ServerQuirkChecker:
         if makeret[0]:
             self.flags_checked["no_displayname"] = True
             return
-        if not "no_mkcalendar" in self.flags_checked:
+        if "no_mkcalendar" not in self.flags_checked:
             self.set_flag("no_mkcalendar", True)
 
     def _fix_cal_if_needed(self, todo=False):
@@ -383,7 +377,7 @@ class ServerQuirkChecker:
         try:
             self._check_prop(ical.CalendarColor, "goldenred", "blue")
             self.set_flag("calendar_color", True)
-        except Exception as e:
+        except Exception:
             self.set_flag("calendar_color", False)
         try:
             self._check_prop(ical.CalendarOrder, "-143", "8")
@@ -503,9 +497,9 @@ class ServerQuirkChecker:
                 assert "RRULE" not in r.data
                 recurrence_id = r.icalendar_component["RECURRENCE-ID"]
                 assert isinstance(recurrence_id, icalendar.vDDDTypes)
-            if not "broken_expand_on_exceptions" in self.flags_checked:
+            if "broken_expand_on_exceptions" not in self.flags_checked:
                 self.set_flag("broken_expand_on_exceptions", False)
-        except Exception as e:
+        except Exception:
             self.set_flag("broken_expand_on_exceptions")
         finally:
             obj.delete()
@@ -523,7 +517,7 @@ class ServerQuirkChecker:
             assert isinstance(freebusy, FreeBusy)
             assert freebusy.instance.vfreebusy
             self.set_flag("no_freebusy_rfc4791", False)
-        except Exception as e:
+        except Exception:
             self.set_flag("no_freebusy_rfc4791")
 
     def _check_simple_events(self, obj1, obj2):
@@ -657,11 +651,11 @@ class ServerQuirkChecker:
         assert len(events) == 2
         if "RRULE" in events[0].data:
             assert "RRULE" in events[1].data
-            assert not "RECURRENCE-ID" in events[0].data
-            assert not "RECURRENCE-ID" in events[1].data
+            assert "RECURRENCE-ID" not in events[0].data
+            assert "RECURRENCE-ID" not in events[1].data
             self.set_flag("no_expand", True)
         else:
-            assert not "RRULE" in events[1].data
+            assert "RRULE" not in events[1].data
             self.set_flag("no_expand", False)
             if "RECURRENCE-ID" in events[0].data and "DTSTART:2001" in events[0].data:
                 assert "RECURRENCE-ID" in events[1].data
@@ -732,14 +726,13 @@ class ServerQuirkChecker:
         if should_be_empty:
             assert len(should_be_empty) == 1
             ical = should_be_empty[0].icalendar_component
-            assert "due" in ical and not "dtstart" in ical
+            assert "due" in ical and "dtstart" not in ical
             self.set_flag("vtodo_no_dtstart_infinite_duration")
 
         if kwargs.get("todo"):
             if len(cal.search(end=before, **kwargs)) == 0:
                 if (
-                    not "vtodo_datesearch_nostart_future_tasks_delivered"
-                    in self.flags_checked
+                    "vtodo_datesearch_nostart_future_tasks_delivered" not in self.flags_checked
                 ):
                     self.set_flag(
                         "vtodo_datesearch_nostart_future_tasks_delivered", False
@@ -756,7 +749,7 @@ class ServerQuirkChecker:
                 before = before - timedelta(days=31)
                 after = after + timedelta(days=31)
             else:
-                if not "inaccurate_Datesearch" in self.flags_checked:
+                if "inaccurate_Datesearch" not in self.flags_checked:
                     self.set_flag("inaccurate_datesearch", False)
 
         assert len(cal.search(start=after, end=longafter)) == 0
@@ -782,7 +775,7 @@ class ServerQuirkChecker:
                     == "check_todo_1"
                 )
             self.set_flag("no_todo", False)
-        except Exception as e:
+        except Exception:
             self.set_flag("no_todo_on_standard_calendar")
             cal = self._fix_cal(todo=True)
             try:
@@ -827,7 +820,7 @@ class ServerQuirkChecker:
             todo, assert_found=False, has_duration=False, todo=True
         )
 
-        if not "vtodo_no_dtstart_infinite_duration" in self.flags_checked:
+        if "vtodo_no_dtstart_infinite_duration" not in self.flags_checked:
             self.set_flag("vtodo_no_dtstart_infinite_duration", False)
 
         todo = cal.add_todo(
@@ -908,7 +901,7 @@ class ServerQuirkChecker:
             )
             assert len(todos) in (0, 1)
             self.set_flag("vtodo_datesearch_notime_task_is_skipped", len(todos) == 0)
-        except Exception as e:
+        except Exception:
             self.set_flag("no_todo_datesearch", True)
 
     def check_all(self):

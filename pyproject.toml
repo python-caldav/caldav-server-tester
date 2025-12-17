@@ -1,36 +1,98 @@
 [project]
 name = "caldav-server-tester"
-version = "0.1.0"
+version = "0.0.0"
 license = "AGPL-3.0-or-later"
 license-files = ["agpl-3.0.md"]
 description = "CalDAV Server Checker - checking a CalDAV server for compatibility issues"
 authors = [
-    {name = "Tobias Brox",email = "tobias@redpill-linpro.com"}
+    {name = "Tobias Brox", email = "tobias@redpill-linpro.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Office/Business :: Scheduling",
+]
+keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
-  "caldav>=2.1.0"
+    "caldav>=1.5.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/python-caldav/caldav-server-tester"
+Issues = "https://github.com/python-caldav/caldav-server-tester/issues"
+
+[project.scripts]
+caldav-server-tester = "caldav_server_tester:check_server_compatibility"
+
 [project.optional-dependencies]
-test = [
-  "pytest>=8.0.0",
-  "pytest-mock>=3.12.0"
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.0.0",
 ]
 
 [tool.poetry]
 packages = [{include = "caldav_server_tester", from = "src"}]
 
-[tool.poetry.scripts]
-caldav-server-tester = "caldav_server_tester:check_server_compatibility"
-
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+style = "semver"
+pattern = "^v(?P<base>\\d+\\.\\d+\\.\\d+)"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=2.0.0,<3.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (many existing long lines)
+    "E721",   # type comparison - existing code uses == for type checks
+    "E722",   # bare except (intentional in test code that catches all errors)
+    "E731",   # lambda assignment - existing code style
+    "F841",   # unused variables (often intentional for documenting API usage)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["caldav_server_tester"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["caldav_server_tester"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

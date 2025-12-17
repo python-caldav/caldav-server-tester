@@ -1,10 +1,9 @@
 """Unit tests for CheckSyncToken to catch API usage errors"""
 
-from unittest.mock import Mock, MagicMock, PropertyMock
-from datetime import datetime, timezone
-import pytest
+from unittest.mock import Mock
 
 from caldav.compatibility_hints import FeatureSet
+
 from caldav_server_tester.checks import CheckSyncToken
 
 

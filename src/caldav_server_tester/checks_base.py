@@ -1,4 +1,3 @@
-from caldav.compatibility_hints import FeatureSet
 import copy
 import logging
 
@@ -38,7 +37,7 @@ class Check:
 
         feat_def = self.checker._features_checked.find_feature(feature)
         feat_type = feat_def.get('type', 'server-feature')
-        
+
         if feat_type not in ('server-peculiarity', 'server-feature'):
             ## client-behaviour, tests-behaviour or client-feature
             ## cannot be checked for reliably (and is not supposed to
@@ -47,7 +46,7 @@ class Check:
             return
 
         value_str = fs.is_supported(feature, str)
-        
+
         ## Fragile support is ... fragile and should be ignored
         ## same with unknown
         if value_str in ('fragile', 'unknown') or self.expected_features.is_supported(feature, str) in ('fragile', 'unknown'):
@@ -67,7 +66,7 @@ class Check:
         if self.checker.debug_mode == 'assert':
             assert(observed == expected)
             return
-        
+
         if observed != expected:
             if self.checker.debug_mode == 'logging':
                 logging.error(f"Server checker found something unexpected for {feature}.  Expected: {expected_}, observed: {observed_}")
@@ -92,7 +91,7 @@ class Check:
         keys_before = set(
             self.checker._features_checked.dotted_feature_set_list().keys()
         )
-        
+
         ## expected_features is the preconfigured feature set for this server.
         self.expected_features = self.checker._client_obj.features
         try:

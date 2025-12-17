@@ -1,15 +1,11 @@
 import re
 import time
 import uuid
-from datetime import timezone
-from datetime import datetime
-from datetime import date
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import NotFoundError, AuthorizationError, ReportError, DAVError
-from caldav.calendarobjectresource import Event, Todo, Journal
+from caldav.calendarobjectresource import Event, Todo
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, ReportError
 from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
@@ -177,7 +173,7 @@ class CheckMakeDeleteCalendar(Check):
                     )
                     return (calmade, e)
             return (calmade, None)
-        except DAVError as e:
+        except DAVError:
             time.sleep(10)
             try:
                 cal.delete()
@@ -188,7 +184,7 @@ class CheckMakeDeleteCalendar(Check):
                         "behaviour": "deleting a recently created calendar causes exception",
                     },
                 )
-            except DAVError as e2:
+            except DAVError:
                 self.set_feature("delete-calendar", False)
             return (calmade, None)
 
@@ -289,7 +285,7 @@ class PrepareCalendar(Check):
         except:
             assert self.checker.features_checked.is_supported("create-calendar") ## Otherwise we can't test
             calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
-                
+
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
 
@@ -318,7 +314,7 @@ class PrepareCalendar(Check):
             if uid in object_by_uid:
                 return object_by_uid.pop(uid)
             ret = cal.save_object(*largs, **kwargs)
-            
+
             return ret
 
         try:
@@ -351,7 +347,7 @@ class PrepareCalendar(Check):
                     uid="csc_simple_task1",
                     dtstart=date(2000, 1, 7),
                 )
-            except DAVError as e: ## exception e for debugging purposes
+            except DAVError: ## exception e for debugging purposes
                 self.set_feature("save-load.todo", 'ungraceful')
                 return
 
@@ -378,7 +374,7 @@ class PrepareCalendar(Check):
         simple_event.load()
         self.set_feature("save-load.event")
 
-                                                    
+
         if not self.checker.features_checked.is_supported("save-load.todo.mixed-calendar"):
             try:
                 journals = self.checker.principal.make_calendar(
@@ -398,9 +394,9 @@ class PrepareCalendar(Check):
                 uid="csc_journal_1")
             j.load()
             self.set_feature("save-load.journal")
-        except NotFoundError as e:
+        except NotFoundError:
             self.set_feature("save-load.journal", 'unsupported')
-        except DAVError as e:
+        except DAVError:
             self.set_feature("save-load.journal", 'ungraceful')
 
         non_duration_event = add_if_not_existing(
@@ -606,7 +602,7 @@ class CheckSearch(Check, SearchMixIn):
         tasklist = self.checker.tasklist
 
         self.search_find_set(
-            cal, "search.time-range.event", 1, 
+            cal, "search.time-range.event", 1,
             start=datetime(2000, 1, 1, tzinfo=utc),
             end=datetime(2000, 1, 2, tzinfo=utc),
             event=True,
@@ -668,9 +664,9 @@ class CheckSearch(Check, SearchMixIn):
         ## TODO - we may be testing the wrong thing here!
         ## 1) if search.text is not supported because the server yields nothing, then AS FOR NOW cal.object_by_uid will raise a NotFoundError.  This will change when https://github.com/python-caldav/caldav/issues/586 is fixed
         ## 2) if search.text is not supported because the server gives everything, then .object_by_uid will find the right thing through client-side filtering
-        
+
         ## TODO - what we really should do:
-        
+
         ## 1) Send the XML-query to the server as given in he examples in the RFC, shortcutting all logic in cal.object_by_uid, cal.search etc
         ## 2) Unless there exist servers with fragile text searching that supports search for uid, then probably the whole feature and check should be yanked
         try:
@@ -938,7 +934,7 @@ class CheckPrincipalSearch(Check):
             ## could have been renamed to principal-search.
             self.set_feature("principal-search", False)
             return
-        
+
         ## Try to get the current principal first
         principal = client.principal()
 
@@ -1013,7 +1009,7 @@ class CheckDuplicateUID(Check):
 
     def _run_check(self) -> None:
         cal1 = self.checker.calendar
-        
+
 
         ## Reuse an event from PrepareCalendar instead of creating a new one
         test_uid = "csc_simple_event1"
@@ -1028,18 +1024,18 @@ class CheckDuplicateUID(Check):
         except Exception:
             pass
 
-        
-        
+
+
         try:
             ## Get existing event from first calendar (created by PrepareCalendar)
             event1 = cal1.event_by_uid(test_uid)
             event1.load()
 
-        
+
             ## Get the event data for reuse in cal2
             event_ical = event1.data
 
-            
+
             ## Create second calendar
             try:
                 cal2 = self.client.principal().make_calendar(name=cal2_name)
@@ -1371,20 +1367,20 @@ class CheckFreeBusyQuery(Check):
 class CheckTimezone(Check):
     """
     Checks support for non-UTC timezone information in events.
-    
+
     Tests if the server accepts events with timezone information using zoneinfo.
     Some servers reject events with timezone data (returning 403 Forbidden).
     Related to GitHub issue https://github.com/python-caldav/caldav/issues/372
     """
-    
+
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "save-load.event.timezone",
     }
-    
+
     def _run_check(self) -> None:
         cal = self.checker.calendar
-        
+
         try:
             ## Create an event with a non-UTC timezone (America/Los_Angeles)
             tz = ZoneInfo("America/Los_Angeles")
@@ -1394,10 +1390,10 @@ class CheckTimezone(Check):
                 dtend=datetime(2000, 6, 15, 15, 0, 0, tzinfo=tz),
                 uid="csc_timezone_test_event",
             )
-            
+
             ## Try to load the event back
             event.load()
-            
+
             ## Verify the event was saved correctly
             if event.vobject_instance:
                 self.set_feature("save-load.event.timezone")

@@ -4,12 +4,14 @@
 
 import json
 import time
-from unittest.mock import Mock, MagicMock, patch
-import pytest
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from caldav.compatibility_hints import FeatureSet
+
 from caldav_server_tester.checker import ServerQuirkChecker
 from caldav_server_tester.checks_base import Check
+
 
 class TestServerQuirkCheckerInit:
     """Test ServerQuirkChecker initialization"""

@@ -1,10 +1,12 @@
-import caldav
-import time
 import inspect
+import time
+
+import caldav
 from caldav.compatibility_hints import FeatureSet
 
 from . import checks
 from .checks_base import Check
+
 
 class ServerQuirkChecker:
     """This class will ...
@@ -58,7 +60,7 @@ class ServerQuirkChecker:
 
     def cleanup(self, force=True):
         """
-        Remove anything added by the PrepareCalendar check - if 
+        Remove anything added by the PrepareCalendar check - if
         """
         if not force:
             test_cal_info = self.expected_features.is_supported('test-calendar.compatibility-tests', return_type=dict)

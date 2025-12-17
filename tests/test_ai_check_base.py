@@ -2,11 +2,11 @@
 
 ## DISCLAIMER: those tests are AI-generated, gone through a very quick human QA
 
-from unittest.mock import Mock, MagicMock, patch
-import logging
-import pytest
+from unittest.mock import Mock
 
+import pytest
 from caldav.compatibility_hints import FeatureSet
+
 from caldav_server_tester.checks_base import Check
 
 
