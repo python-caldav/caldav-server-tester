@@ -1210,23 +1210,11 @@ class CheckSyncToken(Check):
             })
             return
 
-        ## Clean up any leftover test event from previous failed run
-        test_uid = "csc_sync_test_event_1"
-        try:
-            events = _filter_2000(cal.search(
-                start=datetime(2000, 4, 1, tzinfo=utc),
-                end=datetime(2000, 4, 2, tzinfo=utc),
-                event=True,
-                post_filter=False,
-            ))
-            for evt in events:
-                if evt.component.get("uid") == test_uid:
-                    evt.delete()
-                    break
-        except:
-            pass
-
         ## Test 2 & 3: Check for time-based and fragile sync tokens
+        ## Use unique UID for sync test since this test deletes the event
+        ## (Nextcloud trashbin bug - see https://github.com/nextcloud/server/issues/30096)
+        test_uid = f"csc_sync_test_event_{int(time.time() * 1000)}"
+
         ## Create a new event
         test_event = None
         try:
@@ -1383,12 +1371,14 @@ class CheckTimezone(Check):
 
         try:
             ## Create an event with a non-UTC timezone (America/Los_Angeles)
+            ## Use unique UID since this test deletes the event
+            ## (Nextcloud trashbin bug - see https://github.com/nextcloud/server/issues/30096)
             tz = ZoneInfo("America/Los_Angeles")
             event = cal.save_event(
                 summary="Timezone test event",
                 dtstart=datetime(2000, 6, 15, 14, 0, 0, tzinfo=tz),
                 dtend=datetime(2000, 6, 15, 15, 0, 0, tzinfo=tz),
-                uid="csc_timezone_test_event",
+                uid=f"csc_timezone_test_event_{int(time.time() * 1000)}",
             )
 
             ## Try to load the event back
