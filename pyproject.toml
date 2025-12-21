@@ -28,6 +28,8 @@ classifiers = [
 keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
     "caldav>=1.5.0",
+    "click",
+    "icalendar",
 ]
 
 [project.urls]
@@ -43,10 +45,21 @@ dev = [
     "pytest-mock>=3.12.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0.0",
+    "deptry>=0.24.0; python_version >= '3.10'",
 ]
 
 [tool.poetry]
 packages = [{include = "caldav_server_tester", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0.0"
+pytest-mock = ">=3.12.0"
+ruff = ">=0.1.0"
+pre-commit = ">=3.0.0"
+deptry = {version = ">=0.24.0", python = ">=3.10"}
 
 [tool.poetry-dynamic-versioning]
 enable = true
@@ -96,3 +109,6 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
 ]
+
+[tool.deptry]
+ignore = ["DEP002"]  # Dev tools (pytest, ruff, etc.) are not imported in code
