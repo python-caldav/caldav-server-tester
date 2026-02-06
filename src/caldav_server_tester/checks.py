@@ -8,6 +8,8 @@ from datetime import date
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import NotFoundError, AuthorizationError, ReportError, DAVError
 from caldav.calendarobjectresource import Event, Todo, Journal
+from caldav.collection import Principal
+from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
 
@@ -706,3 +708,138 @@ class CheckRecurrenceSearch(Check):
             == "February recurrence with different summary"
             and getattr(exception[0].component.get('RECURRENCE_ID'), 'dt', None) == datetime(2000, 2, 13, 12, tzinfo=utc)
         )
+
+
+class CheckCaseSensitiveSearch(Check):
+    """
+    Checks if the server supports case-sensitive and case-insensitive text searches.
+
+    RFC4791 section 9.7.5 specifies that i;ascii-casemap MUST be the default collation,
+    and section 7.5 says servers are REQUIRED to support i;octet (case-sensitive).
+    """
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {
+        "search.text.case-sensitive",
+        "search.text.case-insensitive",
+    }
+
+    def _run_check(self):
+        cal = self.checker.calendar
+
+        ## The PrepareCalendar check created an event with summary
+        ## "simple event with a start time and an end time" (uid csc_simple_event1).
+        ## We search for "Simple" (uppercase S) vs "simple" (lowercase s)
+        ## to test case sensitivity.
+
+        ## Case-sensitive search (i;octet collation):
+        ## Searching for "Simple" (uppercase S) should NOT match
+        ## "simple event ..." (lowercase s).
+        ## Using post_filter=False to test server-side behaviour.
+        try:
+            searcher = CalDAVSearcher(event=True)
+            searcher.add_property_filter("SUMMARY", "Simple", case_sensitive=True)
+            results_sensitive = searcher.search(cal, post_filter=False)
+
+            searcher2 = CalDAVSearcher(event=True)
+            searcher2.add_property_filter("SUMMARY", "simple", case_sensitive=True)
+            results_sensitive_match = searcher2.search(cal, post_filter=False)
+
+            ## "Simple" should not match "simple event ...", but "simple" should
+            self.set_feature(
+                "search.text.case-sensitive",
+                len(results_sensitive) == 0 and len(results_sensitive_match) >= 1
+            )
+        except (ReportError, DAVError):
+            self.set_feature("search.text.case-sensitive", "ungraceful")
+
+        ## Case-insensitive search (i;ascii-casemap collation):
+        ## Searching for "SIMPLE" should match "simple event ..."
+        ## when case_sensitive=False.
+        try:
+            searcher3 = CalDAVSearcher(event=True)
+            searcher3.add_property_filter("SUMMARY", "SIMPLE", case_sensitive=False)
+            results_insensitive = searcher3.search(cal, post_filter=False)
+
+            self.set_feature(
+                "search.text.case-insensitive",
+                len(results_insensitive) >= 1
+            )
+        except (ReportError, DAVError):
+            self.set_feature("search.text.case-insensitive", "ungraceful")
+
+
+class CheckPrincipalSearch(Check):
+    """
+    Checks if the server supports principal search operations.
+
+    Uses DAVClient.search_principals() which sends a
+    DAV:principal-property-search REPORT.
+    """
+    depends_on = {CheckGetCurrentUserPrincipal}
+    features_to_be_checked = {
+        "principal-search",
+        "principal-search.by-name.self",
+        "principal-search.list-all",
+    }
+
+    def _run_check(self):
+        principal = self.checker.principal
+        if not principal:
+            self.set_feature("principal-search", False)
+            return
+
+        ## Get the display name of the current principal for self-search.
+        ## Fall back to the username if no display name is available.
+        try:
+            search_name = principal.get_display_name()
+        except:
+            search_name = None
+        if not search_name:
+            search_name = getattr(self.client, 'username', None)
+
+        any_search_worked = False
+        any_ungraceful = False
+
+        ## Use search_principals (v3.0+) or principals (v2.x) method
+        _search_principals = getattr(self.client, 'search_principals', None) or getattr(self.client, 'principals', None)
+        if not _search_principals:
+            self.set_feature("principal-search", False)
+            self.set_feature("principal-search.by-name.self", False)
+            self.set_feature("principal-search.list-all", False)
+            return
+
+        ## principal-search.by-name.self: search for own principal by name
+        if search_name:
+            try:
+                results = _search_principals(name=search_name)
+                found_self = any(
+                    isinstance(r, Principal)
+                    for r in results
+                )
+                self.set_feature("principal-search.by-name.self", found_self)
+                if found_self:
+                    any_search_worked = True
+            except (ReportError, DAVError):
+                self.set_feature("principal-search.by-name.self", "ungraceful")
+                any_ungraceful = True
+        else:
+            self.set_feature("principal-search.by-name.self", None)
+
+        ## principal-search.list-all: list all principals without filter
+        try:
+            results = _search_principals()
+            found_any = len(results) >= 1
+            self.set_feature("principal-search.list-all", found_any)
+            if found_any:
+                any_search_worked = True
+        except (ReportError, DAVError):
+            self.set_feature("principal-search.list-all", "ungraceful")
+            any_ungraceful = True
+
+        ## principal-search: overall support derived from sub-features
+        if any_search_worked:
+            self.set_feature("principal-search")
+        elif any_ungraceful:
+            self.set_feature("principal-search", "ungraceful")
+        else:
+            self.set_feature("principal-search", False)
