@@ -942,7 +942,7 @@ class CheckPrincipalSearch(Check):
         try:
             my_name = principal.get_display_name()
             if my_name:
-                my_principals = client.principals(name=my_name)
+                my_principals = client.search_principals(name=my_name)
                 if isinstance(my_principals, list) and len(my_principals) == 1:
                     if my_principals[0].url == principal.url:
                         self.set_feature("principal-search.by-name", True)
@@ -975,7 +975,7 @@ class CheckPrincipalSearch(Check):
 
         ## List all principals
         try:
-            all_principals = client.principals()
+            all_principals = client.search_principals()
             ## Some servers return empty list, some return principals
             ## We know there exists at least one principal (self)
             if isinstance(all_principals, list) and len(all_principals)>0:
