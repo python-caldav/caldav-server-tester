@@ -498,9 +498,7 @@ class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "search.time-range.event",
-        "search.category",
-        "search.category.fullstring",
-        "search.category.fullstring.smart",
+        "search.text.category",
         "search.time-range.todo",
         "search.comp-type-optional",
         "search.combined-is-logical-and",
@@ -523,21 +521,14 @@ class CheckSearch(Check):
         )
         self.set_feature("search.time-range.todo", len(tasks) == 1)
 
-        ## search.category
+        ## search.text.category
         try:
             events = cal.search(category="hands", event=True)
-            self.set_feature("search.category", len(events) == 1)
+            self.set_feature("search.text.category", len(events) == 1)
         except ReportError:
-            self.set_feature("search.category", "ungraceful")
-        if self.feature_checked("search.category", str) != 'ungraceful':
-            events = cal.search(category="hands,feet,head", event=True)
-            self.set_feature("search.category.fullstring", len(events) == 1)
-            if len(events) == 1:
-                events = cal.search(category="feet,head,hands", event=True)
-                self.set_feature("search.category.fullstring.smart", len(events) == 1)
-
+            self.set_feature("search.text.category", "ungraceful")
         ## search.combined
-        if self.feature_checked("search.category"):
+        if self.feature_checked("search.text.category"):
             events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0))
             events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0))
             self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
