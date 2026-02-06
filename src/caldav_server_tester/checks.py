@@ -493,7 +493,9 @@ END:VCALENDAR""",
         ## deleted by accident
         assert not object_by_uid
         assert self.checker.calendar.events()
-        assert self.checker.tasklist.todos()
+        ## Not asserting on tasklist.todos() here - on servers with broken
+        ## comp-type filtering (e.g. Bedework), todos() returns empty even
+        ## though todos were saved successfully (verified via load() above).
 
 
 class CheckSearch(Check):
@@ -607,13 +609,22 @@ class CheckRecurrenceSearch(Check):
     def _run_check(self):
         cal = self.checker.calendar
         tl = self.checker.tasklist
+
+        ## Precondition: basic event time-range search must return exactly the
+        ## one recurring event in Jan 2000.  On servers with broken comp-type
+        ## filtering (e.g. Bedework) this may return extra objects, making
+        ## recurrence checks unreliable - mark all features as unsupported.
         events = cal.search(
             start=datetime(2000, 1, 12, tzinfo=utc),
             end=datetime(2000, 1, 13, tzinfo=utc),
             event=True,
             post_filter=False,
         )
-        assert len(events) == 1
+        if len(events) != 1:
+            for feat in self.features_to_be_checked:
+                self.set_feature(feat, False)
+            return
+
         if self.checker.features_checked.is_supported("search.time-range.todo"):
             todos = tl.search(
                 start=datetime(2000, 1, 12, tzinfo=utc),
@@ -654,7 +665,12 @@ class CheckRecurrenceSearch(Check):
             event=True,
             post_filter=False,
         )
-        assert len(exception) == 1
+        if len(exception) != 1:
+            ## Can't reliably check expansion/exception features
+            for feat in self.features_to_be_checked:
+                if not self.feature_checked(feat):
+                    self.set_feature(feat, False)
+            return
         far_future_recurrence = cal.search(
             start=datetime(2045, 3, 12, tzinfo=utc),
             end=datetime(2045, 3, 13, tzinfo=utc),
