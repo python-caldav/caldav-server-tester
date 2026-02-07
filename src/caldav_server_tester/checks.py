@@ -284,12 +284,20 @@ class PrepareCalendar(Check):
         self.checker.tasklist = calendar
 
         ## TODO: replace this with one search if possible(?)
-        events_from_2000 = calendar.search(
-            event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
-        )
-        tasks_from_2000 = calendar.search(
-            todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
-        )
+        ## Some servers (e.g. CCS) reject time-range queries for old dates
+        ## (min-date-time restriction), so fall back to empty lists.
+        try:
+            events_from_2000 = calendar.search(
+                event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
+            )
+        except (AuthorizationError, DAVError):
+            events_from_2000 = []
+        try:
+            tasks_from_2000 = calendar.search(
+                todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
+            )
+        except (AuthorizationError, DAVError):
+            tasks_from_2000 = []
 
         object_by_uid = {}
 
@@ -513,31 +521,44 @@ class CheckSearch(Check):
     def _run_check(self):
         cal = self.checker.calendar
         tasklist = self.checker.tasklist
-        events = cal.search(
-            start=datetime(2000, 1, 1, tzinfo=utc),
-            end=datetime(2000, 1, 2, tzinfo=utc),
-            event=True,
-        )
-        self.set_feature("search.time-range.event", len(events) == 1)
-        tasks = tasklist.search(
-            start=datetime(2000, 1, 9, tzinfo=utc),
-            end=datetime(2000, 1, 10, tzinfo=utc),
-            todo=True,
-            include_completed=True,
-        )
-        self.set_feature("search.time-range.todo", len(tasks) == 1)
+
+        ## Time-range searches for year 2000 - some servers (e.g. CCS)
+        ## reject old date ranges via min-date-time restrictions.
+        try:
+            events = cal.search(
+                start=datetime(2000, 1, 1, tzinfo=utc),
+                end=datetime(2000, 1, 2, tzinfo=utc),
+                event=True,
+            )
+            self.set_feature("search.time-range.event", len(events) == 1)
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.event", "ungraceful")
+
+        try:
+            tasks = tasklist.search(
+                start=datetime(2000, 1, 9, tzinfo=utc),
+                end=datetime(2000, 1, 10, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+            )
+            self.set_feature("search.time-range.todo", len(tasks) == 1)
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.todo", "ungraceful")
 
         ## search.text.category
         try:
             events = cal.search(category="hands", event=True)
             self.set_feature("search.text.category", len(events) == 1)
-        except ReportError:
+        except (ReportError, AuthorizationError, DAVError):
             self.set_feature("search.text.category", "ungraceful")
         ## search.combined
         if self.feature_checked("search.text.category"):
-            events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0))
-            events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0))
-            self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
+            try:
+                events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0))
+                events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0))
+                self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
+            except (AuthorizationError, DAVError):
+                self.set_feature("search.combined-is-logical-and", "ungraceful")
 
         try:
             if self.feature_checked("search.time-range.todo"):
@@ -615,13 +636,17 @@ class CheckRecurrenceSearch(Check):
         ## Precondition: basic event time-range search must return exactly the
         ## one recurring event in Jan 2000.  On servers with broken comp-type
         ## filtering (e.g. Bedework) this may return extra objects, making
-        ## recurrence checks unreliable - mark all features as unsupported.
-        events = cal.search(
-            start=datetime(2000, 1, 12, tzinfo=utc),
-            end=datetime(2000, 1, 13, tzinfo=utc),
-            event=True,
-            post_filter=False,
-        )
+        ## recurrence checks unreliable.  Some servers (e.g. CCS) reject
+        ## old date ranges entirely.  Either way, mark all features unsupported.
+        try:
+            events = cal.search(
+                start=datetime(2000, 1, 12, tzinfo=utc),
+                end=datetime(2000, 1, 13, tzinfo=utc),
+                event=True,
+                post_filter=False,
+            )
+        except (AuthorizationError, DAVError):
+            events = []
         if len(events) != 1:
             for feat in self.features_to_be_checked:
                 self.set_feature(feat, False)
