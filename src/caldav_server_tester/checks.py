@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 import uuid
@@ -488,10 +489,11 @@ END:VEVENT
 END:VCALENDAR""",
         )
 
-        ## No more existing IDs in the calendar from 2000 ... otherwise,
-        ## more work is needed to ensure those won't pollute the tests nor be
-        ## deleted by accident
-        assert not object_by_uid
+        ## Delete any stale objects from year 2000 that aren't part of
+        ## the current test set (e.g. leftovers from previous test runs)
+        for uid, obj in object_by_uid.items():
+            logging.warning("Deleting stale year-2000 object with UID %s", uid)
+            obj.delete()
         assert self.checker.calendar.events()
         ## Not asserting on tasklist.todos() here - on servers with broken
         ## comp-type filtering (e.g. Bedework), todos() returns empty even
