@@ -5,6 +5,7 @@ import uuid
 from datetime import timezone
 from datetime import datetime
 from datetime import date
+from datetime import timedelta
 
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import NotFoundError, AuthorizationError, ReportError, DAVError
@@ -412,6 +413,21 @@ class PrepareCalendar(Check):
         ## TODO: there are more variants to be tested - dtstart date and due date,
         ## dtstart and duration, only duration, no time spec at all, ...
 
+        try:
+            event_with_alarm = add_if_not_existing(
+                Event,
+                summary="event with alarm",
+                uid="csc_event_with_alarm",
+                dtstart=datetime(2000, 1, 10, 8, 0, 0, tzinfo=utc),
+                dtend=datetime(2000, 1, 10, 9, 0, 0, tzinfo=utc),
+                alarm_trigger=timedelta(minutes=-15),
+                alarm_action="DISPLAY",
+            )
+        except Exception:
+            ## Some servers reject events with alarms or old dates
+            self.checker.cnt -= 1
+            logging.warning("Server rejected event with alarm")
+
         recurring_event = add_if_not_existing(
             Event,
             summary="monthly recurring event",
@@ -615,6 +631,52 @@ class CheckSearch(Check):
                 )
         except:
             self.set_feature("search.comp-type-optional", {"support": "ungraceful"})
+
+
+class CheckAlarmSearch(Check):
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"search.time-range.alarm"}
+
+    def _run_check(self):
+        cal = self.checker.calendar
+
+        ## Check that the alarm event was created successfully
+        try:
+            obj = cal.object_by_uid("csc_event_with_alarm")
+        except Exception:
+            self.set_feature("search.time-range.alarm", False)
+            return
+
+        ## The alarm event has dtstart 2000-01-10 08:00 and a -15min alarm,
+        ## so the alarm triggers at 07:45.
+
+        ## Search that SHOULD find the alarm (07:40-07:55 covers 07:45)
+        try:
+            events = cal.search(
+                event=True,
+                alarm_start=datetime(2000, 1, 10, 7, 40, tzinfo=utc),
+                alarm_end=datetime(2000, 1, 10, 7, 55, tzinfo=utc),
+            )
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.alarm", "ungraceful")
+            return
+
+        if len(events) != 1:
+            self.set_feature("search.time-range.alarm", False)
+            return
+
+        ## Search that should NOT find the alarm (08:00-08:15 is after trigger)
+        try:
+            events = cal.search(
+                event=True,
+                alarm_start=datetime(2000, 1, 10, 8, 0, tzinfo=utc),
+                alarm_end=datetime(2000, 1, 10, 8, 15, tzinfo=utc),
+            )
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.alarm", "ungraceful")
+            return
+
+        self.set_feature("search.time-range.alarm", len(events) == 0)
 
 
 class CheckRecurrenceSearch(Check):
