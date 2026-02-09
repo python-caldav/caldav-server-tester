@@ -266,7 +266,7 @@ class PrepareCalendar(Check):
         "save-load.todo.mixed-calendar",
         "save-load.journal",
         "save-load.journal.mixed-calendar",
-        "save-load.url-on-save",
+        "save-load.get-by-url",
     }
 
     def _run_check(self):
@@ -288,7 +288,7 @@ class PrepareCalendar(Check):
         self.checker.tasklist = calendar
         self.checker.journallist = calendar
 
-        ## Check if the URL returned after save can be used to load the object
+        ## Check if GET requests to calendar object URLs work
         url_check_event = None
         try:
             url_check_event = calendar.save_event(
@@ -297,10 +297,13 @@ class PrepareCalendar(Check):
                 dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
                 dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
             )
-            url_check_event.load()
-            self.set_feature("save-load.url-on-save")
+            r = self.client.request(str(url_check_event.url))
+            if r.status == 404:
+                self.set_feature("save-load.get-by-url", False)
+            else:
+                self.set_feature("save-load.get-by-url")
         except NotFoundError:
-            self.set_feature("save-load.url-on-save", False)
+            self.set_feature("save-load.get-by-url", False)
         finally:
             if url_check_event:
                 try:
