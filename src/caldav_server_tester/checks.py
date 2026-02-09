@@ -249,45 +249,13 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar", False)
 
 
-class CheckSaveLoadUrl(Check):
-    """Check if the URL returned after save can be used to load the object."""
-
-    features_to_be_checked = {"save-load.url-on-save"}
-    depends_on = {CheckMakeDeleteCalendar}
-
-    def _run_check(self):
-        cals = self.checker.principal.calendars()
-        if not cals:
-            self.set_feature("save-load.url-on-save", None)
-            return
-        cal = cals[0]
-        event = None
-        try:
-            event = cal.save_event(
-                summary="url-check event",
-                uid="csc_url_check",
-                dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
-            )
-            event.load()
-            self.set_feature("save-load.url-on-save")
-        except NotFoundError:
-            self.set_feature("save-load.url-on-save", False)
-        finally:
-            if event:
-                try:
-                    event.delete()
-                except Exception:
-                    pass
-
-
 class PrepareCalendar(Check):
     """
     This "check" doesn't check anything, but ensures the calendar has some known events
     """
 
     features_to_be_checked = set()
-    depends_on = {CheckMakeDeleteCalendar, CheckSaveLoadUrl}
+    depends_on = {CheckMakeDeleteCalendar}
     features_to_be_checked = {
         "save-load.event.recurrences",
         "save-load.event.recurrences.count",
@@ -296,6 +264,7 @@ class PrepareCalendar(Check):
         "save-load.event",
         "save-load.todo",
         "save-load.todo.mixed-calendar",
+        "save-load.url-on-save",
     }
 
     def _run_check(self):
@@ -315,6 +284,26 @@ class PrepareCalendar(Check):
                 
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
+
+        ## Check if the URL returned after save can be used to load the object
+        url_check_event = None
+        try:
+            url_check_event = calendar.save_event(
+                summary="url-check event",
+                uid="csc_url_check",
+                dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
+            )
+            url_check_event.load()
+            self.set_feature("save-load.url-on-save")
+        except NotFoundError:
+            self.set_feature("save-load.url-on-save", False)
+        finally:
+            if url_check_event:
+                try:
+                    url_check_event.delete()
+                except Exception:
+                    pass
 
         ## TODO: replace this with one search if possible(?)
         ## Some servers (e.g. CCS) reject time-range queries for old dates
