@@ -256,7 +256,11 @@ class CheckSaveLoadUrl(Check):
     depends_on = {CheckMakeDeleteCalendar}
 
     def _run_check(self):
-        cal = self.checker.principal.calendars()[0]
+        cals = self.checker.principal.calendars()
+        if not cals:
+            self.set_feature("save-load.url-on-save", None)
+            return
+        cal = cals[0]
         event = None
         try:
             event = cal.save_event(
