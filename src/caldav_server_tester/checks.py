@@ -264,6 +264,8 @@ class PrepareCalendar(Check):
         "save-load.event",
         "save-load.todo",
         "save-load.todo.mixed-calendar",
+        "save-load.journal",
+        "save-load.journal.mixed-calendar",
         "save-load.url-on-save",
     }
 
@@ -284,6 +286,7 @@ class PrepareCalendar(Check):
                 
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
+        self.checker.journallist = calendar
 
         ## Check if the URL returned after save can be used to load the object
         url_check_event = None
@@ -320,6 +323,10 @@ class PrepareCalendar(Check):
             )
         except (AuthorizationError, DAVError):
             tasks_from_2000 = []
+        try:
+            journals_from_2000 = calendar.journals()
+        except (AuthorizationError, DAVError):
+            journals_from_2000 = []
 
         object_by_uid = {}
 
@@ -327,10 +334,20 @@ class PrepareCalendar(Check):
 
         for obj in _filter_2000(events_from_2000 + tasks_from_2000):
             object_by_uid[obj.component["uid"]] = obj
+        for obj in journals_from_2000:
+            try:
+                object_by_uid[obj.component["uid"]] = obj
+            except Exception:
+                pass
 
         def add_if_not_existing(*largs, **kwargs):
             self.checker.cnt += 1
-            cal = self.checker.tasklist if largs[0] == Todo else self.checker.calendar
+            if largs[0] == Todo:
+                cal = self.checker.tasklist
+            elif largs[0] == Journal:
+                cal = self.checker.journallist
+            else:
+                cal = self.checker.calendar
             if "uid" in kwargs:
                 uid = kwargs["uid"]
             elif not kwargs:
@@ -374,6 +391,43 @@ class PrepareCalendar(Check):
             task_with_dtstart.load()
             self.set_feature("save-load.todo")
             self.set_feature("save-load.todo.mixed-calendar", False)
+
+        try:
+            simple_journal = add_if_not_existing(
+                Journal,
+                summary="simple journal entry",
+                uid="csc_simple_journal1",
+                dtstart=date(2000, 1, 11),
+            )
+            simple_journal.load()
+            self.set_feature("save-load.journal")
+            self.set_feature("save-load.journal.mixed-calendar")
+        except:
+            try:
+                journallist = self.checker.principal.calendar(
+                    cal_id=f"{cal_id}_journals"
+                )
+                journallist.journals()
+            except:
+                journallist = self.checker.principal.make_calendar(
+                    cal_id=f"{cal_id}_journals",
+                    name=f"{name} - journals",
+                    supported_calendar_component_set=["VJOURNAL"],
+                )
+            self.checker.journallist = journallist
+            try:
+                simple_journal = add_if_not_existing(
+                    Journal,
+                    summary="simple journal entry",
+                    uid="csc_simple_journal1",
+                    dtstart=date(2000, 1, 11),
+                )
+                simple_journal.load()
+                self.set_feature("save-load.journal")
+                self.set_feature("save-load.journal.mixed-calendar", False)
+            except:
+                self.set_feature("save-load.journal", "ungraceful")
+                self.checker.cnt -= 1
 
         simple_event = add_if_not_existing(
             Event,

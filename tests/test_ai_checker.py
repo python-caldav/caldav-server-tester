@@ -283,11 +283,12 @@ class TestServerQuirkCheckerCleanup:
         client.features = FeatureSet()
         checker = ServerQuirkChecker(client)
 
-        # Mock the calendar and tasklist
+        # Mock the calendar, tasklist and journallist
         mock_calendar = Mock()
         mock_tasklist = Mock()
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
+        checker.journallist = mock_calendar  # Same as calendar by default
 
         # Set features to indicate calendar creation/deletion is supported
         checker._features_checked.copyFeatureSet(
@@ -313,6 +314,7 @@ class TestServerQuirkCheckerCleanup:
         mock_tasklist = Mock()
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
+        checker.journallist = mock_calendar  # Same as calendar
 
         checker._features_checked.copyFeatureSet(
             {
@@ -336,6 +338,7 @@ class TestServerQuirkCheckerCleanup:
         mock_calendar = Mock()
         checker.calendar = mock_calendar
         checker.tasklist = mock_calendar  # Same object
+        checker.journallist = mock_calendar  # Same object
 
         checker._features_checked.copyFeatureSet(
             {

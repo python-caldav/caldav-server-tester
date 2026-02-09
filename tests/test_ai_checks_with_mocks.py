@@ -407,6 +407,7 @@ class TestPrepareCalendar:
         mock_calendar = Mock()
         mock_calendar.events.return_value = [Mock()]  # Return non-empty to pass assertion
         mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
         # Mock save_object to handle test data creation
@@ -436,6 +437,7 @@ class TestPrepareCalendar:
         mock_calendar = Mock()
         mock_calendar.events.return_value = [Mock()]
         mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
         def save_object(*args, **kwargs):
@@ -471,6 +473,7 @@ class TestPrepareCalendar:
         mock_calendar = Mock()
         mock_calendar.events.return_value = [Mock()]
         mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
         def save_object(*args, **kwargs):
