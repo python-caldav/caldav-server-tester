@@ -38,7 +38,7 @@ def _filter_2000(objects):
             return x.start
         if "due" in x or "dtend" in x:
             return x.end
-        return date(1980)
+        return date(1980, 1, 1)
 
     def d(obj):
         return asdate(dt(obj))
@@ -249,13 +249,41 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar", False)
 
 
+class CheckSaveLoadUrl(Check):
+    """Check if the URL returned after save can be used to load the object."""
+
+    features_to_be_checked = {"save-load.url-on-save"}
+    depends_on = {CheckMakeDeleteCalendar}
+
+    def _run_check(self):
+        cal = self.checker.principal.calendars()[0]
+        event = None
+        try:
+            event = cal.save_event(
+                summary="url-check event",
+                uid="csc_url_check",
+                dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
+            )
+            event.load()
+            self.set_feature("save-load.url-on-save")
+        except NotFoundError:
+            self.set_feature("save-load.url-on-save", False)
+        finally:
+            if event:
+                try:
+                    event.delete()
+                except Exception:
+                    pass
+
+
 class PrepareCalendar(Check):
     """
     This "check" doesn't check anything, but ensures the calendar has some known events
     """
 
     features_to_be_checked = set()
-    depends_on = {CheckMakeDeleteCalendar}
+    depends_on = {CheckMakeDeleteCalendar, CheckSaveLoadUrl}
     features_to_be_checked = {
         "save-load.event.recurrences",
         "save-load.event.recurrences.count",
