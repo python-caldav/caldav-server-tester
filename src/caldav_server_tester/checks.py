@@ -927,6 +927,8 @@ class CheckCaseSensitiveSearch(Check):
         ## We search for "Simple" (uppercase S) vs "simple" (lowercase s)
         ## to test case sensitivity.
 
+        text_search_filters = True
+
         ## Case-sensitive search (i;octet collation):
         ## Searching for "Simple" (uppercase S) should NOT match
         ## "simple event ..." (lowercase s).
@@ -945,12 +947,26 @@ class CheckCaseSensitiveSearch(Check):
                 "search.text.case-sensitive",
                 len(results_sensitive) == 0 and len(results_sensitive_match) >= 1
             )
+
+            ## If more than one result is returned for "Simple" (only one event
+            ## has "simple" in the summary), the server is not properly filtering
+            ## text searches (e.g., robur ignores text filters and returns all
+            ## events).  In that case, case-insensitive tests are meaningless.
+            if len(results_sensitive) > 1:
+                text_search_filters = False
         except (ReportError, DAVError):
             self.set_feature("search.text.case-sensitive", "ungraceful")
+            text_search_filters = False
 
         ## Case-insensitive search (i;ascii-casemap collation):
         ## Searching for "SIMPLE" should match "simple event ..."
         ## when case_sensitive=False.
+        ## Skip if text search doesn't filter at all (no point testing
+        ## case sensitivity when the server ignores text filters).
+        if not text_search_filters:
+            self.set_feature("search.text.case-insensitive", False)
+            return
+
         try:
             searcher3 = CalDAVSearcher(event=True)
             searcher3.add_property_filter("SUMMARY", "SIMPLE", case_sensitive=False)
