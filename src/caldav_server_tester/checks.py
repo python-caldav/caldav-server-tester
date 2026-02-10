@@ -11,6 +11,7 @@ from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import NotFoundError, AuthorizationError, ReportError, DAVError
 from caldav.calendarobjectresource import Event, Todo, Journal
 from caldav.collection import Principal
+from caldav.davobject import DAVObject
 from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
@@ -141,7 +142,9 @@ class CheckMakeDeleteCalendar(Check):
         assert cal
 
         try:
-            cal.delete()
+            ## Use DAVObject.delete directly to bypass Calendar.delete()
+            ## workarounds - we want to test the server's raw DELETE behavior
+            DAVObject.delete(cal)
             try:
                 cal = self.checker.principal.calendar(cal_id=cal_id)
                 events = cal.events()
@@ -179,7 +182,7 @@ class CheckMakeDeleteCalendar(Check):
         except DAVError as e:
             time.sleep(10)
             try:
-                cal.delete()
+                DAVObject.delete(cal)
                 self.set_feature(
                     "delete-calendar",
                     {
