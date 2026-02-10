@@ -416,25 +416,31 @@ class PrepareCalendar(Check):
                 )
                 journallist.journals()
             except:
-                journallist = self.checker.principal.make_calendar(
-                    cal_id=f"{cal_id}_journals",
-                    name=f"{name} - journals",
-                    supported_calendar_component_set=["VJOURNAL"],
-                )
-            self.checker.journallist = journallist
-            try:
-                simple_journal = add_if_not_existing(
-                    Journal,
-                    summary="simple journal entry",
-                    uid="csc_simple_journal1",
-                    dtstart=date(2000, 1, 11),
-                )
-                simple_journal.load()
-                self.set_feature("save-load.journal")
-                self.set_feature("save-load.journal.mixed-calendar", False)
-            except:
-                self.set_feature("save-load.journal", "ungraceful")
-                self.checker.cnt -= 1
+                try:
+                    journallist = self.checker.principal.make_calendar(
+                        cal_id=f"{cal_id}_journals",
+                        name=f"{name} - journals",
+                        supported_calendar_component_set=["VJOURNAL"],
+                    )
+                except:
+                    self.set_feature("save-load.journal", False)
+                    self.checker.cnt -= 1
+                    journallist = None
+            if journallist is not None:
+                self.checker.journallist = journallist
+                try:
+                    simple_journal = add_if_not_existing(
+                        Journal,
+                        summary="simple journal entry",
+                        uid="csc_simple_journal1",
+                        dtstart=date(2000, 1, 11),
+                    )
+                    simple_journal.load()
+                    self.set_feature("save-load.journal")
+                    self.set_feature("save-load.journal.mixed-calendar", False)
+                except:
+                    self.set_feature("save-load.journal", "ungraceful")
+                    self.checker.cnt -= 1
 
         simple_event = add_if_not_existing(
             Event,
