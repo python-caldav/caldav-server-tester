@@ -290,10 +290,11 @@ class PrepareCalendar(Check):
 
         ## Check if GET requests to calendar object URLs work
         url_check_event = None
+        url_check_uid = "csc_url_check_" + str(uuid.uuid4())[:8]
         try:
             url_check_event = calendar.save_event(
                 summary="url-check event",
-                uid="csc_url_check",
+                uid=url_check_uid,
                 dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
                 dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
             )
@@ -304,6 +305,9 @@ class PrepareCalendar(Check):
                 self.set_feature("save-load.get-by-url")
         except NotFoundError:
             self.set_feature("save-load.get-by-url", False)
+        except Exception:
+            ## UID conflict or other server error - can't determine get-by-url support
+            self.set_feature("save-load.get-by-url", None)
         finally:
             if url_check_event:
                 try:
