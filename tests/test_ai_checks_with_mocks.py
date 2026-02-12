@@ -583,7 +583,7 @@ class TestCheckSearch:
         check.run_check()
 
         # Should set category search feature
-        assert checker.features_checked.is_supported("search.category")
+        assert checker.features_checked.is_supported("search.text.category")
 
     def test_search_category_ungraceful(self) -> None:
         """Category search raising ReportError sets feature to 'ungraceful'"""
@@ -605,7 +605,7 @@ class TestCheckSearch:
         check.run_check()
 
         # Should set feature to ungraceful
-        result = checker.features_checked.is_supported("search.category", str)
+        result = checker.features_checked.is_supported("search.text.category", str)
         assert result == "ungraceful"
 
     def test_search_combined_logical_and(self) -> None:

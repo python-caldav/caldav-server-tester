@@ -619,27 +619,99 @@ class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "search.time-range.event",
+        "search.time-range.event.old-dates",
         "search.text.category",
         "search.time-range.todo",
+        "search.time-range.todo.old-dates",
         "search.comp-type-optional",
         "search.combined-is-logical-and",
     }  ## TODO: we can do so much better than this
+
+    def _check_time_range_with_recent_data(self, cal, tasklist):
+        """Test time-range searches using temporary near-future objects.
+
+        Some servers (e.g. CCS) enforce min-date-time restrictions and
+        reject queries for old dates, but work fine with recent dates.
+        This check distinguishes "time-range unsupported" from
+        "time-range works but only for recent dates".
+        """
+        now = datetime.now(tz=utc)
+        tomorrow = now + timedelta(days=1)
+        day_after = now + timedelta(days=2)
+        recent_event = None
+        recent_task = None
+        ## Use unique UIDs to avoid conflicts on servers that enforce unique
+        ## UIDs across calendars (e.g. Nextcloud with unique_calendar_ids)
+        recent_uid_suffix = uuid.uuid4().hex[:8]
+
+        ## Test event time-range with a recent event
+        try:
+            recent_event = cal.save_object(
+                Event,
+                summary="recent time-range check event",
+                uid=f"csc_recent_timerange_event_{recent_uid_suffix}",
+                dtstart=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 13, 0, 0, tzinfo=utc),
+            )
+            events = cal.search(
+                start=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 11, 0, 0, tzinfo=utc),
+                end=datetime(day_after.year, day_after.month, day_after.day, 0, 0, 0, tzinfo=utc),
+                event=True,
+            )
+            self.set_feature("search.time-range.event", len(events) >= 1)
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.event", "ungraceful")
+        finally:
+            if recent_event:
+                try:
+                    recent_event.delete()
+                except Exception:
+                    pass
+
+        ## Test todo time-range with a recent task
+        try:
+            recent_task = tasklist.save_object(
+                Todo,
+                summary="recent time-range check task",
+                uid=f"csc_recent_timerange_task_{recent_uid_suffix}",
+                dtstart=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 12, 0, 0, tzinfo=utc),
+                due=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 13, 0, 0, tzinfo=utc),
+            )
+            tasks = tasklist.search(
+                start=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 11, 0, 0, tzinfo=utc),
+                end=datetime(day_after.year, day_after.month, day_after.day, 0, 0, 0, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+            )
+            self.set_feature("search.time-range.todo", len(tasks) >= 1)
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.time-range.todo", "ungraceful")
+        finally:
+            if recent_task:
+                try:
+                    recent_task.delete()
+                except Exception:
+                    pass
 
     def _run_check(self):
         cal = self.checker.calendar
         tasklist = self.checker.tasklist
 
-        ## Time-range searches for year 2000 - some servers (e.g. CCS)
-        ## reject old date ranges via min-date-time restrictions.
+        ## First, test time-range with recent dates (near-future).
+        ## This determines the base search.time-range.event/todo support.
+        self._check_time_range_with_recent_data(cal, tasklist)
+
+        ## Then test with old dates (year 2000) for the .old-dates sub-feature.
+        ## Some servers (e.g. CCS) enforce min-date-time and reject old dates.
         try:
             events = cal.search(
                 start=datetime(2000, 1, 1, tzinfo=utc),
                 end=datetime(2000, 1, 2, tzinfo=utc),
                 event=True,
             )
-            self.set_feature("search.time-range.event", len(events) == 1)
+            self.set_feature("search.time-range.event.old-dates", len(events) == 1)
         except (AuthorizationError, DAVError):
-            self.set_feature("search.time-range.event", "ungraceful")
+            self.set_feature("search.time-range.event.old-dates", "ungraceful")
 
         try:
             tasks = tasklist.search(
@@ -648,9 +720,9 @@ class CheckSearch(Check):
                 todo=True,
                 include_completed=True,
             )
-            self.set_feature("search.time-range.todo", len(tasks) == 1)
+            self.set_feature("search.time-range.todo.old-dates", len(tasks) == 1)
         except (AuthorizationError, DAVError):
-            self.set_feature("search.time-range.todo", "ungraceful")
+            self.set_feature("search.time-range.todo.old-dates", "ungraceful")
 
         ## search.text.category
         try:
@@ -658,17 +730,21 @@ class CheckSearch(Check):
             self.set_feature("search.text.category", len(events) == 1)
         except (ReportError, AuthorizationError, DAVError):
             self.set_feature("search.text.category", "ungraceful")
-        ## search.combined
-        if self.feature_checked("search.text.category"):
+        ## search.combined - uses year-2000 dates, so requires old-dates support
+        if self.feature_checked("search.text.category") and self.feature_checked("search.time-range.event.old-dates"):
             try:
                 events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0))
                 events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0))
                 self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
             except (AuthorizationError, DAVError):
                 self.set_feature("search.combined-is-logical-and", "ungraceful")
+        elif self.feature_checked("search.text.category"):
+            ## Can't test combined search without old-dates support
+            ## (test data is in year 2000)
+            self.set_feature("search.combined-is-logical-and", None)
 
         try:
-            if self.feature_checked("search.time-range.todo"):
+            if self.feature_checked("search.time-range.todo.old-dates"):
                 objects = cal.search(
                     start=datetime(2000, 1, 1, tzinfo=utc),
                     end=datetime(2001, 1, 1, tzinfo=utc),
