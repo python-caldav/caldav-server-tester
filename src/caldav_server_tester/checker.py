@@ -70,6 +70,7 @@ class ServerQuirkChecker:
                     "csc_monthly_recurring_event",
                     "csc_monthly_recurring_task",
                     "csc_monthly_recurring_with_exception",
+                    "csc_recurring_count_task",
                     "csc_url_check"):
                 try:
                     self.calendar.object_by_uid(uid).delete()
