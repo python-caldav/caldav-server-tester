@@ -663,6 +663,7 @@ class CheckSearch(Check):
                 start=datetime(tomorrow.year, tomorrow.month, tomorrow.day, 11, 0, 0, tzinfo=utc),
                 end=datetime(day_after.year, day_after.month, day_after.day, 0, 0, 0, tzinfo=utc),
                 event=True,
+                post_filter=False,
             )
             self.set_feature("search.time-range.event", len(events) >= 1)
         except (AuthorizationError, DAVError):
@@ -688,6 +689,7 @@ class CheckSearch(Check):
                 end=datetime(day_after.year, day_after.month, day_after.day, 0, 0, 0, tzinfo=utc),
                 todo=True,
                 include_completed=True,
+                post_filter=False,
             )
             self.set_feature("search.time-range.todo", len(tasks) >= 1)
         except (AuthorizationError, DAVError):
@@ -714,6 +716,7 @@ class CheckSearch(Check):
                 start=datetime(2000, 1, 1, tzinfo=utc),
                 end=datetime(2000, 1, 2, tzinfo=utc),
                 event=True,
+                post_filter=False,
             )
             self.set_feature("search.time-range.event.old-dates", len(events) == 1)
         except (AuthorizationError, DAVError):
@@ -725,6 +728,7 @@ class CheckSearch(Check):
                 end=datetime(2000, 1, 10, tzinfo=utc),
                 todo=True,
                 include_completed=True,
+                post_filter=False,
             )
             self.set_feature("search.time-range.todo.old-dates", len(tasks) == 1)
         except (AuthorizationError, DAVError):
@@ -732,15 +736,15 @@ class CheckSearch(Check):
 
         ## search.text.category
         try:
-            events = cal.search(category="hands", event=True)
+            events = cal.search(category="hands", event=True, post_filter=False)
             self.set_feature("search.text.category", len(events) == 1)
         except (ReportError, AuthorizationError, DAVError):
             self.set_feature("search.text.category", "ungraceful")
         ## search.combined - uses year-2000 dates, so requires old-dates support
         if self.feature_checked("search.text.category") and self.feature_checked("search.time-range.event.old-dates"):
             try:
-                events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0))
-                events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0))
+                events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0), post_filter=False)
+                events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0), post_filter=False)
                 self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
             except (AuthorizationError, DAVError):
                 self.set_feature("search.combined-is-logical-and", "ungraceful")
@@ -754,9 +758,10 @@ class CheckSearch(Check):
                 objects = cal.search(
                     start=datetime(2000, 1, 1, tzinfo=utc),
                     end=datetime(2001, 1, 1, tzinfo=utc),
+                    post_filter=False,
                 )
             else:
-                objects = _filter_2000(cal.search())
+                objects = _filter_2000(cal.search(post_filter=False))
             if len(objects) == 0:
                 self.set_feature(
                     "search.comp-type-optional",
@@ -780,6 +785,7 @@ class CheckSearch(Check):
                     tasklist.search(
                         start=datetime(2000, 1, 1, tzinfo=utc),
                         end=datetime(2001, 1, 1, tzinfo=utc),
+                        post_filter=False,
                     )
                 )
                 == self.checker.cnt
@@ -825,7 +831,7 @@ class CheckIsNotDefined(Check):
         ## other events don't.  no_category=True should exclude it.
         category_works = None
         try:
-            events_no_cat = cal.search(event=True, no_category=True)
+            events_no_cat = cal.search(event=True, no_category=True, post_filter=False)
             uids = set()
             for e in events_no_cat:
                 try:
@@ -863,7 +869,7 @@ CLASS:CONFIDENTIAL
 END:VEVENT
 END:VCALENDAR""",
             )
-            events_no_class = cal.search(event=True, no_class=True)
+            events_no_class = cal.search(event=True, no_class=True, post_filter=False)
             class_uids = set()
             for e in events_no_class:
                 try:
@@ -937,6 +943,7 @@ class CheckAlarmSearch(Check):
                 event=True,
                 alarm_start=datetime(2000, 1, 10, 7, 40, tzinfo=utc),
                 alarm_end=datetime(2000, 1, 10, 7, 55, tzinfo=utc),
+                post_filter=False,
             )
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.alarm", "ungraceful")
@@ -952,6 +959,7 @@ class CheckAlarmSearch(Check):
                 event=True,
                 alarm_start=datetime(2000, 1, 10, 8, 0, tzinfo=utc),
                 alarm_end=datetime(2000, 1, 10, 8, 15, tzinfo=utc),
+                post_filter=False,
             )
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.alarm", "ungraceful")
@@ -995,7 +1003,7 @@ class CheckRecurrenceSearch(Check):
                 self.set_feature(feat, False)
             return
 
-        if self.checker.features_checked.is_supported("search.time-range.todo"):
+        if self.checker.features_checked.is_supported("search.time-range.todo.old-dates"):
             todos = tl.search(
                 start=datetime(2000, 1, 12, tzinfo=utc),
                 end=datetime(2000, 1, 13, tzinfo=utc),
