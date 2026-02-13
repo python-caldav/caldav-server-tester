@@ -291,9 +291,13 @@ class PrepareCalendar(Check):
         self.checker.tasklist = calendar
         self.checker.journallist = calendar
 
-        ## Check if GET requests to calendar object URLs work
+        ## Check if GET requests to calendar object URLs work.
+        ## We must test the URL the server returns (via PROPFIND/REPORT),
+        ## not the client-constructed PUT URL - some servers (e.g. Zimbra)
+        ## accept PUTs to a client-constructed URL but return different
+        ## URLs in PROPFIND responses that don't work with GET.
         url_check_event = None
-        url_check_uid = "csc_url_check_" + str(uuid.uuid4())[:8]
+        url_check_uid = "csc_url_check"
         try:
             url_check_event = calendar.save_event(
                 summary="url-check event",
@@ -301,7 +305,9 @@ class PrepareCalendar(Check):
                 dtstart=datetime(2000, 1, 15, 12, 0, 0, tzinfo=utc),
                 dtend=datetime(2000, 1, 15, 13, 0, 0, tzinfo=utc),
             )
-            r = self.client.request(str(url_check_event.url))
+            ## Re-fetch the event from the server to get the server-reported URL
+            server_event = calendar.object_by_uid(url_check_uid)
+            r = self.client.request(str(server_event.url))
             if r.status == 404:
                 self.set_feature("save-load.get-by-url", False)
             else:
@@ -1162,6 +1168,47 @@ class CheckCaseSensitiveSearch(Check):
             )
         except (ReportError, DAVError):
             self.set_feature("search.text.case-insensitive", "ungraceful")
+
+
+class CheckSubstringSearch(Check):
+    """
+    Checks if the server supports substring text search (text-match with
+    match-type="contains").
+
+    Some servers (e.g. Zimbra) accept the REPORT but only do exact match,
+    ignoring the contains match-type.
+    """
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {
+        "search.text.substring",
+    }
+
+    def _run_check(self):
+        cal = self.checker.calendar
+
+        try:
+            ## First, verify text search works at all by searching for
+            ## the full summary (should match regardless of substring support)
+            searcher_exact = CalDAVSearcher(event=True)
+            searcher_exact.add_property_filter(
+                "SUMMARY", "simple event with a start time and an end time"
+            )
+            results_exact = searcher_exact.search(cal, post_filter=False)
+
+            if len(results_exact) != 1:
+                ## Text search doesn't filter properly, can't determine
+                ## substring support
+                self.set_feature("search.text.substring", None)
+                return
+
+            ## Now search for a substring of the same summary
+            searcher_sub = CalDAVSearcher(event=True)
+            searcher_sub.add_property_filter("SUMMARY", "simple event")
+            results_sub = searcher_sub.search(cal, post_filter=False)
+
+            self.set_feature("search.text.substring", len(results_sub) == 1)
+        except (ReportError, DAVError):
+            self.set_feature("search.text.substring", "ungraceful")
 
 
 class CheckPrincipalSearch(Check):
