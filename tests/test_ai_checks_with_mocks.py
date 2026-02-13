@@ -24,6 +24,7 @@ from caldav.lib.error import NotFoundError, AuthorizationError, ReportError
 from caldav_server_tester.checker import ServerQuirkChecker
 from caldav_server_tester.checks import (
     CheckGetCurrentUserPrincipal,
+    CheckIsNotDefined,
     CheckMakeDeleteCalendar,
     PrepareCalendar,
     CheckSearch,
@@ -647,3 +648,103 @@ class TestCheckSearch:
 
         # Should detect logical AND
         assert checker.features_checked.is_supported("search.combined-is-logical-and")
+
+
+class TestCheckIsNotDefined:
+    """Test CheckIsNotDefined with mocked server responses"""
+
+    def create_checker_with_prepared_calendar(self) -> tuple[ServerQuirkChecker, Mock]:
+        """Helper to create checker with prepared calendar"""
+        client = Mock()
+        client.features = FeatureSet()
+        checker = ServerQuirkChecker(client, debug_mode=None)
+
+        mock_calendar = Mock()
+        checker.calendar = mock_calendar
+
+        # Mark dependencies as run
+        checker._checks_run.add(CheckGetCurrentUserPrincipal)
+        checker._checks_run.add(CheckMakeDeleteCalendar)
+        checker._checks_run.add(PrepareCalendar)
+
+        return checker, mock_calendar
+
+    def _make_event_mock(self, uid, has_categories=False, has_class=False):
+        """Create a mock event with optional CATEGORIES and CLASS"""
+        event = Mock()
+        component = {}
+        component["uid"] = uid
+        if has_categories:
+            component["categories"] = "test"
+        if has_class:
+            component["class"] = "CONFIDENTIAL"
+        event.component = Mock()
+        event.component.get = lambda key, default="": component.get(key, default)
+        return event
+
+    def test_is_not_defined_full_support(self) -> None:
+        """Both no_category and no_class work correctly"""
+        checker, calendar = self.create_checker_with_prepared_calendar()
+
+        def search_side_effect(**kwargs):
+            if kwargs.get("no_category"):
+                # Return events WITHOUT categories (exclude csc_event_with_categories)
+                return [
+                    self._make_event_mock("csc_simple_event1"),
+                    self._make_event_mock("csc_simple_event2"),
+                ]
+            if kwargs.get("no_class"):
+                # Return events WITHOUT class (exclude the temp event)
+                return [
+                    self._make_event_mock("csc_simple_event1"),
+                    self._make_event_mock("csc_simple_event2"),
+                ]
+            return [Mock()]
+
+        calendar.search.side_effect = search_side_effect
+        calendar.save_object.return_value = Mock()
+
+        check = CheckIsNotDefined(checker)
+        check.run_check()
+
+        assert checker.features_checked.is_supported("search.is-not-defined")
+
+    def test_is_not_defined_unsupported(self) -> None:
+        """Server ignores is-not-defined filter"""
+        checker, calendar = self.create_checker_with_prepared_calendar()
+
+        def search_side_effect(**kwargs):
+            if kwargs.get("no_category"):
+                # Returns the event WITH categories too (filter ignored)
+                return [
+                    self._make_event_mock("csc_simple_event1"),
+                    self._make_event_mock("csc_event_with_categories", has_categories=True),
+                ]
+            if kwargs.get("no_class"):
+                # Returns all events including the temp CLASS event
+                return [
+                    self._make_event_mock("csc_simple_event1"),
+                ]
+            return [Mock()]
+
+        calendar.search.side_effect = search_side_effect
+        # save_object for temp CLASS event - but search won't exclude it
+        temp_event = Mock()
+        calendar.save_object.return_value = temp_event
+
+        check = CheckIsNotDefined(checker)
+        check.run_check()
+
+        assert not checker.features_checked.is_supported("search.is-not-defined")
+
+    def test_is_not_defined_ungraceful(self) -> None:
+        """Server throws error on is-not-defined search"""
+        checker, calendar = self.create_checker_with_prepared_calendar()
+
+        calendar.search.side_effect = ReportError("is-not-defined not supported")
+
+        check = CheckIsNotDefined(checker)
+        check.run_check()
+
+        result = checker.features_checked.is_supported("search.is-not-defined", str)
+        assert result == "ungraceful"

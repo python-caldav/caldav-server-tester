@@ -800,6 +800,114 @@ class CheckSearch(Check):
             self.set_feature("search.comp-type-optional", {"support": "ungraceful"})
 
 
+class CheckIsNotDefined(Check):
+    """
+    Checks if the server supports is-not-defined searches (RFC4791 section 9.7.4).
+
+    Tests whether searching for objects where a property is not defined works.
+    Some servers support this for some properties but not others (e.g. DAViCal
+    supports it for CLASS but not for CATEGORIES).
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"search.is-not-defined"}
+
+    def _run_check(self):
+        cal = self.checker.calendar
+
+        ## Test no_category: csc_event_with_categories has CATEGORIES set,
+        ## other events don't.  no_category=True should exclude it.
+        category_works = None
+        try:
+            events_no_cat = cal.search(event=True, no_category=True)
+            uids = set()
+            for e in events_no_cat:
+                try:
+                    uids.add(str(e.component.get("uid", "")))
+                except Exception:
+                    pass
+            has_cat_event = "csc_event_with_categories" in uids
+            if not has_cat_event and len(events_no_cat) >= 1:
+                category_works = True
+            else:
+                category_works = False
+        except (ReportError, AuthorizationError, DAVError):
+            category_works = "ungraceful"
+
+        ## Test no_class: create a temporary event WITH CLASS set,
+        ## then search for events where CLASS is not defined.
+        ## The temporary event should be excluded, others included.
+        class_works = None
+        temp_event = None
+        uid_suffix = uuid.uuid4().hex[:8]
+        temp_uid = f"csc_isnotdefined_class_{uid_suffix}"
+        try:
+            temp_event = cal.save_object(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//CaldavServerTester//EN
+BEGIN:VEVENT
+UID:{temp_uid}
+DTSTAMP:20000115T120000Z
+DTSTART:20000114T120000Z
+DTEND:20000114T130000Z
+SUMMARY:event with class for is-not-defined check
+CLASS:CONFIDENTIAL
+END:VEVENT
+END:VCALENDAR""",
+            )
+            events_no_class = cal.search(event=True, no_class=True)
+            class_uids = set()
+            for e in events_no_class:
+                try:
+                    class_uids.add(str(e.component.get("uid", "")))
+                except Exception:
+                    pass
+            has_class_event = temp_uid in class_uids
+            if not has_class_event and len(events_no_class) >= 1:
+                class_works = True
+            else:
+                class_works = False
+        except (ReportError, AuthorizationError, DAVError):
+            class_works = "ungraceful"
+        except Exception:
+            ## save_object might fail on some servers
+            class_works = None
+        finally:
+            if temp_event:
+                try:
+                    temp_event.delete()
+                except Exception:
+                    pass
+
+        ## Determine overall support
+        if category_works == "ungraceful" or class_works == "ungraceful":
+            self.set_feature("search.is-not-defined", "ungraceful")
+        elif category_works is True and class_works is True:
+            self.set_feature("search.is-not-defined")
+        elif category_works is True or class_works is True:
+            working = []
+            not_working = []
+            if category_works is True:
+                working.append("CATEGORIES")
+            else:
+                not_working.append("CATEGORIES")
+            if class_works is True:
+                working.append("CLASS")
+            else:
+                not_working.append("CLASS")
+            self.set_feature(
+                "search.is-not-defined",
+                {
+                    "support": "fragile",
+                    "behaviour": f"works for {', '.join(working)} but not for {', '.join(not_working)}",
+                },
+            )
+        else:
+            self.set_feature("search.is-not-defined", False)
+
+
 class CheckAlarmSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {"search.time-range.alarm"}
