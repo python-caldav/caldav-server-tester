@@ -708,9 +708,36 @@ class TestCheckIsNotDefined:
         check.run_check()
 
         assert checker.features_checked.is_supported("search.is-not-defined")
+        assert checker.features_checked.is_supported("search.is-not-defined.category")
+
+    def test_is_not_defined_category_unsupported(self) -> None:
+        """Server supports is-not-defined for CLASS but not for CATEGORIES (returns empty results)"""
+        checker, calendar = self.create_checker_with_prepared_calendar()
+
+        def search_side_effect(**kwargs):
+            if kwargs.get("no_category"):
+                # Server returns nothing for category is-not-defined (broken for CATEGORIES)
+                return []
+            if kwargs.get("no_class"):
+                # Works correctly: excludes the temp CLASS event
+                return [
+                    self._make_event_mock("csc_simple_event1"),
+                    self._make_event_mock("csc_simple_event2"),
+                ]
+            return [Mock()]
+
+        calendar.search.side_effect = search_side_effect
+        calendar.save_object.return_value = Mock()
+
+        check = CheckIsNotDefined(checker)
+        check.run_check()
+
+        assert not checker.features_checked.is_supported("search.is-not-defined")
+        assert not checker.features_checked.is_supported("search.is-not-defined.category")
+        assert checker.features_checked.is_supported("search.is-not-defined", str) == "fragile"
 
     def test_is_not_defined_unsupported(self) -> None:
-        """Server ignores is-not-defined filter"""
+        """Server ignores is-not-defined filter for both CATEGORIES and CLASS"""
         checker, calendar = self.create_checker_with_prepared_calendar()
 
         def search_side_effect(**kwargs):
@@ -736,6 +763,7 @@ class TestCheckIsNotDefined:
         check.run_check()
 
         assert not checker.features_checked.is_supported("search.is-not-defined")
+        assert not checker.features_checked.is_supported("search.is-not-defined.category")
 
     def test_is_not_defined_ungraceful(self) -> None:
         """Server throws error on is-not-defined search"""
@@ -748,3 +776,4 @@ class TestCheckIsNotDefined:
 
         result = checker.features_checked.is_supported("search.is-not-defined", str)
         assert result == "ungraceful"
+        assert checker.features_checked.is_supported("search.is-not-defined.category", str) == "ungraceful"

@@ -822,7 +822,7 @@ class CheckIsNotDefined(Check):
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"search.is-not-defined"}
+    features_to_be_checked = {"search.is-not-defined", "search.is-not-defined.category"}
 
     def _run_check(self):
         cal = self.checker.calendar
@@ -845,6 +845,14 @@ class CheckIsNotDefined(Check):
                 category_works = False
         except (ReportError, AuthorizationError, DAVError):
             category_works = "ungraceful"
+
+        ## Set the category-specific sub-feature
+        if category_works == "ungraceful":
+            self.set_feature("search.is-not-defined.category", "ungraceful")
+        elif category_works is True:
+            self.set_feature("search.is-not-defined.category")
+        else:
+            self.set_feature("search.is-not-defined.category", False)
 
         ## Test no_class: create a temporary event WITH CLASS set,
         ## then search for events where CLASS is not defined.
