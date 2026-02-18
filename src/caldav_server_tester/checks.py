@@ -822,7 +822,11 @@ class CheckIsNotDefined(Check):
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"search.is-not-defined", "search.is-not-defined.category"}
+    features_to_be_checked = {
+        "search.is-not-defined",
+        "search.is-not-defined.category",
+        "search.is-not-defined.dtend",
+    }
 
     def _run_check(self):
         cal = self.checker.calendar
@@ -901,31 +905,100 @@ END:VCALENDAR""",
                 except Exception:
                     pass
 
-        ## Determine overall support
-        if category_works == "ungraceful" or class_works == "ungraceful":
-            self.set_feature("search.is-not-defined", "ungraceful")
-        elif category_works is True and class_works is True:
-            self.set_feature("search.is-not-defined")
-        elif category_works is True or class_works is True:
-            working = []
-            not_working = []
-            if category_works is True:
-                working.append("CATEGORIES")
-            else:
-                not_working.append("CATEGORIES")
-            if class_works is True:
-                working.append("CLASS")
-            else:
-                not_working.append("CLASS")
-            self.set_feature(
-                "search.is-not-defined",
-                {
-                    "support": "fragile",
-                    "behaviour": f"works for {', '.join(working)} but not for {', '.join(not_working)}",
-                },
+        ## Test no_dtend: create one event WITH DTEND and one WITHOUT (using DURATION).
+        ## no_dtend=True should exclude the event with DTEND and include the one without.
+        dtend_works = None
+        temp_with_dtend = None
+        temp_without_dtend = None
+        uid_suffix2 = uuid.uuid4().hex[:8]
+        temp_uid_with_dtend = f"csc_isnotdefined_dtend_with_{uid_suffix2}"
+        temp_uid_without_dtend = f"csc_isnotdefined_dtend_without_{uid_suffix2}"
+        try:
+            temp_with_dtend = cal.save_object(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//CaldavServerTester//EN
+BEGIN:VEVENT
+UID:{temp_uid_with_dtend}
+DTSTAMP:20000116T120000Z
+DTSTART:20000116T120000Z
+DTEND:20000116T130000Z
+SUMMARY:event with dtend for is-not-defined check
+END:VEVENT
+END:VCALENDAR""",
             )
+            temp_without_dtend = cal.save_object(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//CaldavServerTester//EN
+BEGIN:VEVENT
+UID:{temp_uid_without_dtend}
+DTSTAMP:20000116T120000Z
+DTSTART:20000116T120000Z
+DURATION:PT1H
+SUMMARY:event without dtend for is-not-defined check
+END:VEVENT
+END:VCALENDAR""",
+            )
+            events_no_dtend = cal.search(event=True, no_dtend=True, post_filter=False)
+            dtend_uids = set()
+            for e in events_no_dtend:
+                try:
+                    dtend_uids.add(str(e.component.get("uid", "")))
+                except Exception:
+                    pass
+            has_dtend_event = temp_uid_with_dtend in dtend_uids
+            has_no_dtend_event = temp_uid_without_dtend in dtend_uids
+            if not has_dtend_event and has_no_dtend_event:
+                dtend_works = True
+            else:
+                dtend_works = False
+        except (ReportError, AuthorizationError, DAVError):
+            dtend_works = "ungraceful"
+        except Exception:
+            ## save_object might fail on some servers
+            dtend_works = None
+        finally:
+            for ev in (temp_with_dtend, temp_without_dtend):
+                if ev:
+                    try:
+                        ev.delete()
+                    except Exception:
+                        pass
+
+        ## Set the dtend-specific sub-feature
+        if dtend_works == "ungraceful":
+            self.set_feature("search.is-not-defined.dtend", "ungraceful")
+        elif dtend_works is True:
+            self.set_feature("search.is-not-defined.dtend")
         else:
-            self.set_feature("search.is-not-defined", False)
+            self.set_feature("search.is-not-defined.dtend", False)
+
+        ## Determine overall support based on all tested properties
+        results = {
+            "CATEGORIES": category_works,
+            "CLASS": class_works,
+            "DTEND": dtend_works,
+        }
+        if any(v == "ungraceful" for v in results.values()):
+            self.set_feature("search.is-not-defined", "ungraceful")
+        else:
+            working = [prop for prop, v in results.items() if v is True]
+            not_working = [prop for prop, v in results.items() if v is False]
+            if working and not not_working:
+                self.set_feature("search.is-not-defined")
+            elif working:
+                self.set_feature(
+                    "search.is-not-defined",
+                    {
+                        "support": "fragile",
+                        "behaviour": f"works for {', '.join(working)} but not for {', '.join(not_working)}",
+                    },
+                )
+            else:
+                self.set_feature("search.is-not-defined", False)
 
 
 class CheckAlarmSearch(Check):

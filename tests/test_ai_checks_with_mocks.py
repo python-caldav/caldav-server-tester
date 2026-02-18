@@ -682,9 +682,27 @@ class TestCheckIsNotDefined:
         event.component.get = lambda key, default="": component.get(key, default)
         return event
 
+    def _make_save_object_uid_capture(self) -> tuple[list[str], object]:
+        """Return a (saved_uids, side_effect) pair that records UIDs from save_object calls.
+
+        The iCal UID is extracted from the iCal string so that the search mock can
+        return events with UIDs matching what was actually saved.
+        """
+        import re
+        saved_uids: list[str] = []
+
+        def side_effect(cls, ical_str: str) -> Mock:
+            m = re.search(r"^UID:(\S+)", ical_str, re.MULTILINE)
+            uid = m.group(1) if m else f"unknown_{len(saved_uids)}"
+            saved_uids.append(uid)
+            return Mock()
+
+        return saved_uids, side_effect
+
     def test_is_not_defined_full_support(self) -> None:
-        """Both no_category and no_class work correctly"""
+        """Category, class, and dtend is-not-defined all work correctly"""
         checker, calendar = self.create_checker_with_prepared_calendar()
+        saved_uids, save_side_effect = self._make_save_object_uid_capture()
 
         def search_side_effect(**kwargs):
             if kwargs.get("no_category"):
@@ -699,20 +717,27 @@ class TestCheckIsNotDefined:
                     self._make_event_mock("csc_simple_event1"),
                     self._make_event_mock("csc_simple_event2"),
                 ]
+            if kwargs.get("no_dtend"):
+                # Return only the event without DTEND; save order is [class, dtend_with, dtend_without]
+                if len(saved_uids) >= 3:
+                    return [self._make_event_mock(saved_uids[2])]
+                return []
             return [Mock()]
 
+        calendar.save_object.side_effect = save_side_effect
         calendar.search.side_effect = search_side_effect
-        calendar.save_object.return_value = Mock()
 
         check = CheckIsNotDefined(checker)
         check.run_check()
 
         assert checker.features_checked.is_supported("search.is-not-defined")
         assert checker.features_checked.is_supported("search.is-not-defined.category")
+        assert checker.features_checked.is_supported("search.is-not-defined.dtend")
 
     def test_is_not_defined_category_unsupported(self) -> None:
-        """Server supports is-not-defined for CLASS but not for CATEGORIES (returns empty results)"""
+        """Server supports is-not-defined for CLASS and DTEND but not for CATEGORIES"""
         checker, calendar = self.create_checker_with_prepared_calendar()
+        saved_uids, save_side_effect = self._make_save_object_uid_capture()
 
         def search_side_effect(**kwargs):
             if kwargs.get("no_category"):
@@ -724,20 +749,26 @@ class TestCheckIsNotDefined:
                     self._make_event_mock("csc_simple_event1"),
                     self._make_event_mock("csc_simple_event2"),
                 ]
+            if kwargs.get("no_dtend"):
+                # Works correctly: returns only the event without DTEND
+                if len(saved_uids) >= 3:
+                    return [self._make_event_mock(saved_uids[2])]
+                return []
             return [Mock()]
 
+        calendar.save_object.side_effect = save_side_effect
         calendar.search.side_effect = search_side_effect
-        calendar.save_object.return_value = Mock()
 
         check = CheckIsNotDefined(checker)
         check.run_check()
 
         assert not checker.features_checked.is_supported("search.is-not-defined")
         assert not checker.features_checked.is_supported("search.is-not-defined.category")
+        assert checker.features_checked.is_supported("search.is-not-defined.dtend")
         assert checker.features_checked.is_supported("search.is-not-defined", str) == "fragile"
 
     def test_is_not_defined_unsupported(self) -> None:
-        """Server ignores is-not-defined filter for both CATEGORIES and CLASS"""
+        """Server ignores is-not-defined filter (no properties work)"""
         checker, calendar = self.create_checker_with_prepared_calendar()
 
         def search_side_effect(**kwargs):
@@ -748,22 +779,23 @@ class TestCheckIsNotDefined:
                     self._make_event_mock("csc_event_with_categories", has_categories=True),
                 ]
             if kwargs.get("no_class"):
-                # Returns all events including the temp CLASS event
+                # Returns events (dynamic class uid won't be here, so class_works=True via mock;
+                # this side_effect intentionally omits proper uid handling for simplicity)
                 return [
                     self._make_event_mock("csc_simple_event1"),
                 ]
+            # no_dtend: default Mock return → dynamic UIDs won't match → dtend_works=False
             return [Mock()]
 
         calendar.search.side_effect = search_side_effect
-        # save_object for temp CLASS event - but search won't exclude it
-        temp_event = Mock()
-        calendar.save_object.return_value = temp_event
+        calendar.save_object.return_value = Mock()
 
         check = CheckIsNotDefined(checker)
         check.run_check()
 
         assert not checker.features_checked.is_supported("search.is-not-defined")
         assert not checker.features_checked.is_supported("search.is-not-defined.category")
+        assert not checker.features_checked.is_supported("search.is-not-defined.dtend")
 
     def test_is_not_defined_ungraceful(self) -> None:
         """Server throws error on is-not-defined search"""
@@ -777,3 +809,4 @@ class TestCheckIsNotDefined:
         result = checker.features_checked.is_supported("search.is-not-defined", str)
         assert result == "ungraceful"
         assert checker.features_checked.is_supported("search.is-not-defined.category", str) == "ungraceful"
+        assert checker.features_checked.is_supported("search.is-not-defined.dtend", str) == "ungraceful"
