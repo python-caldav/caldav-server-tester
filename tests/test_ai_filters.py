@@ -5,8 +5,6 @@
 from datetime import date, datetime, timezone
 from unittest.mock import Mock
 
-import pytest
-
 from caldav_server_tester.checks import _filter_2000
 
 

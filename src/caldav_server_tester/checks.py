@@ -2,18 +2,14 @@ import logging
 import re
 import time
 import uuid
-from datetime import timezone
-from datetime import datetime
-from datetime import date
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import NotFoundError, AuthorizationError, ReportError, DAVError
-from caldav.calendarobjectresource import Event, Todo, Journal
+from caldav.calendarobjectresource import Event, Journal, Todo
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, ReportError
 from caldav.search import CalDAVSearcher
-from zoneinfo import ZoneInfo
 
 from .checks_base import Check
 
@@ -287,7 +283,7 @@ class PrepareCalendar(Check):
         except:
             assert self.checker.features_checked.is_supported("create-calendar") ## Otherwise we can't test
             calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
-                
+
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
         self.checker.journallist = calendar

@@ -15,19 +15,19 @@ If those tests will break in the future, then consider just deleting
 this file.
 """
 
-from datetime import date, datetime, timezone
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
-import pytest
+from unittest.mock import Mock
 
+import pytest
 from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import NotFoundError, AuthorizationError, ReportError
+from caldav.lib.error import NotFoundError, ReportError
+
 from caldav_server_tester.checker import ServerQuirkChecker
 from caldav_server_tester.checks import (
     CheckGetCurrentUserPrincipal,
     CheckIsNotDefined,
     CheckMakeDeleteCalendar,
-    PrepareCalendar,
     CheckSearch,
+    PrepareCalendar,
 )
 
 # Mark all tests in this file as slow since they run actual check logic
@@ -619,7 +619,7 @@ class TestCheckSearch:
             search_calls.append(kwargs)
 
             # Time-range only
-            if 'event' in kwargs and not 'category' in kwargs:
+            if 'event' in kwargs and 'category' not in kwargs:
                 return [Mock()]
 
             # Category + time range (wider range) = 1 result
