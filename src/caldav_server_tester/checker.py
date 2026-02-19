@@ -70,6 +70,8 @@ class ServerQuirkChecker:
             self.calendar.delete()
             if self.tasklist != self.calendar:
                 self.tasklist.delete()
+            if self.journallist != self.calendar:
+                self.journallist.delete()
         else:
             for uid in (
                     "csc_simple_task1",
@@ -78,19 +80,27 @@ class ServerQuirkChecker:
                     "csc_simple_event3",
                     "csc_simple_event4",
                     "csc_event_with_categories",
+                    "csc_event_with_class",
+                    "csc_event_with_duration",
                     "csc_simple_task2",
                     "csc_simple_task3",
+                    "csc_simple_journal1",
                     "csc_monthly_recurring_event",
                     "csc_monthly_recurring_task",
-                    "csc_monthly_recurring_with_exception"):
+                    "csc_monthly_recurring_with_exception",
+                    "csc_recurring_count_task",
+                    "csc_url_check"):
                 try:
                     self.calendar.object_by_uid(uid).delete()
                 except:
                     try:
                         self.tasklist.object_by_uid(uid).delete()
                     except:
-                        ## TODO: investigate
-                        pass
+                        try:
+                            self.journallist.object_by_uid(uid).delete()
+                        except:
+                            ## TODO: investigate
+                            pass
 
     def report(self, verbose=False, return_what=str):
         ret = {

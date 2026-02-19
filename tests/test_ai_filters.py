@@ -88,12 +88,10 @@ class TestFilter2000:
         assert result[0] == obj
 
     def test_filter_excludes_objects_without_dates(self) -> None:
-        """Objects without any date fields should cause TypeError (code has bug with date(1980))"""
+        """Objects without any date fields fall back to date(1980, 1, 1) and are excluded"""
         obj = self.create_mock_object()
-        # Note: This test documents a bug in the actual code - date(1980) is missing month/day
-        # The code should use date(1980, 1, 1) instead
-        with pytest.raises(TypeError, match="missing required argument"):
-            list(_filter_2000([obj]))
+        result = list(_filter_2000([obj]))
+        assert len(result) == 0
 
     def test_filter_handles_multiple_objects(self) -> None:
         """Filter should correctly handle multiple objects"""
