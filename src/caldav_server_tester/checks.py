@@ -813,7 +813,7 @@ class CheckIsNotDefined(Check):
     supports it for CLASS but not for CATEGORIES).
     """
 
-    depends_on = {PrepareCalendar}
+    depends_on = {CheckSearch}
     features_to_be_checked = {
         "search.is-not-defined",
         "search.is-not-defined.category",
@@ -919,7 +919,7 @@ class CheckIsNotDefined(Check):
 
 
 class CheckAlarmSearch(Check):
-    depends_on = {PrepareCalendar}
+    depends_on = {CheckSearch}
     features_to_be_checked = {"search.time-range.alarm"}
 
     def _run_check(self):
@@ -1109,7 +1109,7 @@ class CheckCaseSensitiveSearch(Check):
     RFC4791 section 9.7.5 specifies that i;ascii-casemap MUST be the default collation,
     and section 7.5 says servers are REQUIRED to support i;octet (case-sensitive).
     """
-    depends_on = {PrepareCalendar}
+    depends_on = {CheckSearch}
     features_to_be_checked = {
         "search.text.case-sensitive",
         "search.text.case-insensitive",
@@ -1184,7 +1184,7 @@ class CheckSubstringSearch(Check):
     Some servers (e.g. Zimbra) accept the REPORT but only do exact match,
     ignoring the contains match-type.
     """
-    depends_on = {PrepareCalendar}
+    depends_on = {CheckSearch}
     features_to_be_checked = {
         "search.text.substring",
     }
@@ -1427,7 +1427,6 @@ class CheckSyncToken(Check):
     3. Fragile sync tokens (returns extra content, race conditions)
     4. Sync breaks on delete (server fails after object deletion)
     """
-
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "sync-token",
