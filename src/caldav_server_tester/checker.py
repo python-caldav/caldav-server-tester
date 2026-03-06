@@ -31,7 +31,7 @@ class ServerQuirkChecker:
         if search_cache_config.get("behaviour") == "delay":
             delay = search_cache_config.get("delay", 1)
             ## Wrap Calendar.search with delay decorator
-            from caldav.objects import Calendar
+            from caldav.collection import Calendar
             if not hasattr(Calendar, '_original_search'):
                 Calendar._original_search = Calendar.search
                 def delayed_search(self, *args, **kwargs):
