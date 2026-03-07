@@ -893,6 +893,15 @@ class CheckSearch(Check):
                 dtstart=datetime(2000, 6, 15, 12, 0, 0, tzinfo=utc),
                 dtend=datetime(2000, 6, 15, 13, 0, 0, tzinfo=utc),
             )
+            ## Respect the search-cache delay (e.g. Bedework) before querying.
+            ## We use _request_report_build_resultlist directly (to bypass the
+            ## search.unlimited-time-range workaround in _search_impl), which also
+            ## bypasses the Calendar.search delay wrapper in checker.py.
+            search_cache = self.checker._client_obj.features.is_supported(
+                "search-cache", return_type=dict
+            )
+            if search_cache.get("behaviour") == "delay":
+                time.sleep(search_cache.get("delay", 1))
             ## Build VEVENT query without time range and call REPORT directly
             searcher = CalDAVSearcher(comp_class=Event)
             xml, comp_class = searcher.build_search_xml_query()
