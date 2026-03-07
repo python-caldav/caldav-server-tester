@@ -1,6 +1,6 @@
 [project]
 name = "caldav-server-tester"
-version = "0.0.0"
+dynamic = ["version"]
 license = "AGPL-3.0-or-later"
 license-files = ["agpl-3.0.md"]
 description = "CalDAV Server Checker - checking a CalDAV server for compatibility issues"
@@ -48,28 +48,23 @@ dev = [
     "deptry>=0.24.0; python_version >= '3.10'",
 ]
 
-[tool.poetry]
-packages = [{include = "caldav_server_tester", from = "src"}]
-
-[tool.poetry.dependencies]
-python = ">=3.9,<4"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=8.0.0"
-pytest-mock = ">=3.12.0"
-ruff = ">=0.1.0"
-pre-commit = ">=3.0.0"
-deptry = {version = ">=0.24.0", python = ">=3.10"}
-
-[tool.poetry-dynamic-versioning]
-enable = true
-vcs = "git"
-style = "semver"
-pattern = "^v(?P<base>\\d+\\.\\d+\\.\\d+)"
-
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
-build-backend = "poetry_dynamic_versioning.backend"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/caldav_server_tester"]
+
+[tool.hatch.envs.default]
+features = ["dev"]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args}"
+lint = "ruff check ."
+deptry = "deptry src {args}"
 
 [tool.ruff]
 target-version = "py39"

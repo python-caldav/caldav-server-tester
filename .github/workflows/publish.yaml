@@ -16,18 +16,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Fetch all history for poetry-dynamic-versioning
+        fetch-depth: 0  # Fetch all history for hatch-vcs versioning
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install poetry
-        poetry install
+    - name: Install hatch
+      run: pip install hatch
 
     - name: Run Ruff linter
       uses: astral-sh/ruff-action@v3
@@ -35,8 +32,7 @@ jobs:
         args: check .
 
     - name: Run tests
-      run: |
-        poetry run pytest
+      run: hatch run test
 
   publish:
     needs: test  # Only publish if tests pass
@@ -50,7 +46,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Fetch all history for poetry-dynamic-versioning
+        fetch-depth: 0  # Fetch all history for hatch-vcs versioning
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -58,9 +54,7 @@ jobs:
         python-version: '3.11'
 
     - name: Install build tools
-      run: |
-        python -m pip install --upgrade pip
-        pip install build
+      run: pip install hatch
 
     - name: Verify version from git tags
       run: |
@@ -68,9 +62,7 @@ jobs:
         echo "Git tag detected above ^"
 
     - name: Build package
-      run: |
-        # Build using PEP 517 with poetry-dynamic-versioning backend
-        python -m build --sdist --wheel
+      run: hatch build
 
     - name: Display built packages
       run: |

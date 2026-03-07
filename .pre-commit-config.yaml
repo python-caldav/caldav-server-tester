@@ -33,7 +33,7 @@ repos:
     # Run ruff check without fixes on push (to catch any issues)
     - id: ruff-check-push
       name: Ruff check (no fixes)
-      entry: poetry run ruff check
+      entry: ruff check
       language: system
       types: [python]
       pass_filenames: false
@@ -41,7 +41,7 @@ repos:
     # Run full test suite on push
     - id: pytest-push
       name: Run pytest
-      entry: poetry run pytest
+      entry: pytest
       language: system
       pass_filenames: false
       always_run: true
