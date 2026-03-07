@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from caldav.calendarobjectresource import Event, Journal, Todo
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
-from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, ReportError
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
 from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
@@ -308,6 +308,18 @@ class PrepareCalendar(Check):
             )
         except (AuthorizationError, DAVError):
             tasks_from_2000 = []
+        ## Some servers (e.g. OX) silently return empty for old-date time-range
+        ## queries.  Fall back to listing all objects and filtering by date so
+        ## existing year-2000 test objects are detected and not re-PUT.
+        if not events_from_2000 and not tasks_from_2000:
+            try:
+                events_from_2000 = calendar.events()
+            except (AuthorizationError, DAVError):
+                pass
+            try:
+                tasks_from_2000 = self.checker.tasklist.todos()
+            except (AuthorizationError, DAVError):
+                pass
         try:
             journals_from_2000 = calendar.journals()
         except (AuthorizationError, DAVError):
@@ -339,7 +351,16 @@ class PrepareCalendar(Check):
                 uid = re.search("UID:(.*)\n", largs[1]).group(1)
             if uid in object_by_uid:
                 return object_by_uid.pop(uid)
-            return cal.save_object(*largs, **kwargs)
+            try:
+                return cal.save_object(*largs, **kwargs)
+            except PutError:
+                ## 409 Conflict: object exists but is hidden from search
+                ## (e.g. OX's sliding window hides old objects from REPORT/PROPFIND).
+                ## Try to load the existing object by constructing its URL directly.
+                obj_class = largs[0]
+                existing = obj_class(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+                existing.load()
+                return existing
 
         try:
             task_with_dtstart = add_if_not_existing(
@@ -551,18 +572,22 @@ END:VCALENDAR""")
         count = rrule and rrule.get('COUNT')
         self.set_feature("save-load.event.recurrences.count", count==[3])
 
-        recurring_task = add_if_not_existing(
-            Todo,
-            summary="monthly recurring task",
-            uid="csc_monthly_recurring_task",
-            rrule={"FREQ": "MONTHLY"},
-            dtstart=datetime(2000, 1, 12, 12, 0, 0, tzinfo=utc),
-            due=datetime(2000, 1, 12, 13, 0, 0, tzinfo=utc),
-        )
-        recurring_task.load()
-        self.set_feature("save-load.todo.recurrences")
+        try:
+            recurring_task = add_if_not_existing(
+                Todo,
+                summary="monthly recurring task",
+                uid="csc_monthly_recurring_task",
+                rrule={"FREQ": "MONTHLY"},
+                dtstart=datetime(2000, 1, 12, 12, 0, 0, tzinfo=utc),
+                due=datetime(2000, 1, 12, 13, 0, 0, tzinfo=utc),
+            )
+            recurring_task.load()
+            self.set_feature("save-load.todo.recurrences")
+        except DAVError:
+            self.set_feature("save-load.todo.recurrences", "ungraceful")
 
-        task_with_rrule_and_count = add_if_not_existing(Todo, """BEGIN:VCALENDAR
+        try:
+            task_with_rrule_and_count = add_if_not_existing(Todo, """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VTODO
@@ -577,15 +602,18 @@ CATEGORIES:CHORE
 PRIORITY:3
 END:VTODO
 END:VCALENDAR""")
-        task_with_rrule_and_count.load()
-        component = task_with_rrule_and_count.component
-        rrule = component.get('RRULE', None)
-        count = rrule and rrule.get('COUNT')
-        self.set_feature("save-load.todo.recurrences.count", count==[3])
+            task_with_rrule_and_count.load()
+            component = task_with_rrule_and_count.component
+            rrule = component.get('RRULE', None)
+            count = rrule and rrule.get('COUNT')
+            self.set_feature("save-load.todo.recurrences.count", count==[3])
+        except DAVError:
+            self.set_feature("save-load.todo.recurrences.count", "ungraceful")
 
-        recurring_event_with_exception = add_if_not_existing(
-            Event,
-            """BEGIN:VCALENDAR
+        try:
+            recurring_event_with_exception = add_if_not_existing(
+                Event,
+                """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//tobixen//Caldav-Server-Tester//en_DK
 BEGIN:VEVENT
@@ -605,34 +633,36 @@ DTSTAMP:20240429T181103Z
 SUMMARY:February recurrence with different summary
 END:VEVENT
 END:VCALENDAR""",
-        )
+            )
 
-        ## Check whether the server stores exception VEVENTs as part of the same
-        ## calendar object resource as the master VEVENT, or incorrectly (either as
-        ## separate objects or already expanded into 3 VEVENTs instead of 2).
-        ## When stored incorrectly, client-side expansion gives wrong results.
-        try:
-            exception_uid = "csc_monthly_recurring_with_exception"
-            objs_with_exception_uid = [
-                obj
-                for obj in calendar.events()
-                if obj.icalendar_component.get("UID") == exception_uid
-            ]
-            if len(objs_with_exception_uid) != 1:
-                ## Multiple objects with the same UID: server split exception into separate object
-                self.set_feature("save-load.event.recurrences.exception", False)
-            else:
-                ## One object - check it has exactly 2 VEVENTs (master + exception)
-                vevents = [
-                    c
-                    for c in objs_with_exception_uid[0].icalendar_instance.subcomponents
-                    if c.name == "VEVENT"
+            ## Check whether the server stores exception VEVENTs as part of the same
+            ## calendar object resource as the master VEVENT, or incorrectly (either as
+            ## separate objects or already expanded into 3 VEVENTs instead of 2).
+            ## When stored incorrectly, client-side expansion gives wrong results.
+            try:
+                exception_uid = "csc_monthly_recurring_with_exception"
+                objs_with_exception_uid = [
+                    obj
+                    for obj in calendar.events()
+                    if obj.icalendar_component.get("UID") == exception_uid
                 ]
-                self.set_feature(
-                    "save-load.event.recurrences.exception",
-                    len(vevents) == 2,
-                )
-        except Exception:
+                if len(objs_with_exception_uid) != 1:
+                    ## Multiple objects with the same UID: server split exception into separate object
+                    self.set_feature("save-load.event.recurrences.exception", False)
+                else:
+                    ## One object - check it has exactly 2 VEVENTs (master + exception)
+                    vevents = [
+                        c
+                        for c in objs_with_exception_uid[0].icalendar_instance.subcomponents
+                        if c.name == "VEVENT"
+                    ]
+                    self.set_feature(
+                        "save-load.event.recurrences.exception",
+                        len(vevents) == 2,
+                    )
+            except Exception:
+                self.set_feature("save-load.event.recurrences.exception", "ungraceful")
+        except DAVError:
             self.set_feature("save-load.event.recurrences.exception", "ungraceful")
 
         ## Delete any stale objects from year 2000 that aren't part of
@@ -667,6 +697,7 @@ class CheckSearch(Check):
         "search.time-range.todo.old-dates",
         "search.comp-type-optional",
         "search.combined-is-logical-and",
+        "search.unlimited-time-range",
     }  ## TODO: we can do so much better than this
 
     def _check_time_range_with_recent_data(self, cal, tasklist):
@@ -846,6 +877,44 @@ class CheckSearch(Check):
                 )
         except:
             self.set_feature("search.comp-type-optional", {"support": "ungraceful"})
+
+        ## search.unlimited-time-range: does a REPORT without a time range return all objects
+        ## regardless of date?  Uses a year-2000 event to detect sliding-window servers
+        ## (e.g. OX) that hide old non-recurring events from REPORT.
+        ## Uses _request_report_build_resultlist directly to bypass the search.unlimited-time-range
+        ## workaround in search.py, so the actual server behaviour is observed.
+        temp_event = None
+        temp_uid = f"csc_no_time_range_{uuid.uuid4().hex[:8]}"
+        try:
+            temp_event = cal.save_object(
+                Event,
+                summary="no-time-range check event",
+                uid=temp_uid,
+                dtstart=datetime(2000, 6, 15, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(2000, 6, 15, 13, 0, 0, tzinfo=utc),
+            )
+            ## Build VEVENT query without time range and call REPORT directly
+            searcher = CalDAVSearcher(comp_class=Event)
+            xml, comp_class = searcher.build_search_xml_query()
+            _, objects = cal._request_report_build_resultlist(xml, comp_class)
+            found = any(o.id == temp_uid for o in objects)
+            if found:
+                self.set_feature("search.unlimited-time-range")
+            elif objects:
+                ## Server returned some events but missed the old-date event:
+                ## it uses a sliding time window (broken, not unsupported)
+                self.set_feature("search.unlimited-time-range", {"support": "broken"})
+            else:
+                ## Server returned nothing at all for a no-time-range search
+                self.set_feature("search.unlimited-time-range", "unsupported")
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.unlimited-time-range", "ungraceful")
+        finally:
+            if temp_event:
+                try:
+                    temp_event.delete()
+                except Exception:
+                    pass
 
 
 class CheckIsNotDefined(Check):
@@ -1390,8 +1459,13 @@ class CheckDuplicateUID(Check):
             pass
 
         try:
-            ## Get existing event from first calendar (created by PrepareCalendar)
-            event1 = cal1.event_by_uid(test_uid)
+            ## Get existing event from first calendar (created by PrepareCalendar).
+            ## Fall back to direct URL lookup if the server's REPORT/search can't
+            ## find old events (e.g. OX's sliding window hides year-2000 objects).
+            try:
+                event1 = cal1.event_by_uid(test_uid)
+            except NotFoundError:
+                event1 = Event(cal1.client, url=cal1.url.join(test_uid + ".ics"), parent=cal1)
             event1.load()
 
             ## Get the event data for reuse in cal2
