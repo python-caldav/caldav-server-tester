@@ -261,6 +261,7 @@ class PrepareCalendar(Check):
     features_to_be_checked = {
         "save-load.event.recurrences",
         "save-load.event.recurrences.count",
+        "save-load.event.recurrences.exception",
         "save-load.todo.recurrences",
         "save-load.todo.recurrences.count",
         "save-load.event",
@@ -281,6 +282,8 @@ class PrepareCalendar(Check):
                 calendar = self.checker.principal.calendar(name=name)
             else:
                 calendar = self.checker.principal.calendar(cal_id=cal_id)
+            ## At least one out of those two will raise NotFoundError if calendar doesn't exist
+            calendar.get_display_name()
             calendar.events()
         except:
             assert self.checker.features_checked.is_supported("create-calendar") ## Otherwise we can't test
@@ -519,6 +522,17 @@ class PrepareCalendar(Check):
         recurring_event.load()
         self.set_feature("save-load.event.recurrences")
 
+        ## All-day (VALUE=DATE) yearly recurring event, used to test
+        ## whether the server handles implicit recurrence for all-day events.
+        ## DTSTART is 2000-02-01; the second occurrence is 2001-02-01.
+        add_if_not_existing(
+            Event,
+            summary="yearly recurring all-day event",
+            uid="csc_yearly_recurring_allday_event",
+            rrule={"FREQ": "YEARLY"},
+            dtstart=date(2000, 2, 1),
+        )
+
         event_with_rrule_and_count = add_if_not_existing(Event, """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
@@ -592,6 +606,34 @@ SUMMARY:February recurrence with different summary
 END:VEVENT
 END:VCALENDAR""",
         )
+
+        ## Check whether the server stores exception VEVENTs as part of the same
+        ## calendar object resource as the master VEVENT, or incorrectly (either as
+        ## separate objects or already expanded into 3 VEVENTs instead of 2).
+        ## When stored incorrectly, client-side expansion gives wrong results.
+        try:
+            exception_uid = "csc_monthly_recurring_with_exception"
+            objs_with_exception_uid = [
+                obj
+                for obj in calendar.events()
+                if obj.icalendar_component.get("UID") == exception_uid
+            ]
+            if len(objs_with_exception_uid) != 1:
+                ## Multiple objects with the same UID: server split exception into separate object
+                self.set_feature("save-load.event.recurrences.exception", False)
+            else:
+                ## One object - check it has exactly 2 VEVENTs (master + exception)
+                vevents = [
+                    c
+                    for c in objs_with_exception_uid[0].icalendar_instance.subcomponents
+                    if c.name == "VEVENT"
+                ]
+                self.set_feature(
+                    "save-load.event.recurrences.exception",
+                    len(vevents) == 2,
+                )
+        except Exception:
+            self.set_feature("save-load.event.recurrences.exception", "ungraceful")
 
         ## Delete any stale objects from year 2000 that aren't part of
         ## the current test set (e.g. leftovers from previous test runs)
@@ -1018,7 +1060,27 @@ class CheckRecurrenceSearch(Check):
             event=True,
             post_filter=False,
         )
-        self.set_feature("search.recurrences.includes-implicit.event", len(events) == 1)
+        implicit_datetime = len(events) == 1
+        ## Also check all-day (VALUE=DATE) recurring events: the yearly event
+        ## (DTSTART;VALUE=DATE:2000-02-01) should be found in 2001-02-01 range.
+        try:
+            allday_events = cal.search(
+                start=datetime(2001, 2, 1, tzinfo=utc),
+                end=datetime(2001, 2, 2, tzinfo=utc),
+                event=True,
+                post_filter=False,
+            )
+            implicit_allday = len(allday_events) == 1
+        except (AuthorizationError, DAVError):
+            implicit_allday = implicit_datetime
+        if implicit_datetime and not implicit_allday:
+            ## Datetime recurring events work but all-day (VALUE=DATE) events do not
+            self.set_feature(
+                "search.recurrences.includes-implicit.event",
+                {"support": "fragile", "behaviour": "broken for all-day (VALUE=DATE) events"},
+            )
+        else:
+            self.set_feature("search.recurrences.includes-implicit.event", implicit_datetime)
         todos1 = tl.search(
             start=datetime(2000, 2, 12, tzinfo=utc),
             end=datetime(2000, 2, 13, tzinfo=utc),
