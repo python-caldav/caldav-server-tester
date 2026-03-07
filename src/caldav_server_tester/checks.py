@@ -216,7 +216,8 @@ class CheckMakeDeleteCalendar(Check):
         if makeret[0]:
             ## calendar created
             ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
-            self.set_feature("delete-calendar.free-namespace", True)
+            if self.checker.features_checked.is_supported("delete-calendar"):
+                self.set_feature("delete-calendar.free-namespace", True)
             return
         makeret = self._try_make_calendar(name=str(uuid.uuid4()), cal_id="pythoncaldav-test")
         if makeret[0]:
@@ -226,7 +227,8 @@ class CheckMakeDeleteCalendar(Check):
         makeret = self._try_make_calendar(cal_id="pythoncaldav-test")
         if makeret[0]:
             self.set_feature("create-calendar.set-displayname", False)
-            self.set_feature("delete-calendar.free-namespace", True)
+            if self.checker.features_checked.is_supported("delete-calendar"):
+                self.set_feature("delete-calendar.free-namespace", True)
             return
         unique_id1 = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id1, name=str(uuid.uuid4()))

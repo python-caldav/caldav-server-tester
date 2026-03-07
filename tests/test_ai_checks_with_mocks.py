@@ -666,6 +666,7 @@ class TestCheckIsNotDefined:
         checker._checks_run.add(CheckGetCurrentUserPrincipal)
         checker._checks_run.add(CheckMakeDeleteCalendar)
         checker._checks_run.add(PrepareCalendar)
+        checker._checks_run.add(CheckSearch)
 
         return checker, mock_calendar
 
