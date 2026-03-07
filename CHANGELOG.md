@@ -37,7 +37,7 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
   - Verifies events are treated as separate entities when allowed
 
 ### Changed
-- Improved `search.comp-type-optional` test with additional text search validation
+- Improved `search.comp-type.optional` test with additional text search validation
 
 ### Fixed
 - `create-calendar` feature detection to not incorrectly mark mkcol method as standard calendar creation

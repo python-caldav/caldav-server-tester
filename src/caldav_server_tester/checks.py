@@ -695,7 +695,7 @@ class CheckSearch(Check):
         "search.text.category",
         "search.time-range.todo",
         "search.time-range.todo.old-dates",
-        "search.comp-type-optional",
+        "search.comp-type.optional",
         "search.combined-is-logical-and",
         "search.unlimited-time-range",
     }  ## TODO: we can do so much better than this
@@ -831,7 +831,7 @@ class CheckSearch(Check):
                 objects = _filter_2000(cal.search(post_filter=False))
             if len(objects) == 0:
                 self.set_feature(
-                    "search.comp-type-optional",
+                    "search.comp-type.optional",
                     {
                         "support": "unsupported",
                         "description": "search that does not include comptype yields nothing",
@@ -839,7 +839,7 @@ class CheckSearch(Check):
                 )
             elif cal == tasklist and not any(x for x in objects if isinstance(x, Todo)):
                 self.set_feature(
-                    "search.comp-type-optional",
+                    "search.comp-type.optional",
                     {
                         "support": "fragile",
                         "description": "search that does not include comptype does not yield tasks",
@@ -858,25 +858,25 @@ class CheckSearch(Check):
                 == self.checker.cnt
             ):
                 self.set_feature(
-                    "search.comp-type-optional",
+                    "search.comp-type.optional",
                     {
                         "support": "full",
                         "description": "comp-filter is redundant in search as a calendar can only hold one kind of components",
                     },
                 )
             elif len(objects) == self.checker.cnt:
-                self.set_feature("search.comp-type-optional")
+                self.set_feature("search.comp-type.optional")
             else:
                 ## TODO ... we need to do more testing on search to conclude certainly on this one.  But at least we get something out.
                 self.set_feature(
-                    "search.comp-type-optional",
+                    "search.comp-type.optional",
                     {
                         "support": "fragile",
                         "description": "unexpected results from date-search without comp-type",
                     },
                 )
         except:
-            self.set_feature("search.comp-type-optional", {"support": "ungraceful"})
+            self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
         ## regardless of date?  Uses a year-2000 event to detect sliding-window servers
