@@ -1,14 +1,13 @@
 [project]
 name = "caldav-server-tester"
 dynamic = ["version"]
-license = "AGPL-3.0-or-later"
-license-files = ["agpl-3.0.md"]
+license = {text = "AGPL-3.0-or-later"}
 description = "CalDAV Server Checker - checking a CalDAV server for compatibility issues"
 authors = [
     {name = "Tobias Brox", email = "tobias@redpill-linpro.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -17,11 +16,11 @@ classifiers = [
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
     "Topic :: Office/Business :: Scheduling",
 ]
@@ -43,9 +42,9 @@ caldav-server-tester = "caldav_server_tester:check_server_compatibility"
 dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.12.0",
-    "ruff>=0.1.0",
-    "pre-commit>=3.0.0",
-    "deptry>=0.24.0; python_version >= '3.10'",
+    "ruff>=0.14",
+    "pre-commit>=4.0",
+    "deptry>=0.24.0",
 ]
 
 [build-system]
@@ -54,6 +53,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/caldav_server_tester/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/caldav_server_tester"]
@@ -67,7 +69,7 @@ lint = "ruff check ."
 deptry = "deptry src {args}"
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
@@ -91,6 +93,7 @@ known-first-party = ["caldav_server_tester"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["error"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

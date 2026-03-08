@@ -4,13 +4,21 @@
 This is the CLI - the "click" application
 """
 
+import importlib.metadata
+
 import click
 from caldav.davclient import get_davclient
 
 from .checker import ServerQuirkChecker
 
+try:
+    __version__ = importlib.metadata.version("caldav-server-tester")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "unknown"
+
 
 @click.command()
+@click.version_option(version=__version__, prog_name="caldav-server-tester")
 @click.option("--name", type=str, help="Choose a server by name", default=None)
 @click.option("--verbose/--quiet", default=None, help="More output")
 @click.option("--json/--text", help="JSON output.  Overrides verbose")

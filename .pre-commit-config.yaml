@@ -1,6 +1,6 @@
 repos:
  - repo: https://github.com/astral-sh/ruff-pre-commit
-   rev: v0.8.4
+   rev: v0.11.2
    hooks:
     # Run the linter with auto-fix on commit
     - id: ruff
@@ -50,6 +50,6 @@ repos:
  - repo: https://github.com/lycheeverse/lychee
    rev: lychee-v0.22.0
    hooks:
-    - id: lychee-docker
-      args: ["--no-progress", "--timeout", "10"]
-      types: [markdown, rst]
+    - id: lychee
+      args: ["--no-progress", "--timeout", "10", "."]
+      stages: [manual]  # Run with: pre-commit run lychee --hook-stage manual

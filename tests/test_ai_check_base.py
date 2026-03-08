@@ -263,8 +263,11 @@ class TestCheckRunCheck:
         # Features should be restored to original
         assert checker._client_obj.features == original_features
 
+    @pytest.mark.filterwarnings("ignore:Unknown feature:UserWarning:caldav")
     def test_run_check_verifies_declared_features_checked(self) -> None:
         """run_check should verify all declared features were checked"""
+        # Uses intentionally fake feature names (feature1, feature2) to test
+        # AssertionError logic; the UserWarning from caldav about unknown features is expected.
 
         class TestCheck(Check):
             features_to_be_checked = {"feature1", "feature2"}

@@ -8,7 +8,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
     - name: Checkout repository
@@ -30,7 +30,6 @@ jobs:
         args: check .
 
     - name: Check dependencies with deptry
-      if: matrix.python-version != '3.9'
       run: hatch run deptry src
 
     - name: Run tests
