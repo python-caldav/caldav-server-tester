@@ -404,10 +404,12 @@ class TestPrepareCalendar:
         """PrepareCalendar should use existing calendar if found"""
         checker, client, principal = self.create_checker_with_calendar()
 
-        # Mock existing calendar with all necessary methods
+        # Mock existing calendar with all necessary methods.
+        # events() is called 4 times: (1) existence check l.287, (2) _filter_2000 fallback l.316,
+        # (3) recurrences check l.646, (4) final sanity assert l.673 — must return truthy.
         mock_calendar = Mock()
-        mock_calendar.events.return_value = [Mock()]  # Return non-empty to pass assertion
-        mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.events.side_effect = [[], [], [], [Mock()]]
+        mock_calendar.todos.return_value = []
         mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
@@ -433,11 +435,14 @@ class TestPrepareCalendar:
         """PrepareCalendar should create calendar if not found"""
         checker, client, principal = self.create_checker_with_calendar()
 
-        # Mock calendar not found on first call, then return created calendar
+        # Mock calendar not found on first call, then return created calendar.
+        # events() is called 3 times here: existence-check call (l.287) is never reached because
+        # principal.calendar() raises first; then (1) _filter_2000 fallback l.316,
+        # (2) recurrences check l.646, (3) final sanity assert l.673 — must return truthy.
         call_count = [0]
         mock_calendar = Mock()
-        mock_calendar.events.return_value = [Mock()]
-        mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.events.side_effect = [[], [], [Mock()]]
+        mock_calendar.todos.return_value = []
         mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
@@ -470,10 +475,12 @@ class TestPrepareCalendar:
         """PrepareCalendar should set save-load.event feature"""
         checker, client, principal = self.create_checker_with_calendar()
 
-        # Mock calendar with all necessary behavior
+        # Mock calendar with all necessary behavior.
+        # events() is called 4 times: (1) existence check l.287, (2) _filter_2000 fallback l.316,
+        # (3) recurrences check l.646, (4) final sanity assert l.673 — must return truthy.
         mock_calendar = Mock()
-        mock_calendar.events.return_value = [Mock()]
-        mock_calendar.todos.return_value = [Mock()]
+        mock_calendar.events.side_effect = [[], [], [], [Mock()]]
+        mock_calendar.todos.return_value = []
         mock_calendar.journals.return_value = []
         mock_calendar.search.return_value = []
 
@@ -506,6 +513,9 @@ class TestCheckSearch:
         # Mock calendar and tasklist
         mock_calendar = Mock()
         mock_tasklist = Mock()
+        # search.unlimited-time-range check calls _request_report_build_resultlist directly
+        # and unpacks the result as (_, objects); return a proper tuple to avoid TypeError
+        mock_calendar._request_report_build_resultlist.return_value = (None, [])
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
 
