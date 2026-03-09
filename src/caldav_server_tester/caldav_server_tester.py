@@ -54,7 +54,15 @@ def check_server_compatibility(verbose, json, name, run_checks, **kwargs):
     for x in kwargs:
         if x.startswith("caldav_") and kwargs[x]:
             conn_keys[x[7:]] = kwargs[x]
-    with get_davclient(name=name, testconfig=True, **conn_keys) as conn:
+    conn = get_davclient(name=name, testconfig=True, **conn_keys)
+    if conn is None:
+        raise click.UsageError(
+            f"No configuration found for {name!r}. "
+            "Check your caldav client config file."
+            if name
+            else "No server specified. Use --name or --caldav-url."
+        )
+    with conn:
         obj = ServerQuirkChecker(conn)
         if not run_checks:
             obj.check_all()

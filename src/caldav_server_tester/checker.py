@@ -122,9 +122,32 @@ class ServerQuirkChecker:
         elif return_what == dict:
             return ret
         elif return_what == str:
-            raise NotImplementedError(
-                "work in progress - can't print out a human-readable report yet"
-            )
+            lines = [
+                f"Server: {ret['name']} ({ret['url']})",
+                f"caldav library version: {ret['caldav_version']}",
+                "",
+                "Feature compatibility (non-verbose: showing only non-full features):"
+                if not verbose
+                else "Feature compatibility:",
+            ]
+            features = self._features_checked.dotted_feature_set_list(compact=not verbose)
+            support_marker = {
+                "full": "[ok]      ",
+                "unsupported": "[no]      ",
+                "quirk": "[quirk]   ",
+                "fragile": "[fragile] ",
+                "broken": "[broken]  ",
+                "ungraceful": "[error]   ",
+            }
+            for feature, info in sorted(features.items()):
+                support = info.get("support", "?")
+                marker = support_marker.get(support, f"[{support}]  ")
+                extras = {k: v for k, v in info.items() if k != "support"}
+                extra_str = "  " + "  ".join(f"{k}={v}" for k, v in extras.items()) if extras else ""
+                lines.append(f"  {marker} {feature}{extra_str}")
+            if not features:
+                lines.append("  (no issues detected)" if not verbose else "  (no features checked)")
+            return "\n".join(lines)
         else:
             raise NotImplementedError(
                 "return types dict, str and 'json' accepted as for now"

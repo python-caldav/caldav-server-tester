@@ -226,16 +226,17 @@ class TestServerQuirkCheckerReport:
         # Formatted JSON should contain indentation
         assert "    " in result
 
-    def test_report_str_raises_not_implemented(self) -> None:
-        """report(return_what=str) should raise NotImplementedError"""
+    def test_report_str_returns_text(self) -> None:
+        """report(return_what=str) should return a human-readable string"""
         client = Mock()
         client.features = FeatureSet()
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
 
-        with pytest.raises(NotImplementedError):
-            checker.report(return_what=str)
+        result = checker.report(return_what=str)
+        assert isinstance(result, str)
+        assert "https://example.com/caldav" in result
 
     def test_report_invalid_return_type_raises_not_implemented(self) -> None:
         """report with invalid return_what should raise NotImplementedError"""
