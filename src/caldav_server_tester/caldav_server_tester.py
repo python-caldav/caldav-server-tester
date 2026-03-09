@@ -51,34 +51,49 @@ def _find_caldav_test_registry():
 
 
 def _run_checks_against(conn, run_checks):
-    """Run the configured checks against a connection and print the report."""
+    """Run the configured checks against a connection and return the checker object."""
     obj = ServerQuirkChecker(conn)
     if not run_checks:
         obj.check_all()
     for check in run_checks:
         obj.check_one(check)
-    obj.cleanup(force=False)
     return obj
 
 
-def _check_server(server, run_checks, verbose, output_json):
+def _emit_report(obj, verbose, output_format, show_diff):
+    """Print the report in the requested format."""
+    return_what = {"json": "json", "yaml": "yaml", "hints": "hints"}.get(output_format, str)
+    click.echo(obj.report(verbose=verbose, show_diff=show_diff, return_what=return_what))
+
+
+def _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup):
     """Start a TestServer (if needed), run checks, stop it, and print the report."""
     server.start()
     try:
         client = server.get_sync_client()
         with client:
             obj = _run_checks_against(client, run_checks)
+            if not no_cleanup:
+                obj.cleanup(force=True)
     finally:
         server.stop()
-    click.echo(obj.report(verbose=verbose, return_what="json" if output_json else str))
+    _emit_report(obj, verbose, output_format, show_diff)
 
 
 @click.command()
 @click.version_option(version=__version__, prog_name="caldav-server-tester")
 @click.option("--name", type=str, help="Server name (from test registry or config)", default=None)
 @click.option("--verbose/--quiet", default=None, help="More output")
-@click.option("--json/--text", help="JSON output.  Overrides verbose")
-@click.option("--yes", "-y", is_flag=True, default=False,
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml", "hints"], case_sensitive=False),
+    default="text",
+    help="Output format (text, json, yaml, or hints for compatibility_hints.py snippet)",
+)
+@click.option("--diff", "show_diff", is_flag=True, default=False, help="Show diff between expected and observed features")
+@click.option("--no-cleanup", is_flag=True, default=False, help="Do not remove test data after run")
+@click.option("--skip-confirmation", "--yes", "-y", is_flag=True, default=False,
               help="Skip interactive confirmation for non-test external servers")
 @click.option("--caldav-url", help="Full URL to the caldav server", metavar="URL")
 @click.option(
@@ -99,7 +114,7 @@ def _check_server(server, run_checks, verbose, output_json):
     metavar="FEATURES",
 )
 @click.option("--run-checks", help="Specific check(s) to run", multiple=True)
-def check_server_compatibility(verbose, json, yes, name, run_checks, **kwargs):
+def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, skip_confirmation, name, run_checks, **kwargs):
     click.echo("WARNING: this script is not production-ready")
 
     ## Collect explicit connection keys from --caldav-* options
@@ -107,7 +122,7 @@ def check_server_compatibility(verbose, json, yes, name, run_checks, **kwargs):
 
     ## If an explicit URL was given, use it directly (with confirmation)
     if conn_keys.get("url"):
-        if not yes:
+        if not skip_confirmation:
             click.confirm(
                 f"Run checks against {conn_keys['url']}? "
                 "This will create and delete test calendar data on the server.",
@@ -118,8 +133,9 @@ def check_server_compatibility(verbose, json, yes, name, run_checks, **kwargs):
             raise click.UsageError(f"Could not connect to {conn_keys['url']}")
         with conn:
             obj = _run_checks_against(conn, run_checks)
-        obj.cleanup(force=False)
-        click.echo(obj.report(verbose=verbose, return_what="json" if json else str))
+            if not no_cleanup:
+                obj.cleanup(force=True)
+        _emit_report(obj, verbose, output_format, show_diff)
         return
 
     ## Try to use the caldav test server registry
@@ -147,14 +163,14 @@ def check_server_compatibility(verbose, json, yes, name, run_checks, **kwargs):
             ## Embedded and docker servers are safe (ephemeral data, started by us).
             ## External servers without testing_allowed need explicit confirmation.
             needs_confirmation = server.server_type == "external"
-            if needs_confirmation and not yes:
+            if needs_confirmation and not skip_confirmation:
                 click.confirm(
                     f"Run checks against external server {server.name!r} ({server.url})? "
                     "This will create and delete test calendar data on the server. "
-                    "(Use --yes to suppress this prompt.)",
+                    "(Use --skip-confirmation to suppress this prompt.)",
                     abort=True,
                 )
-            _check_server(server, run_checks, verbose, json)
+            _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
         return
 
     ## Fall back to the caldav config-file / testconfig path
@@ -168,8 +184,9 @@ def check_server_compatibility(verbose, json, yes, name, run_checks, **kwargs):
         )
     with conn:
         obj = _run_checks_against(conn, run_checks)
-    obj.cleanup(force=False)
-    click.echo(obj.report(verbose=verbose, return_what="json" if json else str))
+        if not no_cleanup:
+            obj.cleanup(force=True)
+    _emit_report(obj, verbose, output_format, show_diff)
 
 
 if __name__ == "__main__":

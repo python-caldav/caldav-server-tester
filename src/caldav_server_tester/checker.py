@@ -60,8 +60,14 @@ class ServerQuirkChecker:
 
     def cleanup(self, force=True):
         """
-        Remove anything added by the PrepareCalendar check - if
+        Remove anything added by the PrepareCalendar check.
+
+        force=True (default): always clean up.
+        force=False: only clean up if 'test-calendar.compatibility-tests' config has cleanup=True.
         """
+        if not hasattr(self, 'calendar'):
+            return  ## PrepareCalendar never ran; nothing to clean up
+
         if not force:
             test_cal_info = self.expected_features.is_supported('test-calendar.compatibility-tests', return_type=dict)
             if not test_cal_info.get("cleanup", False):
@@ -99,38 +105,57 @@ class ServerQuirkChecker:
                         try:
                             self.journallist.object_by_uid(uid).delete()
                         except:
-                            ## TODO: investigate
                             pass
 
-    def report(self, verbose=False, return_what=str):
+    def _compute_diff(self) -> dict:
+        """Compare expected (configured) features against observed features.
+
+        Returns a dict mapping feature name to {"expected": ..., "observed": ...}
+        for every feature where the support level differs.
+        """
+        observed = self._features_checked.dotted_feature_set_list(compact=False)
+        expected_all = self.expected_features.dotted_feature_set_list(compact=False)
+        diff = {}
+        all_keys = set(observed) | set(expected_all)
+        for key in all_keys:
+            obs_support = observed.get(key, {}).get("support", "unknown")
+            exp_support = expected_all.get(key, {}).get("support", "unknown")
+            if obs_support != exp_support:
+                diff[key] = {"expected": exp_support, "observed": obs_support}
+        return diff
+
+    def report(self, verbose=False, show_diff=False, return_what=str):
+        features = self._features_checked.dotted_feature_set_list(compact=True)
         ret = {
             "caldav_version": caldav.__version__,
             "ts": time.time(),
             "name": getattr(self._client_obj, "server_name", "(noname)"),
             "url": str(self._client_obj.url),
-            "features": self._features_checked.dotted_feature_set_list(compact=True),
-            "error": "Not fully implemnted yet - TODO",
-            # "flags_checked": self.flags_checked,
-            # "diff1": list(self.diff1),
-            # "diff2": list(self.diff2),
+            "features": features,
         }
+        if show_diff:
+            ret["diff"] = self._compute_diff()
 
         if return_what == "json":
             from json import dumps
 
             return dumps(ret, indent=4)
+        elif return_what == "yaml":
+            import yaml
+
+            return yaml.dump(ret, default_flow_style=False, allow_unicode=True)
+        elif return_what == "hints":
+            ## Output as a Python dict literal suitable for pasting into compatibility_hints.py
+            ## Use compact=False to include all observed features, even those with full support
+            all_features = self._features_checked.dotted_feature_set_list(compact=False)
+            lines = ["{"]
+            for feature, info in sorted(all_features.items()):
+                lines.append(f"    {feature!r}: {info!r},")
+            lines.append("}")
+            return "\n".join(lines)
         elif return_what == dict:
             return ret
         elif return_what == str:
-            lines = [
-                f"Server: {ret['name']} ({ret['url']})",
-                f"caldav library version: {ret['caldav_version']}",
-                "",
-                "Feature compatibility (non-verbose: showing only non-full features):"
-                if not verbose
-                else "Feature compatibility:",
-            ]
-            features = self._features_checked.dotted_feature_set_list(compact=not verbose)
             support_marker = {
                 "full": "[ok]      ",
                 "unsupported": "[no]      ",
@@ -139,16 +164,33 @@ class ServerQuirkChecker:
                 "broken": "[broken]  ",
                 "ungraceful": "[error]   ",
             }
-            for feature, info in sorted(features.items()):
+            lines = [
+                f"Server: {ret['name']} ({ret['url']})",
+                f"caldav library version: {ret['caldav_version']}",
+                "",
+                "Feature compatibility (non-verbose: showing only non-full features):"
+                if not verbose
+                else "Feature compatibility:",
+            ]
+            display_features = self._features_checked.dotted_feature_set_list(compact=not verbose)
+            for feature, info in sorted(display_features.items()):
                 support = info.get("support", "?")
                 marker = support_marker.get(support, f"[{support}]  ")
                 extras = {k: v for k, v in info.items() if k != "support"}
                 extra_str = "  " + "  ".join(f"{k}={v}" for k, v in extras.items()) if extras else ""
                 lines.append(f"  {marker} {feature}{extra_str}")
-            if not features:
+            if not display_features:
                 lines.append("  (no issues detected)" if not verbose else "  (no features checked)")
+
+            if show_diff:
+                diff = self._compute_diff()
+                lines.append("")
+                lines.append("Diff (expected vs observed):" if diff else "Diff: no deviations from expectations")
+                for feature, change in sorted(diff.items()):
+                    lines.append(f"  {feature}: expected={change['expected']}  observed={change['observed']}")
+
             return "\n".join(lines)
         else:
             raise NotImplementedError(
-                "return types dict, str and 'json' accepted as for now"
+                "return types accepted: dict, str, 'json', 'yaml', 'hints'"
             )

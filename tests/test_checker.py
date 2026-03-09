@@ -261,6 +261,90 @@ class TestServerQuirkCheckerReport:
         result = checker.report(verbose=True, return_what=dict)
         assert isinstance(result, dict)
 
+    def test_report_yaml_returns_valid_yaml_string(self) -> None:
+        """report(return_what='yaml') should return a valid YAML string"""
+        import yaml
+
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+
+        result = checker.report(return_what="yaml")
+
+        assert isinstance(result, str)
+        parsed = yaml.safe_load(result)
+        assert isinstance(parsed, dict)
+        assert "name" in parsed
+        assert "features" in parsed
+
+    def test_report_hints_returns_python_dict_format(self) -> None:
+        """report(return_what='hints') should return Python dict literal suitable for compatibility_hints.py"""
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker._features_checked.copyFeatureSet(
+            {"create-calendar": {"support": "full"}, "delete-calendar": {"support": "unsupported"}},
+            collapse=False,
+        )
+
+        result = checker.report(return_what="hints")
+
+        assert isinstance(result, str)
+        # Should be valid Python that evaluates to a dict
+        parsed = eval(result)  # noqa: S307
+        assert isinstance(parsed, dict)
+        assert "create-calendar" in parsed
+        assert parsed["create-calendar"] == {"support": "full"}
+
+    def test_report_dict_no_error_placeholder(self) -> None:
+        """report dict should not contain a TODO placeholder in 'error' field"""
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+
+        result = checker.report(return_what=dict)
+
+        assert "TODO" not in str(result.get("error", ""))
+
+    def test_report_diff_shows_deviations(self) -> None:
+        """report should be able to show diff between expected and observed features"""
+        client = Mock()
+        expected = FeatureSet()
+        expected.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        client.features = expected
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        # Observe something different from expected
+        checker._features_checked.copyFeatureSet(
+            {"create-calendar": {"support": "unsupported"}}, collapse=False
+        )
+
+        result = checker.report(return_what=str, show_diff=True)
+
+        assert "create-calendar" in result
+        assert "full" in result or "unsupported" in result
+
+
+class TestServerQuirkCheckerCleanupSafety:
+    """Test cleanup safety when PrepareCalendar hasn't run"""
+
+    def test_cleanup_does_not_crash_without_calendar_attribute(self) -> None:
+        """cleanup should not raise AttributeError if no calendar was set up"""
+        client = Mock()
+        client.features = FeatureSet()
+        checker = ServerQuirkChecker(client)
+        # Do NOT set checker.calendar / tasklist / journallist
+
+        # Should not raise
+        checker.cleanup(force=True)
+
 
 class TestServerQuirkCheckerCleanup:
     """Test ServerQuirkChecker.cleanup method"""

@@ -9,6 +9,20 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 ## [Unreleased]
 
 ### Added
+- YAML output format (`--format yaml`)
+- Hints output format (`--format hints`): outputs observed features as a Python dict literal suitable for pasting into `compatibility_hints.py`
+- `--diff` flag: show diff between configured (expected) and observed features in the report
+- `--no-cleanup` flag: skip test data removal after a run
+- `--skip-confirmation` / `--yes` / `-y` flag to suppress interactive prompts for external servers
+- `report()` now accepts `show_diff=True` and `return_what="yaml"` / `"hints"`
+
+### Fixed
+- CLI no longer calls `cleanup()` twice (it was called inside `_run_checks_against` and again by the caller)
+- CLI now cleans up by default (`force=True`) instead of silently skipping cleanup unless the server was explicitly configured for it
+- `cleanup()` no longer raises `AttributeError` when `PrepareCalendar` was never run
+- Removed "Not fully implemented yet - TODO" placeholder from the JSON/dict report output
+
+### Added
 - Expanded search feature coverage with new feature flags:
   - `search.text` - Basic text/summary search
   - `search.text.case-sensitive` - Case-sensitive text matching (default behavior)
