@@ -3,13 +3,7 @@
 ## Installation
 
 ```
-pip install caldav-server-tester
-```
-
-Or in development (from a checkout):
-
-```
-pip install -e .
+make install
 ```
 
 ## Quick start
@@ -22,10 +16,9 @@ caldav-server-tester --caldav-url https://example.com/dav \
                      --caldav-password secret
 ```
 
-You will be prompted to confirm before any data is written to the server.
-Use `-y` / `--skip-confirmation` to suppress the prompt (e.g. in CI).
+The tester will (by default) create a new calendar, populate it with test data, and delete the calendar when it's done.  For servers not supporting calendar creation, you need to configure what calendar to use as a test calendar (TODO: instructions for this).
 
-### Against servers from a caldav source checkout
+### Against test servers from a caldav source checkout
 
 If you have the [caldav](https://github.com/python-caldav/caldav) repository
 checked out, `caldav-server-tester` will auto-discover the test server

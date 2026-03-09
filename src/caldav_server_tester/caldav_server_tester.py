@@ -93,8 +93,6 @@ def _check_server(server, run_checks, verbose, output_format, show_diff, no_clea
 )
 @click.option("--diff", "show_diff", is_flag=True, default=False, help="Show diff between expected and observed features")
 @click.option("--no-cleanup", is_flag=True, default=False, help="Do not remove test data after run")
-@click.option("--skip-confirmation", "--yes", "-y", is_flag=True, default=False,
-              help="Skip interactive confirmation for non-test external servers")
 @click.option("--caldav-url", help="Full URL to the caldav server", metavar="URL")
 @click.option(
     "--caldav-username",
@@ -114,7 +112,7 @@ def _check_server(server, run_checks, verbose, output_format, show_diff, no_clea
     metavar="FEATURES",
 )
 @click.option("--run-checks", help="Specific check(s) to run", multiple=True)
-def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, skip_confirmation, name, run_checks, **kwargs):
+def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, name, run_checks, **kwargs):
     click.echo("WARNING: this script is not production-ready")
 
     ## Collect explicit connection keys from --caldav-* options
@@ -122,12 +120,6 @@ def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, sk
 
     ## If an explicit URL was given, use it directly (with confirmation)
     if conn_keys.get("url"):
-        if not skip_confirmation:
-            click.confirm(
-                f"Run checks against {conn_keys['url']}? "
-                "This will create and delete test calendar data on the server.",
-                abort=True,
-            )
         conn = get_davclient(**conn_keys)
         if conn is None:
             raise click.UsageError(f"Could not connect to {conn_keys['url']}")
@@ -160,16 +152,6 @@ def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, sk
             )
 
         for server in servers:
-            ## Embedded and docker servers are safe (ephemeral data, started by us).
-            ## External servers without testing_allowed need explicit confirmation.
-            needs_confirmation = server.server_type == "external"
-            if needs_confirmation and not skip_confirmation:
-                click.confirm(
-                    f"Run checks against external server {server.name!r} ({server.url})? "
-                    "This will create and delete test calendar data on the server. "
-                    "(Use --skip-confirmation to suppress this prompt.)",
-                    abort=True,
-                )
             _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
         return
 
