@@ -1,42 +1,67 @@
 # caldav-server-tester
 
-**TODO**: This readme should be rewritten completely.  Installation and usage documentation needs to be written.
+A command-line tool that probes a CalDAV server and reports which features and
+RFC requirements it supports, which ones it handles quirky, and which ones it
+gets wrong.
 
-**UPDATE 2025-11-08**: My idea was to release this together with caldav 2.1 before the summer vacation ... but then it was suddenly there, and for the last six months things have constantly been happening in my life preventing me to focus, but now I'm releasing 0.1.  Hurray!  It's far from complete, though, much more work is needed before we can go 1.0.
+It is a companion to the [caldav](https://github.com/python-caldav/caldav)
+Python client library and produces output that is compatible with that
+library's `compatibility_hints.py` feature-flag system.
 
-**UPDATE 2025-05-15**: Server checker script has been moved from the caldav library and here.  I got it to work, but it requires the python caldav library version 1.5 or higher - and as of today, it's not released yet.
+> **Status**: alpha / pre-1.0.  The checks are useful today, but the
+> interface may change before the 1.0 release.
 
-**UPDATE 2024-11-18**: I had forgotten completely about this repository.  I'm working on a checker now in the python-caldav library - but it should probably be released as a stand-alone tool.
+## What it checks
 
-## Testing
+- Calendar creation and deletion (`MKCALENDAR`)
+- Saving and loading events, tasks, and journals
+- Time-range, text, alarm, and recurrence searches (RFC 4791)
+- Case sensitivity and substring matching in text searches
+- Sync-collection reports (RFC 6578)
+- Free-busy queries
+- Principal discovery (RFC 5397)
+- Duplicate UID handling across calendars
+- Timezone support in events
 
-No test code exists so far.  The code is exercised regularly through the test suite in the caldav project.
+For full usage information, including all CLI options and output formats, see
+**[USAGE.md](USAGE.md)**.
 
-## Existing tools
+## Installation
 
-* The functional test code for the Python CalDAV client library code is catching a lot of issues with the various servers - the problem is that it's not optimized for this purpose - it's just showing that tests are broken, and then it's up to whomever ran the tests to figure out if it's a server side problem or a client side problem.
-* I believe there already exists some tools like this, but I believe none of them is as thourough as the test code mentioned above
+```
+pip install caldav-server-tester
+```
+
+## Quick example
+
+```
+caldav-server-tester --caldav-url https://example.com/dav \
+                     --caldav-username alice \
+                     --caldav-password secret
+```
+
+See [USAGE.md](USAGE.md) for details on output formats (`--format
+json/yaml/hints`), the `--diff` flag, running individual checks, and safety
+considerations.
 
 ## Background
 
-When creating tests for the python caldav client library, I've realised that the perfect caldav server does not exist - all of them have flaws, almost all of them them breaks with the RFC in different ways - and even if they would technically not break the RFC, there are still many parts of the RFC that are optional, the standards stretches over multiple RFCs, some servers will support only a subset of the RFCs, and there are parts of the RFCs that are ambigious, two servers may behave differently and both may claim they are in compliance with the RFCs.
+The caldav client library accumulated a large set of compatibility flags to
+work around differences between CalDAV server implementations.  Every server
+deviates from the RFC in at least some way — some silently ignore unsupported
+features, some return errors, some return wrong data.
 
-Eventually I decided to make a list of flags for the tests, allowing parts of the test code to be skipped, or asserts in the test code to be changed depending on those flags.  This did help me run the test code towards multiple different servers.
-
-As time grew and the test code for the caldav library got more and more bloated, the test code got better at finding problems at the server side than on the client side.  I think it's quite useful, the problem is just that the tests are not optimized for this purpose, there are some problems with it:
-
-* The test code will break with some assert or run-time error whenever a server incompatibility is found - but whomever ran the test will have to figure out if it's a client problem or a server problem, figure out what flags to set, and then rerun the tests.  It's a lot of hazzle.
-* Setting those flags typically means that the test code will be skipped - if the problems are fixed in some later release of the calendar server, it's needed to manually remove the flag and rerun the tests.  I would like a tool that can alert me when some previously flagged problem has been fixed.
-* The test suite does not catch everything.  In particular, the library does have some workarounds to get around some of the server incompatibilities found (like, some servers does not do expansion of recurrent events - now this can be done on the client side in the library, hence the tests will not catch this issue anymore.  There is also code for catching and correcting errors in the icalendar data).
-
-## Ideas for design, usability, implementation, etc
-
-* It should be possible to run it as a stand-alone command-line script.
-* It should be able to read connection details both from command-line options, `.config/calendar.conf` (as read by `plann`/`calendar_cli`) as well as `caldav/tests/conf_private.py`
-* It should be possible to get the output in json-format
-* Output should be compatible with the list in caldav/tests/compatibility_issues.py (but said file may need some editing - and eventually I'd like to move it out of the test directory and make it part of the libary).
-* Some of the items in compatibility_issues.py affects the possibility to run tests at all.  In the typical test in the python caldav library I'm creating a calendar, populating it with some known input and then doing queries.  It's needed to be relatively clever so that we can test whatever search queries that can be tested even towards a read-only calendar with arbitrary contents.
+This tool was created to make it easy to discover and document those
+deviations without having to run the full caldav test suite and interpret
+failures manually.  It can also alert you when a previously flagged problem
+has been fixed in a newer server version.
 
 ## Vocabulary
 
-The name of the project is the **caldav-server-tester**, but internally the word **test** is reserved for code tests under the test directory, code that actually probes server capability is a **check**.
+The project is called **caldav-server-tester**, but internally the word
+*test* is reserved for code under the `tests/` directory.  Code that probes
+server capability is called a **check**.
+
+## License
+
+AGPL-3.0-or-later
