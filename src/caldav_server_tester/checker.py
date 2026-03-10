@@ -188,7 +188,7 @@ class ServerQuirkChecker:
                 f"Server: {ret['name']} ({ret['url']})",
                 f"caldav library version: {ret['caldav_version']}",
                 "",
-                "Feature compatibility (non-verbose: showing only deviations from expected):"
+                "Feature compatibility (non-verbose: showing only deviations from the standard):"
                 if not verbose
                 else "Feature compatibility:",
             ]

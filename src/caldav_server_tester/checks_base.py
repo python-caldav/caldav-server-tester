@@ -1,12 +1,6 @@
 import copy
 import logging
 
-## WORK IN PROGRESS
-
-## TODO: We need some collector framework that can collect all checks,
-## build a dependency graph and mapping from a feature to the relevant
-## check.
-
 
 class Check:
     """
@@ -36,20 +30,23 @@ class Check:
             return
 
         feat_def = self.checker._features_checked.find_feature(feature)
-        feat_type = feat_def.get('type', 'server-feature')
+        feat_type = feat_def.get("type", "server-feature")
 
-        if feat_type not in ('server-peculiarity', 'server-feature'):
+        if feat_type not in ("server-peculiarity", "server-feature"):
             ## client-behaviour, tests-behaviour or client-feature
             ## cannot be checked for reliably (and is not supposed to
             ## be checked by the script).  server-observation is unreliable.
-            assert(feat_type in ('server-observation',))
+            assert feat_type in ("server-observation",)
             return
 
         value_str = fs.is_supported(feature, str)
 
         ## Fragile support is ... fragile and should be ignored
         ## same with unknown
-        if value_str in ('fragile', 'unknown') or self.expected_features.is_supported(feature, str) in ('fragile', 'unknown'):
+        if value_str in ("fragile", "unknown") or self.expected_features.is_supported(feature, str) in (
+            "fragile",
+            "unknown",
+        ):
             return
 
         expected_ = self.expected_features.is_supported(feature, dict)
@@ -59,21 +56,23 @@ class Check:
 
         ## Strip all free-text information from both observed and expected
         for stripdict in observed, expected:
-                for y in ("behaviour", "description"):
-                    if y in stripdict:
-                        stripdict.pop(y)
+            for y in ("behaviour", "description"):
+                if y in stripdict:
+                    stripdict.pop(y)
 
-        if self.checker.debug_mode == 'assert':
-            assert(observed == expected)
+        if self.checker.debug_mode == "assert":
+            assert observed == expected
             return
 
         if observed != expected:
-            if self.checker.debug_mode == 'logging':
-                logging.error(f"Server checker found something unexpected for {feature}.  Expected: {expected_}, observed: {observed_}")
-            elif self.checker.debug_mode == 'pdb':
+            if self.checker.debug_mode == "logging":
+                logging.error(
+                    f"Server checker found something unexpected for {feature}.  Expected: {expected_}, observed: {observed_}"
+                )
+            elif self.checker.debug_mode == "pdb":
                 breakpoint()
             else:
-                assert(False)
+                assert False
 
     def feature_checked(self, feature, return_type=bool):
         return self.checker._features_checked.is_supported(feature, return_type)
@@ -85,12 +84,7 @@ class Check:
         for foo in self.depends_on:
             foo(self.checker).run_check(only_once=only_once)
 
-        ## TODO: record what new features are checked.  Everything in
-        ## self.features_checked should be covered, everyhing not in
-        ## self.features_checked should not be checked.
-        keys_before = set(
-            self.checker._features_checked.dotted_feature_set_list().keys()
-        )
+        keys_before = set(self.checker._features_checked.dotted_feature_set_list().keys())
 
         ## expected_features is the preconfigured feature set for this server.
         self.expected_features = self.checker._client_obj.features
@@ -104,9 +98,7 @@ class Check:
             self.checker._client_obj.features = self.expected_features
 
         ## Check that all the declared checking has been done
-        keys_after = set(
-            self.checker._features_checked.dotted_feature_set_list().keys()
-        )
+        keys_after = set(self.checker._features_checked.dotted_feature_set_list().keys())
         new_keys = keys_after - keys_before
         missing_keys = self.features_to_be_checked - new_keys
         parent_keys = ()
@@ -135,6 +127,4 @@ class Check:
         self.checker._checks_run.add(self.__class__)
 
     def _run_check(self):
-        raise NotImplementedError(
-            f"A subclass {self.__class__} hasn't implemented the _run_check method"
-        )
+        raise NotImplementedError(f"A subclass {self.__class__} hasn't implemented the _run_check method")

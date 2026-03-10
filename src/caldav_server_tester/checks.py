@@ -44,13 +44,6 @@ def _filter_2000(objects):
     return (x for x in objects if date(2000, 1, 1) <= d(x) <= date(2001, 1, 1))
 
 
-## WORK IN PROGRESS
-
-## TODO: We need some collector framework that can collect all checks,
-## build a dependency graph and mapping from a feature to the relevant
-## check.
-
-
 class CheckGetCurrentUserPrincipal(Check):
     """
     Checks support for get-current-user-principal
@@ -112,7 +105,15 @@ class CheckMakeDeleteCalendar(Check):
                 try:
                     name = "A calendar with this name should not exist"
                     self.checker.principal.calendar(name=name).events()
-                    breakpoint()  ## TODO - do something better here
+                    ## Server returned a calendar for a name that cannot exist;
+                    ## display-name lookup is unreliable on this server.
+                    import logging
+
+                    logging.warning(
+                        "Server returned a calendar for a display name that should not exist; "
+                        "cannot verify create-calendar.set-displayname"
+                    )
+                    self.set_feature("create-calendar.set-displayname", False)
                 except:
                     ## This is not the exception, this is the normal
                     try:
