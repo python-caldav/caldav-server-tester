@@ -18,9 +18,16 @@ caldav-server-tester --caldav-url https://example.com/dav \
                      --caldav-password secret
 ```
 
-TODO: make it possible to specify `--caldav-calendar` also
+The tester will (by default) create a new calendar, populate it with test data, and delete the calendar when it's done.  For servers not supporting calendar creation, specify an existing calendar to use:
 
-The tester will (by default) create a new calendar, populate it with test data, and delete the calendar when it's done.  For servers not supporting calendar creation, you need to configure what calendar to use as a test calendar (TODO: instructions for this).
+```
+caldav-server-tester --caldav-url https://example.com/dav \
+                     --caldav-username alice \
+                     --caldav-password secret \
+                     --caldav-calendar "My Test Calendar"
+```
+
+The `--caldav-calendar` option takes the display name of an existing calendar on the server.
 
 ### Against the caldav test servers
 
@@ -47,14 +54,13 @@ Note that the only difference between `--name` and `--config-section` is that `-
 
 ### `--format text` (default)
 
-Human-readable summary.  Without `--verbose`, only non-full (problem) features
-are shown.  With `--verbose`, all checked features are shown.
+Human-readable summary.  Without `--verbose`, only features deviating from the CalDAV standard are shown.  With `--verbose`, all checked features are shown.
 
 ```
 Server: radicale (http://localhost:5232/)
 caldav library version: 1.5.0
 
-Feature compatibility (non-verbose: showing only non-full features):
+Feature compatibility (non-verbose: showing only deviations from the standard):
   [no]       search.time-range.alarm
   [quirk]    search.unlimited-time-range
 ```
@@ -116,9 +122,8 @@ For servers that supports `MKCALENDAR`, a dedicated calendar will be
 created on the server for compatibility testing, and deleted after the
 testing (unless `--no-cleanup` is used).
 
-For servers that do not support `MKCALENDAR`, the script should refuse
-to do anything unless the calendar to use is given in the config or on
-the command line. (TODO: NOT TESTED YET!).  All test data will be
+For servers that do not support `MKCALENDAR`, you must specify a calendar
+to use via `--caldav-calendar <display-name>`.  All test data will be
 deleted from the server after use.  It's best to provide the check
 script with a dedicated calendar for the checking, but running the
 checks towards your personal calendar should be safe.
@@ -134,12 +139,23 @@ data in place for inspection.
 
 ## Running individual checks
 
+List available checks:
+
+```
+caldav-server-tester --list-checks
+```
+
+Run a specific check class:
+
 ```
 caldav-server-tester --caldav-url … --run-checks CheckSearch
 caldav-server-tester --caldav-url … --run-checks CheckSyncToken --run-checks CheckFreeBusyQuery
 ```
 
-TODO: make it possible to list out the test classes
-TODO: make it possible to check a feature rather than a class
+Run checks by feature name:
+
+```
+caldav-server-tester --caldav-url … --run-feature search.time-range.alarm
+```
 
 Be aware that there are some dependencies, so more checks than what you asked for may be executed.

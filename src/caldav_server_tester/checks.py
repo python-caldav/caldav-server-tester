@@ -148,7 +148,7 @@ class CheckMakeDeleteCalendar(Check):
             except NotFoundError:
                 cal = None
             ## Delete throw no exceptions, but was the calendar deleted?
-            if not cal or self.checker.features_checked.is_supported('create-calendar.auto'):
+            if not cal or self.checker.features_checked.is_supported("create-calendar.auto"):
                 self.set_feature("delete-calendar")
                 ## Calendar probably deleted OK.
                 ## (in the case of non_existing_calendar_found, we should add
@@ -210,9 +210,7 @@ class CheckMakeDeleteCalendar(Check):
         except:
             self.set_feature("get-current-user-principal.has-calendar", False)
 
-        makeret = self._try_make_calendar(
-            name="Yep", cal_id="caldav-server-checker-mkdel-test"
-        )
+        makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
         if makeret[0]:
             ## calendar created
             ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
@@ -242,11 +240,9 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar.set-displayname", False)
             self.set_feature("delete-calendar.free-namespace", False)
             return
-        makeret = self._try_make_calendar(cal_id=unique_id, method='mkcol')
+        makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
         if makeret[0]:
-            self.set_feature("create-calendar", {
-                "support": "quirk",
-                "behaviour": "mkcol-required"})
+            self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
         else:
             self.set_feature("create-calendar", False)
 
@@ -275,10 +271,12 @@ class PrepareCalendar(Check):
     def _run_check(self):
         ## Find or create a calendar
         cal_id = "caldav-server-checker-calendar"
-        test_cal_info = self.checker.expected_features.is_supported('test-calendar.compatibility-tests', return_type=dict)
-        name = test_cal_info.get('name', "Calendar for checking server feature support")
+        test_cal_info = self.checker.expected_features.is_supported(
+            "test-calendar.compatibility-tests", return_type=dict
+        )
+        name = test_cal_info.get("name", "Calendar for checking server feature support")
         try:
-            if 'name' in test_cal_info:
+            if "name" in test_cal_info:
                 calendar = self.checker.principal.calendar(name=name)
             else:
                 calendar = self.checker.principal.calendar(cal_id=cal_id)
@@ -286,7 +284,11 @@ class PrepareCalendar(Check):
             calendar.get_display_name()
             calendar.events()
         except:
-            assert self.checker.features_checked.is_supported("create-calendar") ## Otherwise we can't test
+            if not self.checker.features_checked.is_supported("create-calendar"):
+                raise RuntimeError(
+                    "Server does not support calendar creation and no existing test calendar was found. "
+                    "Specify a calendar to use with --caldav-calendar <display-name>."
+                )
             calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
 
         self.checker.calendar = calendar
@@ -297,15 +299,11 @@ class PrepareCalendar(Check):
         ## Some servers (e.g. CCS) reject time-range queries for old dates
         ## (min-date-time restriction), so fall back to empty lists.
         try:
-            events_from_2000 = calendar.search(
-                event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
-            )
+            events_from_2000 = calendar.search(event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
         except (AuthorizationError, DAVError):
             events_from_2000 = []
         try:
-            tasks_from_2000 = calendar.search(
-                todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1)
-            )
+            tasks_from_2000 = calendar.search(todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
         except (AuthorizationError, DAVError):
             tasks_from_2000 = []
         ## Some servers (e.g. OX) silently return empty for old-date time-range
@@ -390,8 +388,8 @@ class PrepareCalendar(Check):
                     uid="csc_simple_task1",
                     dtstart=date(2000, 1, 7),
                 )
-            except DAVError as e: ## exception e for debugging purposes
-                self.set_feature("save-load.todo", 'ungraceful')
+            except DAVError as e:  ## exception e for debugging purposes
+                self.set_feature("save-load.todo", "ungraceful")
                 return
 
             task_with_dtstart.load()
@@ -410,9 +408,7 @@ class PrepareCalendar(Check):
             self.set_feature("save-load.journal.mixed-calendar")
         except:
             try:
-                journallist = self.checker.principal.calendar(
-                    cal_id=f"{cal_id}_journals"
-                )
+                journallist = self.checker.principal.calendar(cal_id=f"{cal_id}_journals")
                 journallist.journals()
             except:
                 try:
@@ -554,7 +550,9 @@ class PrepareCalendar(Check):
             dtstart=date(2000, 2, 1),
         )
 
-        event_with_rrule_and_count = add_if_not_existing(Event, """BEGIN:VCALENDAR
+        event_with_rrule_and_count = add_if_not_existing(
+            Event,
+            """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VEVENT
@@ -565,12 +563,13 @@ DTEND:20001018T150000Z
 SUMMARY:Weekly meeting for three weeks
 RRULE:FREQ=WEEKLY;COUNT=3
 END:VEVENT
-END:VCALENDAR""")
+END:VCALENDAR""",
+        )
         event_with_rrule_and_count.load()
         component = event_with_rrule_and_count.component
-        rrule = component.get('RRULE', None)
-        count = rrule and rrule.get('COUNT')
-        self.set_feature("save-load.event.recurrences.count", count==[3])
+        rrule = component.get("RRULE", None)
+        count = rrule and rrule.get("COUNT")
+        self.set_feature("save-load.event.recurrences.count", count == [3])
 
         try:
             recurring_task = add_if_not_existing(
@@ -587,7 +586,9 @@ END:VCALENDAR""")
             self.set_feature("save-load.todo.recurrences", "ungraceful")
 
         try:
-            task_with_rrule_and_count = add_if_not_existing(Todo, """BEGIN:VCALENDAR
+            task_with_rrule_and_count = add_if_not_existing(
+                Todo,
+                """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VTODO
@@ -601,12 +602,13 @@ RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=3
 CATEGORIES:CHORE
 PRIORITY:3
 END:VTODO
-END:VCALENDAR""")
+END:VCALENDAR""",
+            )
             task_with_rrule_and_count.load()
             component = task_with_rrule_and_count.component
-            rrule = component.get('RRULE', None)
-            count = rrule and rrule.get('COUNT')
-            self.set_feature("save-load.todo.recurrences.count", count==[3])
+            rrule = component.get("RRULE", None)
+            count = rrule and rrule.get("COUNT")
+            self.set_feature("save-load.todo.recurrences.count", count == [3])
         except DAVError:
             self.set_feature("save-load.todo.recurrences.count", "ungraceful")
 
@@ -642,9 +644,7 @@ END:VCALENDAR""",
             try:
                 exception_uid = "csc_monthly_recurring_with_exception"
                 objs_with_exception_uid = [
-                    obj
-                    for obj in calendar.events()
-                    if obj.icalendar_component.get("UID") == exception_uid
+                    obj for obj in calendar.events() if obj.icalendar_component.get("UID") == exception_uid
                 ]
                 if len(objs_with_exception_uid) != 1:
                     ## Multiple objects with the same UID: server split exception into separate object
@@ -652,9 +652,7 @@ END:VCALENDAR""",
                 else:
                     ## One object - check it has exactly 2 VEVENTs (master + exception)
                     vevents = [
-                        c
-                        for c in objs_with_exception_uid[0].icalendar_instance.subcomponents
-                        if c.name == "VEVENT"
+                        c for c in objs_with_exception_uid[0].icalendar_instance.subcomponents if c.name == "VEVENT"
                     ]
                     self.set_feature(
                         "save-load.event.recurrences.exception",
@@ -810,8 +808,20 @@ class CheckSearch(Check):
         ## search.combined - uses year-2000 dates, so requires old-dates support
         if self.feature_checked("search.text.category") and self.feature_checked("search.time-range.event.old-dates"):
             try:
-                events1 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 11, 0, 0), end=datetime(2000, 1, 13, 14, 0, 0), post_filter=False)
-                events2 = cal.search(category="hands", event=True, start=datetime(2000, 1, 1, 9, 0, 0), end=datetime(2000, 1, 6, 14, 0, 0), post_filter=False)
+                events1 = cal.search(
+                    category="hands",
+                    event=True,
+                    start=datetime(2000, 1, 1, 11, 0, 0),
+                    end=datetime(2000, 1, 13, 14, 0, 0),
+                    post_filter=False,
+                )
+                events2 = cal.search(
+                    category="hands",
+                    event=True,
+                    start=datetime(2000, 1, 1, 9, 0, 0),
+                    end=datetime(2000, 1, 6, 14, 0, 0),
+                    post_filter=False,
+                )
                 self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
             except (AuthorizationError, DAVError):
                 self.set_feature("search.combined-is-logical-and", "ungraceful")
@@ -897,9 +907,7 @@ class CheckSearch(Check):
             ## We use _request_report_build_resultlist directly (to bypass the
             ## search.unlimited-time-range workaround in _search_impl), which also
             ## bypasses the Calendar.search delay wrapper in checker.py.
-            search_cache = self.checker._client_obj.features.is_supported(
-                "search-cache", return_type=dict
-            )
+            search_cache = self.checker._client_obj.features.is_supported("search-cache", return_type=dict)
             if search_cache.get("behaviour") == "delay":
                 time.sleep(search_cache.get("delay", 1))
             ## Build VEVENT query without time range and call REPORT directly
@@ -1032,10 +1040,10 @@ class CheckIsNotDefined(Check):
             self.set_feature("search.is-not-defined")
         elif any(v is True for v in results.values()):
             working = [k for k, v in results.items() if v is True]
-            self.set_feature("search.is-not-defined", {
-                "support": "fragile",
-                "details": f"works for {', '.join(working)} but not all properties"
-            })
+            self.set_feature(
+                "search.is-not-defined",
+                {"support": "fragile", "details": f"works for {', '.join(working)} but not all properties"},
+            )
         else:
             self.set_feature("search.is-not-defined", False)
 
@@ -1195,9 +1203,7 @@ class CheckRecurrenceSearch(Check):
             event=True,
             post_filter=False,
         )
-        self.set_feature(
-            "search.recurrences.includes-implicit.infinite-scope", len(events) == 1
-        )
+        self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(events) == 1)
 
         ## server-side expansion
         events = cal.search(
@@ -1209,9 +1215,7 @@ class CheckRecurrenceSearch(Check):
         )
         self.set_feature(
             "search.recurrences.expanded.event",
-            len(events) == 1
-            and events[0].component["dtstart"]
-            == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
+            len(events) == 1 and events[0].component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
         )
         todos = cal.search(
             start=datetime(2000, 2, 12, tzinfo=utc),
@@ -1222,9 +1226,7 @@ class CheckRecurrenceSearch(Check):
         )
         self.set_feature(
             "search.recurrences.expanded.todo",
-            len(todos) == 1
-            and todos[0].component["dtstart"]
-            == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
+            len(todos) == 1 and todos[0].component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
         )
         exception = cal.search(
             start=datetime(2000, 2, 13, 11, tzinfo=utc),
@@ -1236,11 +1238,10 @@ class CheckRecurrenceSearch(Check):
         self.set_feature(
             "search.recurrences.expanded.exception",
             len(exception) == 1
-            and exception[0].component["dtstart"]
-            == datetime(2000, 2, 13, 12, 0, 0, tzinfo=utc)
-            and exception[0].component["summary"]
-            == "February recurrence with different summary"
-            and getattr(exception[0].component.get('RECURRENCE_ID'), 'dt', None) == datetime(2000, 2, 13, 12, tzinfo=utc)
+            and exception[0].component["dtstart"] == datetime(2000, 2, 13, 12, 0, 0, tzinfo=utc)
+            and exception[0].component["summary"] == "February recurrence with different summary"
+            and getattr(exception[0].component.get("RECURRENCE_ID"), "dt", None)
+            == datetime(2000, 2, 13, 12, tzinfo=utc),
         )
 
 
@@ -1251,6 +1252,7 @@ class CheckCaseSensitiveSearch(Check):
     RFC4791 section 9.7.5 specifies that i;ascii-casemap MUST be the default collation,
     and section 7.5 says servers are REQUIRED to support i;octet (case-sensitive).
     """
+
     depends_on = {CheckSearch}
     features_to_be_checked = {
         "search.text.case-sensitive",
@@ -1282,8 +1284,7 @@ class CheckCaseSensitiveSearch(Check):
 
             ## "Simple" should not match "simple event ...", but "simple" should
             self.set_feature(
-                "search.text.case-sensitive",
-                len(results_sensitive) == 0 and len(results_sensitive_match) >= 1
+                "search.text.case-sensitive", len(results_sensitive) == 0 and len(results_sensitive_match) >= 1
             )
 
             ## If more than one result is returned for "Simple" (only one event
@@ -1310,10 +1311,7 @@ class CheckCaseSensitiveSearch(Check):
             searcher3.add_property_filter("SUMMARY", "SIMPLE", case_sensitive=False)
             results_insensitive = searcher3.search(cal, post_filter=False)
 
-            self.set_feature(
-                "search.text.case-insensitive",
-                len(results_insensitive) >= 1
-            )
+            self.set_feature("search.text.case-insensitive", len(results_insensitive) >= 1)
         except (ReportError, DAVError):
             self.set_feature("search.text.case-insensitive", "ungraceful")
 
@@ -1326,6 +1324,7 @@ class CheckSubstringSearch(Check):
     Some servers (e.g. Zimbra) accept the REPORT but only do exact match,
     ignoring the contains match-type.
     """
+
     depends_on = {CheckSearch}
     features_to_be_checked = {
         "search.text.substring",
@@ -1338,9 +1337,7 @@ class CheckSubstringSearch(Check):
             ## First, verify text search works at all by searching for
             ## the full summary (should match regardless of substring support)
             searcher_exact = CalDAVSearcher(event=True)
-            searcher_exact.add_property_filter(
-                "SUMMARY", "simple event with a start time and an end time"
-            )
+            searcher_exact.add_property_filter("SUMMARY", "simple event with a start time and an end time")
             results_exact = searcher_exact.search(cal, post_filter=False)
 
             if len(results_exact) != 1:
@@ -1366,6 +1363,7 @@ class CheckPrincipalSearch(Check):
     Uses DAVClient.search_principals() which sends a
     DAV:principal-property-search REPORT.
     """
+
     depends_on = {CheckGetCurrentUserPrincipal}
     features_to_be_checked = {
         "principal-search",
@@ -1386,13 +1384,13 @@ class CheckPrincipalSearch(Check):
         except:
             search_name = None
         if not search_name:
-            search_name = getattr(self.client, 'username', None)
+            search_name = getattr(self.client, "username", None)
 
         any_search_worked = False
         any_ungraceful = False
 
         ## Use search_principals (v3.0+) or principals (v2.x) method
-        _search_principals = getattr(self.client, 'search_principals', None) or getattr(self.client, 'principals', None)
+        _search_principals = getattr(self.client, "search_principals", None) or getattr(self.client, "principals", None)
         if not _search_principals:
             self.set_feature("principal-search", False)
             self.set_feature("principal-search.by-name.self", False)
@@ -1403,10 +1401,7 @@ class CheckPrincipalSearch(Check):
         if search_name:
             try:
                 results = _search_principals(name=search_name)
-                found_self = any(
-                    isinstance(r, Principal)
-                    for r in results
-                )
+                found_self = any(isinstance(r, Principal) for r in results)
                 self.set_feature("principal-search.by-name.self", found_self)
                 if found_self:
                     any_search_worked = True
@@ -1484,9 +1479,10 @@ class CheckDuplicateUID(Check):
             try:
                 cal2 = self.client.principal().make_calendar(name=cal2_name)
             except DAVError:
-                self.set_feature("save.duplicate-uid.cross-calendar", {
-                    "support": "unknown",
-                    "behaviour": "cannot test, have access to only one calendar"})
+                self.set_feature(
+                    "save.duplicate-uid.cross-calendar",
+                    {"support": "unknown", "behaviour": "cannot test, have access to only one calendar"},
+                )
                 return
 
             try:
@@ -1505,53 +1501,55 @@ class CheckDuplicateUID(Check):
 
                 if len(events_in_cal2) == 0:
                     ## Server silently ignored the duplicate
-                    self.set_feature("save.duplicate-uid.cross-calendar", {
-                        "support": "unsupported",
-                        "behaviour": "silently-ignored"
-                    })
+                    self.set_feature(
+                        "save.duplicate-uid.cross-calendar", {"support": "unsupported", "behaviour": "silently-ignored"}
+                    )
                 elif len(events_in_cal2) == 1 and event_was_moved:
                     ## Server moved the event instead of creating a duplicate (Zimbra behavior)
-                    self.set_feature("save.duplicate-uid.cross-calendar", {
-                        "support": "unsupported",
-                        "behaviour": "moved-instead-of-copied"
-                    })
+                    self.set_feature(
+                        "save.duplicate-uid.cross-calendar",
+                        {"support": "unsupported", "behaviour": "moved-instead-of-copied"},
+                    )
                     ## Move event back to cal1 to avoid breaking other tests
                     cal1.save_event(event2.data)
                 elif len(events_in_cal2) == 1:
-                    assert events_in_cal2[0].component['uid'] == test_uid
+                    assert events_in_cal2[0].component["uid"] == test_uid
                     ## Server accepted the duplicate
                     ## Verify they are treated as separate entities.
                     event1 = cal1.event_by_uid(test_uid)
                     event1.load()
 
                     ## Store original summary to check later
-                    original_summary = str(event1.icalendar_instance.walk('vevent')[0].get('summary', ''))
+                    original_summary = str(event1.icalendar_instance.walk("vevent")[0].get("summary", ""))
 
                     ## Modify event in cal2 and verify cal1's event is unchanged
-                    event2.icalendar_instance.walk('vevent')[0]['summary'] = "Modified in Cal2"
+                    event2.icalendar_instance.walk("vevent")[0]["summary"] = "Modified in Cal2"
                     event2.save()
 
                     event1.load()
-                    current_summary = str(event1.icalendar_instance.walk('vevent')[0].get('summary', ''))
+                    current_summary = str(event1.icalendar_instance.walk("vevent")[0].get("summary", ""))
                     if current_summary == original_summary:
                         self.set_feature("save.duplicate-uid.cross-calendar", True)
                     else:
-                        self.set_feature("save.duplicate-uid.cross-calendar", {
-                            "support": "fragile",
-                            "behaviour": "Modifying duplicate in one calendar affects the other"
-                        })
+                        self.set_feature(
+                            "save.duplicate-uid.cross-calendar",
+                            {
+                                "support": "fragile",
+                                "behaviour": "Modifying duplicate in one calendar affects the other",
+                            },
+                        )
                 else:
-                    self.set_feature("save.duplicate-uid.cross-calendar", {
-                        "support": "fragile",
-                        "behaviour": f"Unexpected: {len(events_in_cal2)} events in cal2"
-                    })
+                    self.set_feature(
+                        "save.duplicate-uid.cross-calendar",
+                        {"support": "fragile", "behaviour": f"Unexpected: {len(events_in_cal2)} events in cal2"},
+                    )
 
             except (DAVError, AuthorizationError) as e:
                 ## Server rejected the duplicate with an error
-                self.set_feature("save.duplicate-uid.cross-calendar", {
-                    "support": "ungraceful",
-                    "behaviour": f"Server error: {type(e).__name__}"
-                })
+                self.set_feature(
+                    "save.duplicate-uid.cross-calendar",
+                    {"support": "ungraceful", "behaviour": f"Server error: {type(e).__name__}"},
+                )
             finally:
                 ## Cleanup
                 try:
@@ -1574,6 +1572,7 @@ class CheckSyncToken(Check):
     3. Fragile sync tokens (returns extra content, race conditions)
     4. Sync breaks on delete (server fails after object deletion)
     """
+
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "sync-token",
@@ -1597,10 +1596,10 @@ class CheckSyncToken(Check):
             sync_support = "full"
             sync_behaviour = None
         except (ReportError, DAVError, AttributeError) as e:
-            self.set_feature("sync-token", {
-                "support": "ungraceful",
-                "behaviour": f"Server error on sync-collection REPORT: {type(e).__name__}"
-            })
+            self.set_feature(
+                "sync-token",
+                {"support": "ungraceful", "behaviour": f"Server error on sync-collection REPORT: {type(e).__name__}"},
+            )
             return
 
         ## Test 2 & 3: Check for time-based and fragile sync tokens
@@ -1684,10 +1683,9 @@ class CheckSyncToken(Check):
                 self.set_feature("sync-token.delete", True)
             except (ReportError, DAVError) as e:
                 ## Some servers (like sabre-based) return "418 I'm a teapot" or other errors
-                self.set_feature("sync-token.delete", {
-                    "support": "unsupported",
-                    "behaviour": f"sync fails after deletion: {e}"
-                })
+                self.set_feature(
+                    "sync-token.delete", {"support": "unsupported", "behaviour": f"sync fails after deletion: {e}"}
+                )
         finally:
             ## Ensure cleanup even if an exception occurred
             if test_event is not None:
@@ -1723,26 +1721,25 @@ class CheckFreeBusyQuery(Check):
 
             ## If we got here without exception, the feature is supported
             ## Verify we got a valid freebusy object
-            if freebusy and hasattr(freebusy, 'vobject_instance'):
+            if freebusy and hasattr(freebusy, "vobject_instance"):
                 self.set_feature("freebusy-query.rfc4791", True)
             else:
-                self.set_feature("freebusy-query.rfc4791", {
-                    "support": "unsupported",
-                    "behaviour": "freebusy query returned invalid or empty response"
-                })
+                self.set_feature(
+                    "freebusy-query.rfc4791",
+                    {"support": "unsupported", "behaviour": "freebusy query returned invalid or empty response"},
+                )
         except (ReportError, DAVError, NotFoundError) as e:
             ## Server doesn't support freebusy queries
             ## Common responses: 500 Internal Server Error, 501 Not Implemented
-            self.set_feature("freebusy-query.rfc4791", {
-                "support": "ungraceful",
-                "behaviour": f"freebusy query failed: {e}"
-            })
+            self.set_feature(
+                "freebusy-query.rfc4791", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"}
+            )
         except Exception as e:
             ## Unexpected error
-            self.set_feature("freebusy-query.rfc4791", {
-                "support": "broken",
-                "behaviour": f"unexpected error during freebusy query: {e}"
-            })
+            self.set_feature(
+                "freebusy-query.rfc4791",
+                {"support": "broken", "behaviour": f"unexpected error during freebusy query: {e}"},
+            )
 
 
 class CheckTimezone(Check):
@@ -1786,26 +1783,26 @@ class CheckTimezone(Check):
                 except:
                     pass
             else:
-                self.set_feature("save-load.event.timezone", {
-                    "support": "broken",
-                    "behaviour": "Event with timezone was saved but could not be loaded"
-                })
+                self.set_feature(
+                    "save-load.event.timezone",
+                    {"support": "broken", "behaviour": "Event with timezone was saved but could not be loaded"},
+                )
         except AuthorizationError as e:
             ## Server rejected the event with a 403 Forbidden
             ## This is the specific issue reported in GitHub #372
-            self.set_feature("save-load.event.timezone", {
-                "support": "unsupported",
-                "behaviour": f"Server rejected event with timezone (403 Forbidden): {e}"
-            })
+            self.set_feature(
+                "save-load.event.timezone",
+                {"support": "unsupported", "behaviour": f"Server rejected event with timezone (403 Forbidden): {e}"},
+            )
         except DAVError as e:
             ## Other DAV error (e.g., 400 Bad Request, 500 Internal Server Error)
-            self.set_feature("save-load.event.timezone", {
-                "support": "ungraceful",
-                "behaviour": f"Server error when saving event with timezone: {e}"
-            })
+            self.set_feature(
+                "save-load.event.timezone",
+                {"support": "ungraceful", "behaviour": f"Server error when saving event with timezone: {e}"},
+            )
         except Exception as e:
             ## Unexpected error
-            self.set_feature("save-load.event.timezone", {
-                "support": "broken",
-                "behaviour": f"Unexpected error during timezone test: {e}"
-            })
+            self.set_feature(
+                "save-load.event.timezone",
+                {"support": "broken", "behaviour": f"Unexpected error during timezone test: {e}"},
+            )

@@ -40,6 +40,51 @@ class TestCliConfigSection:
             )
 
 
+class TestCliListChecks:
+    """Test --list-checks CLI option"""
+
+    def test_list_checks_option_exists(self) -> None:
+        """--list-checks should be a valid CLI option"""
+        runner = CliRunner()
+        result = runner.invoke(check_server_compatibility, ["--help"])
+        assert "--list-checks" in result.output
+
+    def test_list_checks_prints_class_names_and_exits(self) -> None:
+        """--list-checks should print check class names without connecting to a server"""
+        runner = CliRunner()
+        result = runner.invoke(check_server_compatibility, ["--list-checks"])
+        assert result.exit_code == 0
+        assert "CheckSearch" in result.output
+        assert "PrepareCalendar" not in result.output  # internal helper, not a real check
+
+    def test_list_checks_output_is_sorted(self) -> None:
+        """--list-checks output should be alphabetically sorted"""
+        runner = CliRunner()
+        result = runner.invoke(check_server_compatibility, ["--list-checks"])
+        names = [line.strip() for line in result.output.splitlines() if line.strip()]
+        assert names == sorted(names)
+
+
+class TestCliCalendarOption:
+    """Test --caldav-calendar CLI option"""
+
+    def test_caldav_calendar_option_exists(self) -> None:
+        """--caldav-calendar should be a valid CLI option"""
+        runner = CliRunner()
+        result = runner.invoke(check_server_compatibility, ["--help"])
+        assert "--caldav-calendar" in result.output
+
+
+class TestCliRunFeature:
+    """Test --run-feature CLI option"""
+
+    def test_run_feature_option_exists(self) -> None:
+        """--run-feature should be a valid CLI option"""
+        runner = CliRunner()
+        result = runner.invoke(check_server_compatibility, ["--help"])
+        assert "--run-feature" in result.output
+
+
 class TestCliNameFallback:
     """Test --name falls back to config file when not found in registry"""
 

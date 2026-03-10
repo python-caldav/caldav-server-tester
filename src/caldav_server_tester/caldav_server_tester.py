@@ -7,13 +7,16 @@ TODO: make a new cli.py file with the bare-bones click logic.
 """
 
 import importlib.metadata
+import inspect
 import sys
 from pathlib import Path
 
 import click
 from caldav.davclient import get_davclient
 
+from . import checks as checks_module
 from .checker import ServerQuirkChecker
+from .checks_base import Check
 
 try:
     __version__ = importlib.metadata.version("caldav-server-tester")
@@ -52,12 +55,50 @@ def _find_caldav_test_registry():
     return None
 
 
-def _run_checks_against(conn, run_checks):
+def _list_check_classes() -> list[str]:
+    """Return sorted list of available (non-internal) check class names."""
+    return sorted(
+        name
+        for name, obj in inspect.getmembers(checks_module, inspect.isclass)
+        if obj.__module__ == checks_module.__name__
+        and issubclass(obj, Check)
+        and obj is not Check
+        and name != "PrepareCalendar"
+    )
+
+
+def _feature_to_check_name(feature: str) -> str | None:
+    """Return the check class name whose features_to_be_checked covers the given feature."""
+    for cls_name, obj in inspect.getmembers(checks_module, inspect.isclass):
+        if (
+            obj.__module__ == checks_module.__name__
+            and issubclass(obj, Check)
+            and obj is not Check
+            and feature in getattr(obj, "features_to_be_checked", set())
+        ):
+            return cls_name
+    return None
+
+
+def _run_checks_against(conn, run_checks, run_features=(), calendar=None):
     """Run the configured checks against a connection and return the checker object."""
     obj = ServerQuirkChecker(conn)
-    if not run_checks:
+    if calendar:
+        obj.expected_features.set_feature("test-calendar.compatibility-tests", {"name": calendar})
+
+    all_checks = list(run_checks)
+    for feature in run_features:
+        check_name = _feature_to_check_name(feature)
+        if check_name is None:
+            raise click.UsageError(
+                f"No check found for feature {feature!r}. Use --list-checks to see available checks."
+            )
+        if check_name not in all_checks:
+            all_checks.append(check_name)
+
+    if not all_checks:
         obj.check_all()
-    for check in run_checks:
+    for check in all_checks:
         obj.check_one(check)
     return obj
 
@@ -68,13 +109,13 @@ def _emit_report(obj, verbose, output_format, show_diff):
     click.echo(obj.report(verbose=verbose, show_diff=show_diff, return_what=return_what))
 
 
-def _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup):
+def _check_server(server, run_checks, run_features, verbose, output_format, show_diff, no_cleanup, calendar=None):
     """Start a TestServer (if needed), run checks, stop it, and print the report."""
     server.start()
     try:
         client = server.get_sync_client()
         with client:
-            obj = _run_checks_against(client, run_checks)
+            obj = _run_checks_against(client, run_checks, run_features=run_features, calendar=calendar)
             if not no_cleanup:
                 obj.cleanup(force=True)
     finally:
@@ -118,11 +159,33 @@ def _check_server(server, run_checks, verbose, output_format, show_diff, no_clea
     help="Server compatibility features preset (e.g., 'bedework', 'zimbra', 'sogo')",
     metavar="FEATURES",
 )
-@click.option("--run-checks", help="Specific check(s) to run", multiple=True)
+@click.option(
+    "--caldav-calendar",
+    help="Calendar display name to use for testing (required for servers without MKCALENDAR support)",
+    metavar="CALENDAR",
+)
+@click.option("--list-checks", is_flag=True, default=False, help="List available check class names and exit")
+@click.option("--run-checks", help="Specific check class(es) to run", multiple=True)
+@click.option("--run-feature", "run_features", help="Run check(s) covering a specific feature", multiple=True)
 def check_server_compatibility(
-    verbose, output_format, show_diff, no_cleanup, name, config_section, run_checks, **kwargs
+    verbose,
+    output_format,
+    show_diff,
+    no_cleanup,
+    name,
+    config_section,
+    list_checks,
+    run_checks,
+    run_features,
+    caldav_calendar,
+    **kwargs,
 ):
-    ## Collect explicit connection keys from --caldav-* options
+    if list_checks:
+        for cls_name in _list_check_classes():
+            click.echo(cls_name)
+        return
+
+    ## Collect explicit connection keys from --caldav-* options (excluding --caldav-calendar)
     conn_keys = {k[7:]: v for k, v in kwargs.items() if k.startswith("caldav_") and v}
 
     ## If an explicit URL was given, use it directly
@@ -131,7 +194,7 @@ def check_server_compatibility(
         if conn is None:
             raise click.UsageError(f"Could not connect to {conn_keys['url']}")
         with conn:
-            obj = _run_checks_against(conn, run_checks)
+            obj = _run_checks_against(conn, run_checks, run_features=run_features, calendar=caldav_calendar)
             if not no_cleanup:
                 obj.cleanup(force=True)
         _emit_report(obj, verbose, output_format, show_diff)
@@ -144,7 +207,16 @@ def check_server_compatibility(
         if registry is not None:
             server = registry.get(name)
             if server is not None:
-                _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
+                _check_server(
+                    server,
+                    run_checks,
+                    run_features,
+                    verbose,
+                    output_format,
+                    show_diff,
+                    no_cleanup,
+                    calendar=caldav_calendar,
+                )
                 return
 
     ## Fall back to the caldav config-file / testconfig path
@@ -157,7 +229,7 @@ def check_server_compatibility(
             else "No server specified. Use --name, --caldav-url, or configure ~/.config/caldav/calendar.conf."
         )
     with conn:
-        obj = _run_checks_against(conn, run_checks)
+        obj = _run_checks_against(conn, run_checks, run_features=run_features, calendar=caldav_calendar)
         if not no_cleanup:
             obj.cleanup(force=True)
     _emit_report(obj, verbose, output_format, show_diff)
