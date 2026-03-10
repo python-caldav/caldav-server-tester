@@ -67,7 +67,7 @@ features = ["dev"]
 [tool.hatch.envs.default.scripts]
 test = "pytest {args}"
 lint = "ruff check ."
-deptry = "deptry src {args}"
+check-deps = "deptry src {args}"
 
 [tool.ruff]
 target-version = "py310"
@@ -109,5 +109,6 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
-[tool.deptry]
-ignore = ["DEP002"]  # Dev tools (pytest, ruff, etc.) are not imported in code
+[tool.deptry.per_rule_ignores]
+DEP001 = ["tests"]  # it probes if the caldav tests can be reached
+DEP002 = ["pytest", "pytest-mock", "ruff", "pre-commit", "deptry"]

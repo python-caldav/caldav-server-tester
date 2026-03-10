@@ -29,8 +29,8 @@ jobs:
       with:
         args: check .
 
-    - name: Check dependencies with deptry
-      run: hatch run deptry src
+    - name: Check dependencies
+      run: hatch run check-deps
 
     - name: Run tests
       run: hatch run test
