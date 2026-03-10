@@ -28,7 +28,6 @@ keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
     "caldav>=3.0.1",
     "click",
-    "icalendar",
     "pyyaml",
 ]
 
