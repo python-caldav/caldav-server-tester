@@ -111,6 +111,21 @@ class ServerQuirkChecker:
                         except:
                             pass
 
+    def _get_deviating_features(self) -> dict:
+        """Return observed features where support differs from expected (configured) support.
+
+        Features not explicitly expected default to "full" (standard CalDAV compliance).
+        """
+        all_observed = self._features_checked.dotted_feature_set_list(compact=False)
+        expected_all = self.expected_features.dotted_feature_set_list(compact=False)
+        deviating = {}
+        for feature, info in all_observed.items():
+            obs_support = info.get("support", "unknown")
+            exp_support = expected_all.get(feature, {}).get("support", "full")
+            if obs_support != exp_support:
+                deviating[feature] = info
+        return deviating
+
     def _compute_diff(self) -> dict:
         """Compare expected (configured) features against observed features.
 
@@ -172,11 +187,15 @@ class ServerQuirkChecker:
                 f"Server: {ret['name']} ({ret['url']})",
                 f"caldav library version: {ret['caldav_version']}",
                 "",
-                "Feature compatibility (non-verbose: showing only non-full features):"
+                "Feature compatibility (non-verbose: showing only deviations from expected):"
                 if not verbose
                 else "Feature compatibility:",
             ]
-            display_features = self._features_checked.dotted_feature_set_list(compact=not verbose)
+            display_features = (
+                self._get_deviating_features()
+                if not verbose
+                else self._features_checked.dotted_feature_set_list(compact=False)
+            )
             for feature, info in sorted(display_features.items()):
                 support = info.get("support", "?")
                 marker = support_marker.get(support, f"[{support}]  ")

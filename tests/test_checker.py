@@ -338,6 +338,41 @@ class TestServerQuirkCheckerReport:
 
         assert "TODO" not in str(result.get("error", ""))
 
+    def test_report_str_nonverbose_hides_expected_quirk(self) -> None:
+        """Non-verbose report should NOT show features where observed == expected, even if non-full"""
+        client = Mock()
+        expected = FeatureSet()
+        expected.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+        client.features = expected
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker.expected_features = expected
+        # Observed matches expected (both unsupported)
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+
+        result = checker.report(return_what=str, verbose=False)
+
+        # "create-calendar" should NOT appear since observed == expected
+        assert "create-calendar" not in result
+
+    def test_report_str_nonverbose_shows_unexpected_support(self) -> None:
+        """Non-verbose report should show features where observed != expected (unexpected full support)"""
+        client = Mock()
+        expected = FeatureSet()
+        expected.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+        client.features = expected
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker.expected_features = expected
+        # Observed is full but expected is unsupported
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+
+        result = checker.report(return_what=str, verbose=False)
+
+        assert "create-calendar" in result
+
     def test_report_diff_shows_deviations(self) -> None:
         """report should be able to show diff between expected and observed features"""
         client = Mock()
