@@ -17,7 +17,7 @@ class ServerQuirkChecker:
     * Methods for checking all features or a specific feature
     """
 
-    def __init__(self, client_obj, debug_mode='logging'):
+    def __init__(self, client_obj, debug_mode="logging"):
         self._client_obj = client_obj
         self._features_checked = FeatureSet()
         self._default_calendar = None
@@ -32,20 +32,21 @@ class ServerQuirkChecker:
             delay = search_cache_config.get("delay", 1)
             ## Wrap Calendar.search with delay decorator
             from caldav.collection import Calendar
-            if not hasattr(Calendar, '_original_search'):
+
+            if not hasattr(Calendar, "_original_search"):
                 Calendar._original_search = Calendar.search
+
                 def delayed_search(self, *args, **kwargs):
                     time.sleep(delay)
                     return Calendar._original_search(self, *args, **kwargs)
+
                 Calendar.search = delayed_search
 
     def check_all(self):
         classes = [
             obj
             for name, obj in inspect.getmembers(checks, inspect.isclass)
-            if obj.__module__ == checks.__name__
-            and issubclass(obj, Check)
-            and obj is not Check
+            if obj.__module__ == checks.__name__ and issubclass(obj, Check) and obj is not Check
         ]
         for cl in classes:
             cl(self).run_check(only_once=True)
@@ -65,14 +66,16 @@ class ServerQuirkChecker:
         force=True (default): always clean up.
         force=False: only clean up if 'test-calendar.compatibility-tests' config has cleanup=True.
         """
-        if not hasattr(self, 'calendar'):
+        if not hasattr(self, "calendar"):
             return  ## PrepareCalendar never ran; nothing to clean up
 
         if not force:
-            test_cal_info = self.expected_features.is_supported('test-calendar.compatibility-tests', return_type=dict)
+            test_cal_info = self.expected_features.is_supported("test-calendar.compatibility-tests", return_type=dict)
             if not test_cal_info.get("cleanup", False):
                 return
-        if self.features_checked.is_supported("create-calendar") and self.features_checked.is_supported("delete-calendar"):
+        if self.features_checked.is_supported("create-calendar") and self.features_checked.is_supported(
+            "delete-calendar"
+        ):
             self.calendar.delete()
             if self.tasklist != self.calendar:
                 self.tasklist.delete()
@@ -80,22 +83,23 @@ class ServerQuirkChecker:
                 self.journallist.delete()
         else:
             for uid in (
-                    "csc_simple_task1",
-                    "csc_simple_event1",
-                    "csc_simple_event2",
-                    "csc_simple_event3",
-                    "csc_simple_event4",
-                    "csc_event_with_categories",
-                    "csc_event_with_class",
-                    "csc_event_with_duration",
-                    "csc_simple_task2",
-                    "csc_simple_task3",
-                    "csc_simple_journal1",
-                    "csc_monthly_recurring_event",
-                    "csc_monthly_recurring_task",
-                    "csc_monthly_recurring_with_exception",
-                    "csc_recurring_count_task",
-                    "csc_url_check"):
+                "csc_simple_task1",
+                "csc_simple_event1",
+                "csc_simple_event2",
+                "csc_simple_event3",
+                "csc_simple_event4",
+                "csc_event_with_categories",
+                "csc_event_with_class",
+                "csc_event_with_duration",
+                "csc_simple_task2",
+                "csc_simple_task3",
+                "csc_simple_journal1",
+                "csc_monthly_recurring_event",
+                "csc_monthly_recurring_task",
+                "csc_monthly_recurring_with_exception",
+                "csc_recurring_count_task",
+                "csc_url_check",
+            ):
                 try:
                     self.calendar.object_by_uid(uid).delete()
                 except:
@@ -179,6 +183,9 @@ class ServerQuirkChecker:
                 extras = {k: v for k, v in info.items() if k != "support"}
                 extra_str = "  " + "  ".join(f"{k}={v}" for k, v in extras.items()) if extras else ""
                 lines.append(f"  {marker} {feature}{extra_str}")
+                description = FeatureSet.FEATURES.get(feature, {}).get("description", "")
+                if description:
+                    lines.append(f"             {description}")
             if not display_features:
                 lines.append("  (no issues detected)" if not verbose else "  (no features checked)")
 
@@ -191,6 +198,4 @@ class ServerQuirkChecker:
 
             return "\n".join(lines)
         else:
-            raise NotImplementedError(
-                "return types accepted: dict, str, 'json', 'yaml', 'hints'"
-            )
+            raise NotImplementedError("return types accepted: dict, str, 'json', 'yaml', 'hints'")

@@ -9,6 +9,9 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 ## [Unreleased]
 
 ### Added
+- `--config-section` CLI option: select a named section from the caldav config file (passed through to `get_davclient`)
+- `--name` now falls back to the caldav config file when the name is not found in the test server registry (instead of raising an error)
+- Text report now shows the feature description (from `compatibility_hints.py`) below each feature line
 - YAML output format (`--format yaml`)
 - Hints output format (`--format hints`): outputs observed features as a Python dict literal suitable for pasting into `compatibility_hints.py`
 - `--diff` flag: show diff between configured (expected) and observed features in the report

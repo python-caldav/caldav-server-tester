@@ -91,8 +91,13 @@ def _check_server(server, run_checks, verbose, output_format, show_diff, no_clea
     default="text",
     help="Output format (text, json, yaml, or hints for compatibility_hints.py snippet)",
 )
-@click.option("--diff", "show_diff", is_flag=True, default=False, help="Show diff between expected and observed features")
+@click.option(
+    "--diff", "show_diff", is_flag=True, default=False, help="Show diff between expected and observed features"
+)
 @click.option("--no-cleanup", is_flag=True, default=False, help="Do not remove test data after run")
+@click.option(
+    "--config-section", default=None, help="Section name in caldav config file (default: 'default')", metavar="SECTION"
+)
 @click.option("--caldav-url", help="Full URL to the caldav server", metavar="URL")
 @click.option(
     "--caldav-username",
@@ -112,13 +117,13 @@ def _check_server(server, run_checks, verbose, output_format, show_diff, no_clea
     metavar="FEATURES",
 )
 @click.option("--run-checks", help="Specific check(s) to run", multiple=True)
-def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, name, run_checks, **kwargs):
-    click.echo("WARNING: this script is not production-ready")
-
+def check_server_compatibility(
+    verbose, output_format, show_diff, no_cleanup, name, config_section, run_checks, **kwargs
+):
     ## Collect explicit connection keys from --caldav-* options
     conn_keys = {k[7:]: v for k, v in kwargs.items() if k.startswith("caldav_") and v}
 
-    ## If an explicit URL was given, use it directly (with confirmation)
+    ## If an explicit URL was given, use it directly
     if conn_keys.get("url"):
         conn = get_davclient(**conn_keys)
         if conn is None:
@@ -136,33 +141,29 @@ def check_server_compatibility(verbose, output_format, show_diff, no_cleanup, na
     if registry is not None:
         if name:
             server = registry.get(name)
-            if server is None:
-                raise click.UsageError(
-                    f"No test server named {name!r} found in the registry. "
-                    f"Available: {[s.name for s in registry.all_servers()]}"
-                )
-            servers = [server]
+            if server is not None:
+                _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
+                return
+            ## Name not found in registry — fall through to config file below
         else:
             servers = registry.enabled_servers()
-
-        if not servers:
-            raise click.UsageError(
-                "No enabled test servers found. "
-                "Install radicale/xandikos or configure test_servers.yaml."
-            )
-
-        for server in servers:
-            _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
-        return
+            if not servers:
+                raise click.UsageError(
+                    "No enabled test servers found. "
+                    "Configure servers in caldav_test_servers.yaml or use --caldav-url / --name."
+                )
+            for server in servers:
+                _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
+            return
 
     ## Fall back to the caldav config-file / testconfig path
-    conn = get_davclient(name=name, testconfig=True, **conn_keys)
+    conn = get_davclient(name=name, config_section=config_section, testconfig=True, **conn_keys)
     if conn is None:
         raise click.UsageError(
             f"No configuration found for {name!r}. "
-            "Check your caldav client config file."
+            "Check your caldav client config file (~/.config/caldav/calendar.conf)."
             if name
-            else "No server specified. Use --name, --caldav-url, or run from a caldav source checkout."
+            else "No server specified. Use --name, --caldav-url, or configure ~/.config/caldav/calendar.conf."
         )
     with conn:
         obj = _run_checks_against(conn, run_checks)

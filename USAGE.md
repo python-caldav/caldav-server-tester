@@ -38,10 +38,18 @@ caldav-server-tester --name radicale
 ### Against a server from the caldav config file
 
 `caldav-server-tester` falls back to the caldav client config file
-(typically `~/.config/calendar.conf`) when no URL or registry is found:
+(typically `~/.config/caldav/calendar.conf`) when no URL or registry is found:
 
 ```
 caldav-server-tester --name myserver
+```
+
+If the desired server is in a non-default section of the config file, use
+`--config-section`:
+
+```
+caldav-server-tester --config-section work
+caldav-server-tester --name myserver --config-section work
 ```
 
 ## Options reference
@@ -57,8 +65,8 @@ Options:
   --diff                          Show diff between expected and observed
                                   features
   --no-cleanup                    Do not remove test data after run
-  -y, --skip-confirmation, --yes  Skip interactive confirmation for external
-                                  servers
+  --config-section SECTION        Section name in caldav config file (default:
+                                  'default')
   --caldav-url URL                Full URL to the caldav server
   --caldav-username USERNAME      Username for the caldav server
   --caldav-password PASSWORD      Password for the caldav server

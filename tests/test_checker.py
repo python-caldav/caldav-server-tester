@@ -64,15 +64,15 @@ class TestServerQuirkCheckerInit:
         client.features = FeatureSet()
         checker = ServerQuirkChecker(client)
 
-        assert checker.debug_mode == 'logging'
+        assert checker.debug_mode == "logging"
 
     def test_init_sets_custom_debug_mode(self) -> None:
         """Initialization should accept custom debug_mode"""
         client = Mock()
         client.features = FeatureSet()
-        checker = ServerQuirkChecker(client, debug_mode='assert')
+        checker = ServerQuirkChecker(client, debug_mode="assert")
 
-        assert checker.debug_mode == 'assert'
+        assert checker.debug_mode == "assert"
 
 
 class TestServerQuirkCheckerProperties:
@@ -98,7 +98,7 @@ class TestServerQuirkCheckerProperties:
 class TestServerQuirkCheckerCheckOne:
     """Test ServerQuirkChecker.check_one method"""
 
-    @patch('caldav_server_tester.checker.checks')
+    @patch("caldav_server_tester.checker.checks")
     def test_check_one_retrieves_check_by_name(self, mock_checks) -> None:
         """check_one should retrieve check class by name from checks module"""
         client = Mock()
@@ -175,7 +175,7 @@ class TestServerQuirkCheckerReport:
         after = time.time()
 
         assert "ts" in result
-        assert isinstance(result["ts"], (int, float))
+        assert isinstance(result["ts"], int | float)
         assert before <= result["ts"] <= after
 
     def test_report_dict_includes_features(self) -> None:
@@ -187,9 +187,7 @@ class TestServerQuirkCheckerReport:
         checker = ServerQuirkChecker(client)
 
         # Add some features (use registered feature names)
-        checker._features_checked.copyFeatureSet(
-            {"create-calendar": {"support": "full"}}, collapse=False
-        )
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = checker.report(return_what=dict)
 
@@ -237,6 +235,34 @@ class TestServerQuirkCheckerReport:
         result = checker.report(return_what=str)
         assert isinstance(result, str)
         assert "https://example.com/caldav" in result
+
+    def test_report_str_verbose_shows_feature_description(self) -> None:
+        """report text in verbose mode should include the feature description from FeatureSet.FEATURES"""
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+
+        result = checker.report(return_what=str, verbose=True)
+
+        expected_description = FeatureSet.FEATURES["create-calendar"]["description"]
+        assert expected_description in result
+
+    def test_report_str_nonverbose_shows_description_for_non_full_features(self) -> None:
+        """report text in non-verbose mode should show descriptions for non-full features"""
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+
+        result = checker.report(return_what=str, verbose=False)
+
+        expected_description = FeatureSet.FEATURES["create-calendar"]["description"]
+        assert expected_description in result
 
     def test_report_invalid_return_type_raises_not_implemented(self) -> None:
         """report with invalid return_what should raise NotImplementedError"""
@@ -322,9 +348,7 @@ class TestServerQuirkCheckerReport:
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
         # Observe something different from expected
-        checker._features_checked.copyFeatureSet(
-            {"create-calendar": {"support": "unsupported"}}, collapse=False
-        )
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, show_diff=True)
 
@@ -353,9 +377,7 @@ class TestServerQuirkCheckerCleanup:
         """cleanup(force=False) should check expected_features for cleanup setting"""
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet(
-            {"test-calendar.compatibility-tests": {"cleanup": False}}, collapse=False
-        )
+        features.copyFeatureSet({"test-calendar.compatibility-tests": {"cleanup": False}}, collapse=False)
         client.features = features
         checker = ServerQuirkChecker(client)
         checker.expected_features = features
