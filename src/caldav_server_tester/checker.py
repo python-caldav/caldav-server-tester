@@ -112,17 +112,18 @@ class ServerQuirkChecker:
                             pass
 
     def _get_deviating_features(self) -> dict:
-        """Return observed features where support differs from expected (configured) support.
+        """Return observed features where support differs from the spec default.
 
-        Features not explicitly expected default to "full" (standard CalDAV compliance).
+        The default for each feature comes from FeatureSet.FEATURES[feature]['default'].
+        Features with no explicit default are assumed to be "full" (standard CalDAV compliance).
         """
         all_observed = self._features_checked.dotted_feature_set_list(compact=False)
-        expected_all = self.expected_features.dotted_feature_set_list(compact=False)
         deviating = {}
         for feature, info in all_observed.items():
             obs_support = info.get("support", "unknown")
-            exp_support = expected_all.get(feature, {}).get("support", "full")
-            if obs_support != exp_support:
+            feature_default = FeatureSet.FEATURES.get(feature, {}).get("default", {})
+            default_support = feature_default.get("support", "full") if isinstance(feature_default, dict) else "full"
+            if obs_support != default_support:
                 deviating[feature] = info
         return deviating
 

@@ -338,40 +338,48 @@ class TestServerQuirkCheckerReport:
 
         assert "TODO" not in str(result.get("error", ""))
 
-    def test_report_str_nonverbose_hides_expected_quirk(self) -> None:
-        """Non-verbose report should NOT show features where observed == expected, even if non-full"""
+    def test_report_str_nonverbose_hides_feature_matching_spec_default(self) -> None:
+        """Non-verbose report should NOT show create-calendar.auto when observed as unsupported (spec default)"""
         client = Mock()
-        expected = FeatureSet()
-        expected.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
-        client.features = expected
+        client.features = FeatureSet()
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker.expected_features = expected
-        # Observed matches expected (both unsupported)
+        # create-calendar.auto has default=unsupported in FEATURES
+        checker._features_checked.copyFeatureSet({"create-calendar.auto": {"support": "unsupported"}}, collapse=False)
+
+        result = checker.report(return_what=str, verbose=False)
+
+        # Should NOT appear since unsupported == spec default for create-calendar.auto
+        assert "create-calendar.auto" not in result
+
+    def test_report_str_nonverbose_shows_feature_deviating_from_spec_default(self) -> None:
+        """Non-verbose report should show create-calendar when observed as unsupported (spec default is full)"""
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        # create-calendar has default=full in FEATURES
         checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
-        # "create-calendar" should NOT appear since observed == expected
-        assert "create-calendar" not in result
+        assert "create-calendar" in result
 
-    def test_report_str_nonverbose_shows_unexpected_support(self) -> None:
-        """Non-verbose report should show features where observed != expected (unexpected full support)"""
+    def test_report_str_nonverbose_shows_extra_feature_when_supported(self) -> None:
+        """Non-verbose report should show create-calendar.auto when observed as full (spec default is unsupported)"""
         client = Mock()
-        expected = FeatureSet()
-        expected.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
-        client.features = expected
+        client.features = FeatureSet()
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker.expected_features = expected
-        # Observed is full but expected is unsupported
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        # create-calendar.auto has default=unsupported; if server supports it, that's noteworthy
+        checker._features_checked.copyFeatureSet({"create-calendar.auto": {"support": "full"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
-        assert "create-calendar" in result
+        assert "create-calendar.auto" in result
 
     def test_report_diff_shows_deviations(self) -> None:
         """report should be able to show diff between expected and observed features"""
