@@ -2,3 +2,5 @@
 * [x] The default action now is "run towards all servers".  I think it should default to "don't run anything", with a `--all` flag that can be used if one wants this kind of behaviour.  Change of mind: we skip `--all` and the default is to connect to the default calendar server.
 * [] It's needed to test it towards a server that does not allow calendars to be created
 * [] Currently, by default it shows all "non-full features".  It should rather show all features deviating from the default.
+* [] New TODO-items have been added to USAGE.md.  They should be fixed and removed from this file prior to the v1.0-release
+* [] Search for other TODO-notes in the project

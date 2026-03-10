@@ -2,6 +2,8 @@
 
 """
 This is the CLI - the "click" application
+
+TODO: make a new cli.py file with the bare-bones click logic.
 """
 
 import importlib.metadata

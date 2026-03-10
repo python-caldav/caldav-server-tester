@@ -8,6 +8,8 @@ make install
 
 ## Quick start
 
+ `caldav-server-tester --help` is probably the first command you should test.
+
 ### Against a CalDAV server you specify directly
 
 ```
@@ -16,64 +18,30 @@ caldav-server-tester --caldav-url https://example.com/dav \
                      --caldav-password secret
 ```
 
+TODO: make it possible to specify `--caldav-calendar` also
+
 The tester will (by default) create a new calendar, populate it with test data, and delete the calendar when it's done.  For servers not supporting calendar creation, you need to configure what calendar to use as a test calendar (TODO: instructions for this).
 
-### Against test servers from a caldav source checkout
+### Against the caldav test servers
 
 If you have the [caldav](https://github.com/python-caldav/caldav) repository
-checked out, `caldav-server-tester` will auto-discover the test server
-registry and run against all enabled servers (Radicale, Xandikos, etc.):
+checked out, `caldav-server-tester` may auto-discover the test server
+registry.  The `--name`-parameter will try the test servers first:
 
 ```
 cd ~/caldav
-caldav-server-tester
-```
-
-Run against a single named server:
-
-```
 caldav-server-tester --name radicale
 ```
 
 ### Against a server from the caldav config file
 
-`caldav-server-tester` falls back to the caldav client config file
-(typically `~/.config/caldav/calendar.conf`) when no URL or registry is found:
+If no URL was explicitly given and `--name` didn't match any test servers, then it will search for a config file (typically `~/.config/caldav/calendar.conf`):
 
 ```
-caldav-server-tester --name myserver
+caldav-server-tester --config-section myserver
 ```
 
-If the desired server is in a non-default section of the config file, use
-`--config-section`:
-
-```
-caldav-server-tester --config-section work
-caldav-server-tester --name myserver --config-section work
-```
-
-## Options reference
-
-```
-Usage: caldav-server-tester [OPTIONS]
-
-Options:
-  --version                       Show the version and exit.
-  --name TEXT                     Server name (from test registry or config)
-  --verbose / --quiet             More output
-  --format [text|json|yaml|hints] Output format (default: text)
-  --diff                          Show diff between expected and observed
-                                  features
-  --no-cleanup                    Do not remove test data after run
-  --config-section SECTION        Section name in caldav config file (default:
-                                  'default')
-  --caldav-url URL                Full URL to the caldav server
-  --caldav-username USERNAME      Username for the caldav server
-  --caldav-password PASSWORD      Password for the caldav server
-  --caldav-features FEATURES      Server compatibility features preset
-  --run-checks TEXT               Run only specific check(s) (repeatable)
-  --help                          Show this message and exit.
-```
+Note that the only difference between `--name` and `--config-section` is that `--config-section` will not do any attempt on searching for caldav test servers.
 
 ## Output formats
 
@@ -144,6 +112,17 @@ expect.
 
 ## Safety
 
+For servers that supports `MKCALENDAR`, a dedicated calendar will be
+created on the server for compatibility testing, and deleted after the
+testing (unless `--no-cleanup` is used).
+
+For servers that do not support `MKCALENDAR`, the script should refuse
+to do anything unless the calendar to use is given in the config or on
+the command line. (TODO: NOT TESTED YET!).  All test data will be
+deleted from the server after use.  It's best to provide the check
+script with a dedicated calendar for the checking, but running the
+checks towards your personal calendar should be safe.
+
 Test data is deliberately placed in the year 2000, minimising the chance of
 collisions with real calendar entries.  UIDs are all prefixed with `csc_`.
 
@@ -152,9 +131,6 @@ test calendar if calendar creation/deletion is supported, or deletes
 individual objects by UID otherwise).  Pass `--no-cleanup` to leave the test
 data in place for inspection.
 
-For servers that do not support `MKCALENDAR`, the tool will use an existing
-calendar.  You will be prompted to confirm before writing any data unless
-`--skip-confirmation` is passed.
 
 ## Running individual checks
 
@@ -163,20 +139,7 @@ caldav-server-tester --caldav-url … --run-checks CheckSearch
 caldav-server-tester --caldav-url … --run-checks CheckSyncToken --run-checks CheckFreeBusyQuery
 ```
 
-Available check classes:
+TODO: make it possible to list out the test classes
+TODO: make it possible to check a feature rather than a class
 
-| Class                        | What it tests                                     |
-|------------------------------|---------------------------------------------------|
-| `CheckGetCurrentUserPrincipal` | RFC 5397 current-user-principal support          |
-| `CheckMakeDeleteCalendar`    | Calendar creation / deletion / namespace reuse    |
-| `CheckSearch`                | Time-range, component-type, and text searches     |
-| `CheckAlarmSearch`           | Alarm time-range searches (RFC 4791 §9.9)         |
-| `CheckRecurrenceSearch`      | Recurrence expansion and exception handling       |
-| `CheckCaseSensitiveSearch`   | Case sensitivity of text searches                 |
-| `CheckSubstringSearch`       | Substring matching in text searches               |
-| `CheckIsNotDefined`          | `is-not-defined` property filter                  |
-| `CheckPrincipalSearch`       | Principal discovery and search                    |
-| `CheckDuplicateUID`          | Cross-calendar duplicate UID handling             |
-| `CheckSyncToken`             | RFC 6578 sync-collection reports                  |
-| `CheckFreeBusyQuery`         | Free-busy query support                           |
-| `CheckTimezone`              | Event timezone support                            |
+Be aware that there are some dependencies, so more checks than what you asked for may be executed.
