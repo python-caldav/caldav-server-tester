@@ -135,29 +135,18 @@ def check_server_compatibility(
         _emit_report(obj, verbose, output_format, show_diff)
         return
 
-    ## Try to use the caldav test server registry
-    registry = _find_caldav_test_registry()
-
-    if registry is not None:
-        if name:
+    ## If `--name` is used, we should try to look up the name in the
+    ## caldav test server registry ... if such a thing exists
+    if name:
+        registry = _find_caldav_test_registry()
+        if registry is not None:
             server = registry.get(name)
             if server is not None:
                 _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
                 return
-            ## Name not found in registry — fall through to config file below
-        else:
-            servers = registry.enabled_servers()
-            if not servers:
-                raise click.UsageError(
-                    "No enabled test servers found. "
-                    "Configure servers in caldav_test_servers.yaml or use --caldav-url / --name."
-                )
-            for server in servers:
-                _check_server(server, run_checks, verbose, output_format, show_diff, no_cleanup)
-            return
 
     ## Fall back to the caldav config-file / testconfig path
-    conn = get_davclient(name=name, config_section=config_section, testconfig=True, **conn_keys)
+    conn = get_davclient(name=name, config_section=config_section or name, **conn_keys)
     if conn is None:
         raise click.UsageError(
             f"No configuration found for {name!r}. "
