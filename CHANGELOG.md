@@ -25,13 +25,6 @@ Version 1.0 will be released in some few days, this may be considered as a pre-r
 - `--skip-confirmation` / `--yes` / `-y` flag to suppress interactive prompts for external servers
 - `report()` now accepts `show_diff=True` and `return_what="yaml"` / `"hints"`
 
-### Fixed
-- CLI no longer calls `cleanup()` twice (it was called inside `_run_checks_against` and again by the caller)
-- CLI now cleans up by default (`force=True`) instead of silently skipping cleanup unless the server was explicitly configured for it
-- `cleanup()` no longer raises `AttributeError` when `PrepareCalendar` was never run
-- Removed "Not fully implemented yet - TODO" placeholder from the JSON/dict report output
-
-### Added
 - Expanded search feature coverage with new feature flags:
   - `search.text` - Basic text/summary search
   - `search.text.case-sensitive` - Case-sensitive text matching (default behavior)
@@ -64,6 +57,21 @@ Version 1.0 will be released in some few days, this may be considered as a pre-r
 
 ### Fixed
 - `create-calendar` feature detection to not incorrectly mark mkcol method as standard calendar creation
+- CLI no longer calls `cleanup()` twice (it was called inside `_run_checks_against` and again by the caller)
+- CLI now cleans up by default (`force=True`) instead of silently skipping cleanup unless the server was explicitly configured for it
+- `cleanup()` no longer raises `AttributeError` when `PrepareCalendar` was never run
+- Removed "Not fully implemented yet - TODO" placeholder from the JSON/dict report output
+- Fixed broken `missing_keys` / `parent_keys` logic in `Check.run_check()` — declared-feature invariants are now actually enforced, with `logging.error` instead of a trivially-passing assert
+- Fixed wrong variable in `CheckRecurrenceSearch`: `infinite-scope` feature now correctly uses `far_future_recurrence` instead of `events`
+- Fixed global monkey-patch of `Calendar.search` so the delay value is stored as a class attribute and updated on each `ServerQuirkChecker` construction
+- Cleanup now deletes all `csc_*` objects as a fallback when calendar deletion is not supported (not just the hardcoded UID list)
+- Fixed missing `set_feature("search.is-not-defined.class", ...)` call in `CheckIsNotDefined`
+- Replaced bare `except:` with `except Exception:` throughout to avoid silently swallowing `SystemExit`/`KeyboardInterrupt`
+- Replaced production `assert` statements with `logging.error`/`raise` so they are not silenced by `python -O`
+- Fixed double `_compute_diff()` call when formatting as plain text with `--diff`
+- Fixed typo: "Fature support level found" → "Feature support level found"
+- Fixed `type(foo) == date` to use `isinstance` with correct datetime-exclusion semantics in `_filter_2000`
+- Decomposed 415-line `PrepareCalendar._run_check` into focused helper methods
 
 ## [0.1] - [2025-11-08]
 

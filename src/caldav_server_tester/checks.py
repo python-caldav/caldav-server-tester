@@ -27,7 +27,10 @@ def _filter_2000(objects):
     RFC2445 is from 1998, we would be even safer if using 1997 rather
     than 2000?
     """
-    asdate = lambda foo: foo if type(foo) == date else foo.date()
+
+    def asdate(foo):
+        ## datetime is a subclass of date, so we use exact type check to exclude datetime
+        return foo if isinstance(foo, date) and not isinstance(foo, datetime) else foo.date()
 
     def dt(obj):
         """a datetime from the object, if applicable, otherwise 1980"""
@@ -58,7 +61,7 @@ class CheckGetCurrentUserPrincipal(Check):
             self.set_feature("get-current-user-principal")
         except AssertionError:
             raise
-        except:
+        except Exception:
             self.checker.principal = None
             self.set_feature("get-current-user-principal", False)
         return self.checker.principal
@@ -89,7 +92,7 @@ class CheckMakeDeleteCalendar(Check):
         ## In case calendar already exists ... wipe it first
         try:
             self.checker.principal.calendar(cal_id=cal_id).delete()
-        except:
+        except Exception:
             pass
 
         ## create the calendar
@@ -107,21 +110,19 @@ class CheckMakeDeleteCalendar(Check):
                     self.checker.principal.calendar(name=name).events()
                     ## Server returned a calendar for a name that cannot exist;
                     ## display-name lookup is unreliable on this server.
-                    import logging
-
                     logging.warning(
                         "Server returned a calendar for a display name that should not exist; "
                         "cannot verify create-calendar.set-displayname"
                     )
                     self.set_feature("create-calendar.set-displayname", False)
-                except:
+                except Exception:
                     ## This is not the exception, this is the normal
                     try:
                         cal2 = self.checker.principal.calendar(name=kwargs["name"])
                         cal2.events()
                         assert cal2.id == cal.id
                         self.set_feature("create-calendar.set-displayname")
-                    except:
+                    except Exception:
                         self.set_feature("create-calendar.set-displayname", False)
 
         except DAVError as e:
@@ -130,7 +131,7 @@ class CheckMakeDeleteCalendar(Check):
             cal = self.checker.principal.calendar(cal_id=cal_id)
             try:
                 cal.events()
-            except:
+            except Exception:
                 cal = None
             if not cal:
                 ## cal not made and does not exist, exception thrown.
@@ -206,9 +207,9 @@ class CheckMakeDeleteCalendar(Check):
         ## Check on "no_default_calendar" flag
         try:
             cals = self.checker.principal.calendars()
-            events = cals[0].events()
+            calname = cals[0].get_display_name()
             self.set_feature("get-current-user-principal.has-calendar", True)
-        except:
+        except Exception:
             self.set_feature("get-current-user-principal.has-calendar", False)
 
         makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
@@ -253,7 +254,6 @@ class PrepareCalendar(Check):
     This "check" doesn't check anything, but ensures the calendar has some known events
     """
 
-    features_to_be_checked = set()
     depends_on = {CheckMakeDeleteCalendar}
     features_to_be_checked = {
         "save-load.event.recurrences",
@@ -269,13 +269,8 @@ class PrepareCalendar(Check):
         "save-load.get-by-url",
     }
 
-    def _run_check(self):
-        ## Find or create a calendar
-        cal_id = "caldav-server-checker-calendar"
-        test_cal_info = self.checker.expected_features.is_supported(
-            "test-calendar.compatibility-tests", return_type=dict
-        )
-        name = test_cal_info.get("name", "Calendar for checking server feature support")
+    def _find_or_create_calendar(self, cal_id, name, test_cal_info):
+        """Find or create the main test calendar; set up self.checker.calendar."""
         try:
             if "name" in test_cal_info:
                 calendar = self.checker.principal.calendar(name=name)
@@ -284,7 +279,7 @@ class PrepareCalendar(Check):
             ## At least one out of those two will raise NotFoundError if calendar doesn't exist
             calendar.get_display_name()
             calendar.events()
-        except:
+        except Exception:
             if not self.checker.features_checked.is_supported("create-calendar"):
                 raise RuntimeError(
                     "Server does not support calendar creation and no existing test calendar was found. "
@@ -296,71 +291,8 @@ class PrepareCalendar(Check):
         self.checker.tasklist = calendar
         self.checker.journallist = calendar
 
-        ## TODO: replace this with one search if possible(?)
-        ## Some servers (e.g. CCS) reject time-range queries for old dates
-        ## (min-date-time restriction), so fall back to empty lists.
-        try:
-            events_from_2000 = calendar.search(event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
-        except (AuthorizationError, DAVError):
-            events_from_2000 = []
-        try:
-            tasks_from_2000 = calendar.search(todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
-        except (AuthorizationError, DAVError):
-            tasks_from_2000 = []
-        ## Some servers (e.g. OX) silently return empty for old-date time-range
-        ## queries.  Fall back to listing all objects and filtering by date so
-        ## existing year-2000 test objects are detected and not re-PUT.
-        if not events_from_2000 and not tasks_from_2000:
-            try:
-                events_from_2000 = calendar.events()
-            except (AuthorizationError, DAVError):
-                pass
-            try:
-                tasks_from_2000 = self.checker.tasklist.todos()
-            except (AuthorizationError, DAVError):
-                pass
-        try:
-            journals_from_2000 = calendar.journals()
-        except (AuthorizationError, DAVError):
-            journals_from_2000 = []
-
-        object_by_uid = {}
-
-        self.checker.cnt = 0
-
-        for obj in _filter_2000(events_from_2000 + tasks_from_2000):
-            object_by_uid[obj.component["uid"]] = obj
-        for obj in journals_from_2000:
-            try:
-                object_by_uid[obj.component["uid"]] = obj
-            except Exception:
-                pass
-
-        def add_if_not_existing(*largs, **kwargs):
-            self.checker.cnt += 1
-            if largs[0] == Todo:
-                cal = self.checker.tasklist
-            elif largs[0] == Journal:
-                cal = self.checker.journallist
-            else:
-                cal = self.checker.calendar
-            if "uid" in kwargs:
-                uid = kwargs["uid"]
-            elif not kwargs:
-                uid = re.search("UID:(.*)\n", largs[1]).group(1)
-            if uid in object_by_uid:
-                return object_by_uid.pop(uid)
-            try:
-                return cal.save_object(*largs, **kwargs)
-            except PutError:
-                ## 409 Conflict: object exists but is hidden from search
-                ## (e.g. OX's sliding window hides old objects from REPORT/PROPFIND).
-                ## Try to load the existing object by constructing its URL directly.
-                obj_class = largs[0]
-                existing = obj_class(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
-                existing.load()
-                return existing
-
+    def _prepare_task_calendar(self, cal_id, name, add_if_not_existing):
+        """Handle task calendar setup and save-load.todo / save-load.todo.mixed-calendar features."""
         try:
             task_with_dtstart = add_if_not_existing(
                 Todo,
@@ -371,11 +303,11 @@ class PrepareCalendar(Check):
             task_with_dtstart.load()
             self.set_feature("save-load.todo")
             self.set_feature("save-load.todo.mixed-calendar")
-        except:
+        except Exception:
             try:
                 tasklist = self.checker.principal.calendar(cal_id=f"{cal_id}_tasks")
                 tasklist.todos()
-            except:
+            except Exception:
                 tasklist = self.checker.principal.make_calendar(
                     cal_id=f"{cal_id}_tasks",
                     name=f"{name} - tasks",
@@ -391,12 +323,15 @@ class PrepareCalendar(Check):
                 )
             except DAVError as e:  ## exception e for debugging purposes
                 self.set_feature("save-load.todo", "ungraceful")
-                return
+                return False
 
             task_with_dtstart.load()
             self.set_feature("save-load.todo")
             self.set_feature("save-load.todo.mixed-calendar", False)
+        return True
 
+    def _prepare_journal_calendar(self, cal_id, name, add_if_not_existing):
+        """Handle journal calendar setup and save-load.journal / save-load.journal.mixed-calendar features."""
         try:
             simple_journal = add_if_not_existing(
                 Journal,
@@ -407,18 +342,19 @@ class PrepareCalendar(Check):
             simple_journal.load()
             self.set_feature("save-load.journal")
             self.set_feature("save-load.journal.mixed-calendar")
-        except:
+        except Exception:
+            journallist = None
             try:
                 journallist = self.checker.principal.calendar(cal_id=f"{cal_id}_journals")
                 journallist.journals()
-            except:
+            except Exception:
                 try:
                     journallist = self.checker.principal.make_calendar(
                         cal_id=f"{cal_id}_journals",
                         name=f"{name} - journals",
                         supported_calendar_component_set=["VJOURNAL"],
                     )
-                except:
+                except Exception:
                     self.set_feature("save-load.journal", False)
                     self.checker.cnt -= 1
                     journallist = None
@@ -434,9 +370,17 @@ class PrepareCalendar(Check):
                     simple_journal.load()
                     self.set_feature("save-load.journal")
                     self.set_feature("save-load.journal.mixed-calendar", False)
-                except:
+                except Exception:
                     self.set_feature("save-load.journal", "ungraceful")
                     self.checker.cnt -= 1
+
+    def _create_test_events(self, calendar, cal_id, name, add_if_not_existing):
+        """Create all the test event/task/journal objects in the calendar."""
+        todo_ok = self._prepare_task_calendar(cal_id, name, add_if_not_existing)
+        if not todo_ok:
+            return False
+
+        self._prepare_journal_calendar(cal_id, name, add_if_not_existing)
 
         simple_event = add_if_not_existing(
             Event,
@@ -664,17 +608,10 @@ END:VCALENDAR""",
         except DAVError:
             self.set_feature("save-load.event.recurrences.exception", "ungraceful")
 
-        ## Delete any stale objects from year 2000 that aren't part of
-        ## the current test set (e.g. leftovers from previous test runs)
-        for uid, obj in object_by_uid.items():
-            logging.warning("Deleting stale year-2000 object with UID %s", uid)
-            obj.delete()
-        assert self.checker.calendar.events()
-        ## Not asserting on tasklist.todos() here - on servers with broken
-        ## comp-type filtering (e.g. Bedework), todos() returns empty even
-        ## though todos were saved successfully (verified via load() above).
+        return True
 
-        ## Check if GET requests to server-reported calendar object URLs work.
+    def _check_get_by_url(self, calendar):
+        """Check if GET requests to server-reported calendar object URLs work."""
         ## Tests the URL returned by the server (via PROPFIND/REPORT), not the
         ## client-constructed PUT URL - some servers (e.g. Zimbra) accept PUTs
         ## to client URLs but return different URLs that fail on GET.
@@ -684,6 +621,101 @@ END:VCALENDAR""",
             self.set_feature("save-load.get-by-url", r.status != 404)
         except Exception:
             self.set_feature("save-load.get-by-url", None)
+
+    def _run_check(self):
+        ## NOTE: Any objects created here with a UID starting with "csc_" will be
+        ## cleaned up by the csc_* fallback in checker.cleanup(). For servers that
+        ## support calendar deletion, the whole calendar is deleted instead.
+        ## If you add new objects here, make sure their UIDs start with "csc_".
+
+        cal_id = "caldav-server-checker-calendar"
+        test_cal_info = self.checker.expected_features.is_supported(
+            "test-calendar.compatibility-tests", return_type=dict
+        )
+        name = test_cal_info.get("name", "Calendar for checking server feature support")
+
+        self._find_or_create_calendar(cal_id, name, test_cal_info)
+        calendar = self.checker.calendar
+
+        ## TODO: replace this with one search if possible(?)
+        ## Some servers (e.g. CCS) reject time-range queries for old dates
+        ## (min-date-time restriction), so fall back to empty lists.
+        try:
+            events_from_2000 = calendar.search(event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
+        except (AuthorizationError, DAVError):
+            events_from_2000 = []
+        try:
+            tasks_from_2000 = calendar.search(todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
+        except (AuthorizationError, DAVError):
+            tasks_from_2000 = []
+        ## Some servers (e.g. OX) silently return empty for old-date time-range
+        ## queries.  Fall back to listing all objects and filtering by date so
+        ## existing year-2000 test objects are detected and not re-PUT.
+        if not events_from_2000 and not tasks_from_2000:
+            try:
+                events_from_2000 = calendar.events()
+            except (AuthorizationError, DAVError):
+                pass
+            try:
+                tasks_from_2000 = self.checker.tasklist.todos()
+            except (AuthorizationError, DAVError):
+                pass
+        try:
+            journals_from_2000 = calendar.journals()
+        except (AuthorizationError, DAVError):
+            journals_from_2000 = []
+
+        object_by_uid = {}
+        self.checker.cnt = 0
+
+        for obj in _filter_2000(events_from_2000 + tasks_from_2000):
+            object_by_uid[obj.component["uid"]] = obj
+        for obj in journals_from_2000:
+            try:
+                object_by_uid[obj.component["uid"]] = obj
+            except Exception:
+                pass
+
+        def add_if_not_existing(*largs, **kwargs):
+            self.checker.cnt += 1
+            if largs[0] == Todo:
+                cal = self.checker.tasklist
+            elif largs[0] == Journal:
+                cal = self.checker.journallist
+            else:
+                cal = self.checker.calendar
+            if "uid" in kwargs:
+                uid = kwargs["uid"]
+            elif not kwargs:
+                uid = re.search("UID:(.*)\n", largs[1]).group(1)
+            if uid in object_by_uid:
+                return object_by_uid.pop(uid)
+            try:
+                return cal.save_object(*largs, **kwargs)
+            except PutError:
+                ## 409 Conflict: object exists but is hidden from search
+                ## (e.g. OX's sliding window hides old objects from REPORT/PROPFIND).
+                ## Try to load the existing object by constructing its URL directly.
+                obj_class = largs[0]
+                existing = obj_class(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+                existing.load()
+                return existing
+
+        if not self._create_test_events(calendar, cal_id, name, add_if_not_existing):
+            return
+
+        ## Delete any stale objects from year 2000 that aren't part of
+        ## the current test set (e.g. leftovers from previous test runs)
+        for uid, obj in object_by_uid.items():
+            logging.warning("Deleting stale year-2000 object with UID %s", uid)
+            obj.delete()
+        if not self.checker.calendar.events():
+            logging.error("Calendar appears empty after PrepareCalendar; subsequent checks may be unreliable")
+        ## Not asserting on tasklist.todos() here - on servers with broken
+        ## comp-type filtering (e.g. Bedework), todos() returns empty even
+        ## though todos were saved successfully (verified via load() above).
+
+        self._check_get_by_url(calendar)
 
 
 class CheckSearch(Check):
@@ -886,7 +918,7 @@ class CheckSearch(Check):
                         "description": "unexpected results from date-search without comp-type",
                     },
                 )
-        except:
+        except Exception:
             self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
@@ -948,6 +980,7 @@ class CheckIsNotDefined(Check):
     features_to_be_checked = {
         "search.is-not-defined",
         "search.is-not-defined.category",
+        "search.is-not-defined.class",
         "search.is-not-defined.dtend",
     }
 
@@ -999,6 +1032,14 @@ class CheckIsNotDefined(Check):
                 class_works = False
         except (ReportError, AuthorizationError, DAVError):
             class_works = "ungraceful"
+
+        ## Set the class-specific sub-feature
+        if class_works == "ungraceful":
+            self.set_feature("search.is-not-defined.class", "ungraceful")
+        elif class_works is True:
+            self.set_feature("search.is-not-defined.class")
+        else:
+            self.set_feature("search.is-not-defined.class", False)
 
         ## Test no_dtend: csc_event_with_duration uses DURATION (no DTEND),
         ## while csc_simple_event1 has explicit DTEND.
@@ -1140,7 +1181,14 @@ class CheckRecurrenceSearch(Check):
                 include_completed=True,
                 post_filter=False,
             )
-            assert len(todos) == 1
+            if len(todos) != 1:
+                logging.warning(
+                    "Expected 1 recurring todo in Jan 2000, got %d; skipping recurrence todo checks", len(todos)
+                )
+                for feat in self.features_to_be_checked:
+                    if not self.feature_checked(feat):
+                        self.set_feature(feat, False)
+                return
         events = cal.search(
             start=datetime(2000, 2, 12, tzinfo=utc),
             end=datetime(2000, 2, 13, tzinfo=utc),
@@ -1204,7 +1252,7 @@ class CheckRecurrenceSearch(Check):
             event=True,
             post_filter=False,
         )
-        self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(events) == 1)
+        self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(far_future_recurrence) == 1)
 
         ## server-side expansion
         events = cal.search(
@@ -1382,7 +1430,7 @@ class CheckPrincipalSearch(Check):
         ## Fall back to the username if no display name is available.
         try:
             search_name = principal.get_display_name()
-        except:
+        except Exception:
             search_name = None
         if not search_name:
             search_name = getattr(self.client, "username", None)
@@ -1514,7 +1562,9 @@ class CheckDuplicateUID(Check):
                     ## Move event back to cal1 to avoid breaking other tests
                     cal1.save_event(event2.data)
                 elif len(events_in_cal2) == 1:
-                    assert events_in_cal2[0].component["uid"] == test_uid
+                    if events_in_cal2[0].component["uid"] != test_uid:
+                        logging.error("Unexpected UID in duplicate-uid cross-calendar test; skipping")
+                        return
                     ## Server accepted the duplicate
                     ## Verify they are treated as separate entities.
                     event1 = cal1.event_by_uid(test_uid)
@@ -1692,7 +1742,7 @@ class CheckSyncToken(Check):
             if test_event is not None:
                 try:
                     test_event.delete()
-                except:
+                except Exception:
                     pass
 
 
@@ -1781,7 +1831,7 @@ class CheckTimezone(Check):
                 ## Clean up
                 try:
                     event.delete()
-                except:
+                except Exception:
                     pass
             else:
                 self.set_feature(
