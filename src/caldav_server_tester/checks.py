@@ -980,6 +980,7 @@ class CheckIsNotDefined(Check):
     features_to_be_checked = {
         "search.is-not-defined",
         "search.is-not-defined.category",
+        "search.is-not-defined.class",
         "search.is-not-defined.dtend",
     }
 
@@ -1031,6 +1032,14 @@ class CheckIsNotDefined(Check):
                 class_works = False
         except (ReportError, AuthorizationError, DAVError):
             class_works = "ungraceful"
+
+        ## Set the class-specific sub-feature
+        if class_works == "ungraceful":
+            self.set_feature("search.is-not-defined.class", "ungraceful")
+        elif class_works is True:
+            self.set_feature("search.is-not-defined.class")
+        else:
+            self.set_feature("search.is-not-defined.class", False)
 
         ## Test no_dtend: csc_event_with_duration uses DURATION (no DTEND),
         ## while csc_simple_event1 has explicit DTEND.
