@@ -36,7 +36,8 @@ class Check:
             ## client-behaviour, tests-behaviour or client-feature
             ## cannot be checked for reliably (and is not supposed to
             ## be checked by the script).  server-observation is unreliable.
-            assert feat_type in ("server-observation",)
+            if feat_type not in ("server-observation",):
+                logging.error("Unexpected feature type %r for feature %r", feat_type, feature)
             return
 
         value_str = fs.is_supported(feature, str)
@@ -72,7 +73,7 @@ class Check:
             elif self.checker.debug_mode == "pdb":
                 breakpoint()
             else:
-                assert False
+                raise ValueError(f"Unknown debug_mode {self.checker.debug_mode!r}")
 
     def feature_checked(self, feature, return_type=bool):
         return self.checker._features_checked.is_supported(feature, return_type)
@@ -101,28 +102,28 @@ class Check:
         keys_after = set(self.checker._features_checked.dotted_feature_set_list().keys())
         new_keys = keys_after - keys_before
         missing_keys = self.features_to_be_checked - new_keys
-        parent_keys = ()
+        parent_keys = set()
 
         ## Missing keys aren't missing if their parents are included.
         ## feature.subfeature.* gets collapsed to feature.subfeature
-        missing_keys = set()
+        to_remove = set()
         for missing in missing_keys:
             feature_ = missing
             while "." in feature_:
                 feature_ = feature_[: feature_.rfind(".")]
                 if feature_ in keys_after:
-                    missing_keys.remove(missing)
+                    to_remove.add(missing)
                     parent_keys.add(feature_)
                     break
-        assert not missing_keys
+        missing_keys -= to_remove
+        if missing_keys:
+            logging.error("%s failed to check declared features: %s", self.__class__.__name__, missing_keys)
 
         ## Everything checked should be declared
         extra_keys = new_keys - self.features_to_be_checked
-        for x in extra_keys:
-            for y in parent_keys:
-                if x.startswith(y):
-                    extra_keys.remove(x)
-        assert not extra_keys
+        extra_keys -= {x for x in extra_keys if any(x.startswith(y) for y in parent_keys)}
+        if extra_keys:
+            logging.error("%s checked undeclared features: %s", self.__class__.__name__, extra_keys)
 
         self.checker._checks_run.add(self.__class__)
 

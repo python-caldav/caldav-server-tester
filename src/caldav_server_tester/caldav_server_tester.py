@@ -105,7 +105,7 @@ def _run_checks_against(conn, run_checks, run_features=(), calendar=None):
 
 def _emit_report(obj, verbose, output_format, show_diff):
     """Print the report in the requested format."""
-    return_what = {"json": "json", "yaml": "yaml", "hints": "hints"}.get(output_format, str)
+    return_what = output_format if output_format in ("json", "yaml", "hints") else str
     click.echo(obj.report(verbose=verbose, show_diff=show_diff, return_what=return_what))
 
 
