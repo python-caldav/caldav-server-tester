@@ -30,6 +30,13 @@ repos:
 
  - repo: local
    hooks:
+    # Prevent direct pushes to main branch (bypass with --no-verify for releases)
+    - id: no-push-to-main
+      name: Prevent direct push to main branch
+      entry: bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then echo "Direct pushes to $branch are not allowed. Use --no-verify to bypass."; exit 1; fi'
+      language: system
+      pass_filenames: false
+      stages: [pre-push]
     # Run ruff check without fixes on push (to catch any issues)
     - id: ruff-check-push
       name: Ruff check (no fixes)
@@ -47,6 +54,12 @@ repos:
       always_run: true
       stages: [pre-push]
 
+ - repo: https://github.com/compilerla/conventional-pre-commit
+   rev: v3.4.0
+   hooks:
+    - id: conventional-pre-commit
+      stages: [commit-msg]
+
  - repo: https://github.com/fpgmaas/deptry.git
    rev: "0.24.0"
    hooks:
@@ -56,5 +69,5 @@ repos:
    rev: lychee-v0.22.0
    hooks:
     - id: lychee
-      args: ["--no-progress", "--timeout", "10", "."]
-      stages: [manual]  # Run with: pre-commit run lychee --hook-stage manual
+      args: ["--no-progress", "--timeout", "10", "--cache", "--max-cache-age", "1d", "."]
+      stages: [pre-push]

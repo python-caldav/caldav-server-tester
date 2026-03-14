@@ -9,7 +9,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
@@ -26,7 +26,7 @@ classifiers = [
 ]
 keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
-    "caldav>=3.0.1",
+    "caldav>=3.0.2",
     "click",
     "pyyaml",
 ]

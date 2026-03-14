@@ -29,8 +29,10 @@ For full usage information, including all CLI options and output formats, see
 ## Installation
 
 ```
-pip install caldav-server-tester
+make install
 ```
+
+(This auto-detects `uv`, `pipx`, or `pip` and does the right thing.)
 
 ## Quick example
 
