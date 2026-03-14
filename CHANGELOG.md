@@ -6,11 +6,24 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
+## [1.0.0] - 2026-03-15
+
+### Changed
+- Minimum required `caldav` library version bumped to 3.0.2.
+- Text report now labels extra check information with "Extra check information:" header (rationale: it was a bit confusing with two "descriptions" on one feature).
+
+### Documentation, tests, CI etc
+- Added `CONTRIBUTING.md` with contribution guidelines
+- Conventional commit message enforcement via `conventional-pre-commit` pre-commit hook
+- Link checker CI workflow
+- Development status classifier updated to Production/Stable
+
+
 ## [0.2.2] - 2026-03-11
 
 Lots of changes have been done since v0.1.0.  I'm not sure the changelog is complete, I didn't get time to do a proper QA on it.  CalDAV version 3.0 is required.
 
-Version 1.0 will be released in some few days, this may be considered as a pre-release.
+This was a pre-release; version 1.0.0 followed shortly after.
 
 (Version 0.2.0/9.2.1 was never published due to problems with the auto-publish workflow)
 

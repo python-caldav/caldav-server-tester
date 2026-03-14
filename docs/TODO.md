@@ -4,5 +4,5 @@
 * [x] New TODO-items have been added to USAGE.md.  They should be fixed and removed from this file prior to the v1.0-release
 * [x] Search for other TODO-notes in the project
 * [x] `src/caldav_server_tester/caldav_server_tester_old.py` is 1028 lines, not imported anywhere - consider deleting it
-* [] It's needed to test it towards a server that does not allow calendars to be created
-* [] The text-based description should be prettified
+* [x] It's needed to test it towards a server that does not allow calendars to be created
+* [x] The text-based description should be prettified

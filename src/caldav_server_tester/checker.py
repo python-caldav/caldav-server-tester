@@ -226,6 +226,7 @@ class ServerQuirkChecker:
                 lines.append(f"## {feature}")
                 lines.append(f"Feature support level found: {support}")
                 if extras:
+                    lines.append("Extra check information:")
                     lines.append(extra_str)
                 if description:
                     lines.append(f"Description of the feature: {description}")
