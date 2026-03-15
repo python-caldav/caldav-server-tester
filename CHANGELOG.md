@@ -8,6 +8,10 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 ## [1.0.0] - 2026-03-15
 
+Considering this tool as "production ready" now - even though it's still lots of corner cases to be tested.
+
+This release corresponds to version 3.0.2 of the caldav library.  It's important to keep those two libraries in sync as the "feature list" is contained in the caldav library.
+
 ### Changed
 - Minimum required `caldav` library version bumped to 3.0.2.
 - Text report now labels extra check information with "Extra check information:" header (rationale: it was a bit confusing with two "descriptions" on one feature).
@@ -23,9 +27,9 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 Lots of changes have been done since v0.1.0.  I'm not sure the changelog is complete, I didn't get time to do a proper QA on it.  CalDAV version 3.0 is required.
 
-This was a pre-release; version 1.0.0 followed shortly after.
+This was sort of a pre-release of v1.0.0.
 
-(Version 0.2.0/9.2.1 was never published due to problems with the auto-publish workflow)
+(Version 0.2.0/0.2.1 was never published due to problems with the auto-publish workflow)
 
 ### Added
 - `--config-section` CLI option: select a named section from the caldav config file (passed through to `get_davclient`)
