@@ -1,10 +1,15 @@
 """Tests for the CLI (caldav_server_tester.py click application)"""
 
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from caldav_server_tester.caldav_server_tester import check_server_compatibility
+from caldav_server_tester.caldav_server_tester import (
+    _find_caldav_test_registry,
+    check_server_compatibility,
+)
 
 
 class TestCliConfigSection:
@@ -134,6 +139,42 @@ class TestCliNameFallback:
                 ["--name", "knownserver"],
             )
             mock_check.assert_called_once()
+
+    def test_find_registry_works_when_tests_shadowed_in_sys_modules(self) -> None:
+        """Registry discovery must succeed even when sys.modules['tests'] points elsewhere.
+
+        When the CLI is installed and run, its own tests/ package ends up in
+        sys.modules before _find_caldav_test_registry() runs.  That used to
+        shadow the caldav project's tests/test_servers and cause the function
+        to return None.
+        """
+        # Only meaningful if caldav is checked out as source (has tests/test_servers)
+        from pathlib import Path
+
+        import caldav
+
+        caldav_root = Path(caldav.__file__).parent.parent
+        if not (caldav_root / "tests" / "test_servers" / "__init__.py").exists():
+            return  # skip — caldav is not a source checkout
+
+        # Inject a fake conflicting 'tests' module that has no test_servers attr
+        fake_tests = types.ModuleType("tests")
+        fake_tests.__path__ = ["/some/unrelated/tests"]
+
+        saved_tests = {k: sys.modules.pop(k) for k in list(sys.modules) if k == "tests" or k.startswith("tests.")}
+        sys.modules["tests"] = fake_tests
+        try:
+            registry = _find_caldav_test_registry()
+        finally:
+            for k in list(sys.modules):
+                if k == "tests" or k.startswith("tests."):
+                    del sys.modules[k]
+            sys.modules.update(saved_tests)
+
+        assert registry is not None, (
+            "_find_caldav_test_registry() returned None even though caldav source is available; "
+            "the 'tests' shadowing bug was not fixed"
+        )
 
     def test_name_lookup_is_case_insensitive(self) -> None:
         """--name radicale should match a registry entry named 'Radicale'"""

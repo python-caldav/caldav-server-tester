@@ -42,15 +42,44 @@ def _find_caldav_test_registry():
     ]
 
     for root in candidates:
-        if (root / "tests" / "test_servers" / "__init__.py").exists():
-            if str(root) not in sys.path:
-                sys.path.insert(0, str(root))
-            try:
-                from tests.test_servers import get_registry
+        ts_init = root / "tests" / "test_servers" / "__init__.py"
+        if not ts_init.exists():
+            continue
+        ## Use importlib to load directly from the file path, bypassing
+        ## sys.path resolution entirely.  A plain `from tests.test_servers
+        ## import …` fails when another tests/ directory (e.g. this project's
+        ## own tests/ via CWD or editable install) appears earlier in sys.path.
+        import importlib.util
 
-                return get_registry()
-            except ImportError:
-                pass
+        tests_spec = importlib.util.spec_from_file_location(
+            "tests",
+            str(root / "tests" / "__init__.py"),
+            submodule_search_locations=[str(root / "tests")],
+        )
+        ts_spec = importlib.util.spec_from_file_location(
+            "tests.test_servers",
+            str(ts_init),
+            submodule_search_locations=[str(ts_init.parent)],
+        )
+        if tests_spec is None or ts_spec is None:
+            continue
+
+        _saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k == "tests" or k.startswith("tests.")}
+        try:
+            tests_mod = importlib.util.module_from_spec(tests_spec)
+            sys.modules["tests"] = tests_mod
+            tests_spec.loader.exec_module(tests_mod)  # type: ignore[union-attr]
+
+            ts_mod = importlib.util.module_from_spec(ts_spec)
+            sys.modules["tests.test_servers"] = ts_mod
+            ts_spec.loader.exec_module(ts_mod)  # type: ignore[union-attr]
+
+            return ts_mod.get_registry()
+        except Exception:
+            for k in list(sys.modules):
+                if k == "tests" or k.startswith("tests."):
+                    del sys.modules[k]
+            sys.modules.update(_saved)
 
     return None
 
