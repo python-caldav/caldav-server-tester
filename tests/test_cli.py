@@ -134,3 +134,26 @@ class TestCliNameFallback:
                 ["--name", "knownserver"],
             )
             mock_check.assert_called_once()
+
+    def test_name_lookup_is_case_insensitive(self) -> None:
+        """--name radicale should match a registry entry named 'Radicale'"""
+        runner = CliRunner()
+        mock_server = MagicMock()
+        mock_server.name = "Radicale"
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = None  # exact match fails
+        mock_registry.all_servers.return_value = [mock_server]
+
+        with (
+            patch(
+                "caldav_server_tester.caldav_server_tester._find_caldav_test_registry",
+                return_value=mock_registry,
+            ),
+            patch("caldav_server_tester.caldav_server_tester._check_server") as mock_check,
+        ):
+            runner.invoke(
+                check_server_compatibility,
+                ["--name", "radicale"],
+            )
+            mock_check.assert_called_once()
