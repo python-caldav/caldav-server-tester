@@ -6,12 +6,17 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
-## [Unreleased]
+## [1.0.1] - 2026-03-19
+
+### Fixed
+- `--name radicale` (and other lowercase names) failed to find servers in the caldav test registry after the caldav library renamed its server entries to capitalised names (`Radicale`, `Xandikos`).  The registry lookup is now case-insensitive.
+- `--name` registry lookup silently returned nothing when the caldav-server-tester's own `tests/` package shadowed the caldav project's `tests/test_servers` in `sys.modules` or via the CWD entry in `sys.path`.  The registry is now loaded via `importlib` using the explicit file path, bypassing `sys.path` resolution.
 
 ### Documentation
-- USAGE.md: updated `--format text` section to reflect current multi-line output format and actual support-level values; added `unknown` status
-- USAGE.md: added guide for contributing a new server profile to `caldav/compatibility_hints.py`
-- USAGE.md: added guide for storing checker results in `~/.config/caldav/calendar.conf` (named profile, inline features, and base+overrides patterns)
+*  Updated USAGE.md
+  * `--format text` section to reflect current multi-line output format and actual support-level values; added `unknown` status
+  * added guide for contributing a new server profile to `caldav/compatibility_hints.py`
+  * added guide for storing checker results in `~/.config/caldav/calendar.conf` (named profile, inline features, and base+overrides patterns)
 
 ## [1.0.0] - 2026-03-15
 
