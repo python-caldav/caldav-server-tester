@@ -206,6 +206,13 @@ def check_server_compatibility(
         registry = _find_caldav_test_registry()
         if registry is not None:
             server = registry.get(name)
+            if server is None:
+                ## Case-insensitive fallback — registry names may be capitalised
+                ## (e.g. "Radicale") while users naturally type lowercase
+                for s in registry.all_servers():
+                    if s.name.lower() == name.lower():
+                        server = s
+                        break
             if server is not None:
                 _check_server(
                     server,
