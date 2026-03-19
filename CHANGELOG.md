@@ -6,6 +6,13 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
+## [Unreleased]
+
+### Documentation
+- USAGE.md: updated `--format text` section to reflect current multi-line output format and actual support-level values; added `unknown` status
+- USAGE.md: added guide for contributing a new server profile to `caldav/compatibility_hints.py`
+- USAGE.md: added guide for storing checker results in `~/.config/caldav/calendar.conf` (named profile, inline features, and base+overrides patterns)
+
 ## [1.0.0] - 2026-03-15
 
 Considering this tool as "production ready" now - even though it's still lots of corner cases to be tested.

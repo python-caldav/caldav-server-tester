@@ -56,25 +56,36 @@ Note that the only difference between `--name` and `--config-section` is that `-
 
 Human-readable summary.  Without `--verbose`, only features deviating from the CalDAV standard are shown.  With `--verbose`, all checked features are shown.
 
+Each feature is reported as a block with up to three lines:
+
 ```
 Server: radicale (http://localhost:5232/)
 caldav library version: 1.5.0
 
 Feature compatibility (non-verbose: showing only deviations from the standard):
-  [no]       search.time-range.alarm
-  [quirk]    search.unlimited-time-range
+
+## search.time-range.alarm
+Feature support level found: unsupported
+
+## search.unlimited-time-range
+Feature support level found: quirk
+Extra check information:
+  behaviour=accepts-but-ignores-end-date
+Description of the feature: Whether the server supports CalDAV REPORT search without an end date in a time-range filter
 ```
 
-Status markers:
+The **"Extra check information"** line describes the *specific behaviour observed* during testing — for example, what the server actually did when a feature was exercised (e.g. `behaviour=delayed-deletion`, `behaviour=mkcol-required`).  This is distinct from the **"Description of the feature"** line, which gives the general definition of what the feature covers.
 
-| Marker       | Meaning                                                  |
-|--------------|----------------------------------------------------------|
-| `[ok]`       | Full support                                             |
-| `[no]`       | Unsupported (silently ignored by the server)             |
-| `[quirk]`    | Supported but needs special client-side handling         |
-| `[fragile]`  | Unreliable / intermittent                                |
-| `[broken]`   | Server behaves incorrectly                               |
-| `[error]`    | Server returns an error (ungraceful failure)             |
+Support levels:
+
+| Value          | Meaning                                                            |
+|----------------|--------------------------------------------------------------------|
+| `full`         | Full, standard-compliant support                                   |
+| `unsupported`  | Not supported (server silently ignores or rejects the operation)   |
+| `quirk`        | Supported but requires special client-side handling                |
+| `fragile`      | Unreliable or intermittent behaviour                               |
+| `broken`       | Server behaves incorrectly (wrong results, data loss, etc.)        |
+| `unknown`      | Could not be determined (e.g. preconditions for the test not met)  |
 
 ### `--format json` / `--format yaml`
 
@@ -103,6 +114,55 @@ file in the caldav project (or your own config):
 }
 ```
 
+## Contributing a server profile to the caldav library
+
+If your CalDAV server is not yet listed in
+[`caldav/compatibility_hints.py`](https://github.com/python-caldav/caldav/blob/master/caldav/compatibility_hints.py),
+you can use this tool to produce a ready-made profile and submit it upstream.
+
+**Step 1 — run the tester and capture the hints output:**
+
+```
+caldav-server-tester --caldav-url https://example.com/dav \
+                     --caldav-username alice \
+                     --caldav-password secret \
+                     --format hints > myserver_hints.py
+```
+
+The output is a Python dict literal containing every feature the tester
+observed, e.g.:
+
+```python
+{
+    'create-calendar': {'support': 'full'},
+    'search.time-range.alarm': {'support': 'unsupported'},
+    'search.unlimited-time-range': {'support': 'quirk', 'behaviour': 'accepts-but-ignores-end-date'},
+    ...
+}
+```
+
+**Step 2 — add the profile to `compatibility_hints.py`:**
+
+In a fork of the [caldav repository](https://github.com/python-caldav/caldav),
+open `caldav/compatibility_hints.py` and add a module-level variable near the
+other server profiles (look for variables like `radicale`, `baikal`, `xandikos`):
+
+```python
+myserver = {
+    'search.time-range.alarm': {'support': 'unsupported'},
+    'search.unlimited-time-range': {'support': 'quirk', 'behaviour': 'accepts-but-ignores-end-date'},
+    # ... paste the non-full entries from the hints output
+}
+```
+
+It is conventional to strip entries where `support` is `full` (the default),
+keeping only deviations.  Add a short comment above the dict describing the
+server and the version it was tested against.
+
+**Step 3 — open a pull request** against `python-caldav/caldav` on GitHub.
+Include the raw `--format text --verbose` output as supporting evidence in the
+PR description so maintainers can verify the findings.
+
 ## Diffing expected vs observed
 
 When you have an existing `compatibility_hints` configuration for a server
@@ -115,6 +175,68 @@ caldav-server-tester --caldav-url … --caldav-features zimbra --diff
 The `--diff` flag appends a section to the report listing every feature where
 the observed support level differs from what the configured hints said to
 expect.
+
+## Storing results in your caldav config file
+
+The `~/.config/caldav/calendar.conf` (YAML or JSON) supports a `features` key
+in each section that tells the caldav client library which workarounds to
+apply.  There are two ways to populate it.
+
+### Using a named profile
+
+If your server already has a profile in `caldav/compatibility_hints.py` (e.g.
+`radicale`, `baikal`, `xandikos`, `synology`, …), simply name it:
+
+```yaml
+myserver:
+    caldav_url: https://example.com/dav
+    caldav_username: alice
+    caldav_password: secret
+    features: radicale
+```
+
+### Using inline features from the tester
+
+If there is no profile for your server yet, run the tester and copy the
+`features` block from the YAML output directly into your config:
+
+```
+caldav-server-tester --caldav-url https://example.com/dav \
+                     --caldav-username alice \
+                     --caldav-password secret \
+                     --format yaml
+```
+
+The output contains a `features:` mapping.  Paste it under your config section:
+
+```yaml
+myserver:
+    caldav_url: https://example.com/dav
+    caldav_username: alice
+    caldav_password: secret
+    features:
+        search.time-range.alarm:
+            support: unsupported
+        search.unlimited-time-range:
+            support: quirk
+            behaviour: accepts-but-ignores-end-date
+```
+
+### Extending a named profile with local overrides
+
+If your server is close to a known profile but differs on a few features, use
+the `base` key to inherit that profile and then override only what differs:
+
+```yaml
+myserver:
+    caldav_url: https://example.com/dav
+    caldav_username: alice
+    caldav_password: secret
+    features:
+        base: radicale
+        search.time-range.alarm:
+            support: full
+```
 
 ## Safety
 
