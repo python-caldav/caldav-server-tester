@@ -1793,6 +1793,20 @@ class CheckFreeBusyQuery(Check):
             )
 
 
+class CheckScheduling(Check):
+    """
+    Checks support for CalDAV Scheduling (RFC6638).
+
+    Calls client.supports_scheduling() to detect whether the server
+    advertises scheduling support.
+    """
+
+    features_to_be_checked = {"scheduling"}
+
+    def _run_check(self) -> None:
+        self.set_feature("scheduling", self.client.supports_scheduling())
+
+
 class CheckTimezone(Check):
     """
     Checks support for non-UTC timezone information in events.
