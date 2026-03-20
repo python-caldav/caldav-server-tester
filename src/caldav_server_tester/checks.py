@@ -922,36 +922,20 @@ class CheckSearch(Check):
             self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
-        ## regardless of date?  Uses a year-2000 event to detect sliding-window servers
-        ## (e.g. OX) that hide old non-recurring events from REPORT.
+        ## regardless of date?  Uses the year-2000 non-recurring event csc_simple_event1
+        ## already placed by PrepareCalendar (so indexing delays don't affect the result)
+        ## to detect sliding-window servers (e.g. OX) that hide old non-recurring events.
         ## Uses _request_report_build_resultlist directly to bypass the search.unlimited-time-range
         ## workaround in search.py, so the actual server behaviour is observed.
-        temp_event = None
-        temp_uid = f"csc_no_time_range_{uuid.uuid4().hex[:8]}"
         try:
-            temp_event = cal.save_object(
-                Event,
-                summary="no-time-range check event",
-                uid=temp_uid,
-                dtstart=datetime(2000, 6, 15, 12, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 6, 15, 13, 0, 0, tzinfo=utc),
-            )
-            ## Respect the search-cache delay (e.g. Bedework) before querying.
-            ## We use _request_report_build_resultlist directly (to bypass the
-            ## search.unlimited-time-range workaround in _search_impl), which also
-            ## bypasses the Calendar.search delay wrapper in checker.py.
-            search_cache = self.checker._client_obj.features.is_supported("search-cache", return_type=dict)
-            if search_cache.get("behaviour") == "delay":
-                time.sleep(search_cache.get("delay", 1))
-            ## Build VEVENT query without time range and call REPORT directly
             searcher = CalDAVSearcher(comp_class=Event)
             xml, comp_class = searcher.build_search_xml_query()
             _, objects = cal._request_report_build_resultlist(xml, comp_class)
-            found = any(o.id == temp_uid for o in objects)
+            found = any(o.id == "csc_simple_event1" for o in objects)
             if found:
                 self.set_feature("search.unlimited-time-range")
             elif objects:
-                ## Server returned some events but missed the old-date event:
+                ## Server returned some events but missed the old-date non-recurring event:
                 ## it uses a sliding time window (broken, not unsupported)
                 self.set_feature("search.unlimited-time-range", {"support": "broken"})
             else:
@@ -959,12 +943,6 @@ class CheckSearch(Check):
                 self.set_feature("search.unlimited-time-range", "unsupported")
         except (AuthorizationError, DAVError):
             self.set_feature("search.unlimited-time-range", "ungraceful")
-        finally:
-            if temp_event:
-                try:
-                    temp_event.delete()
-                except Exception:
-                    pass
 
 
 class CheckIsNotDefined(Check):
@@ -1756,7 +1734,7 @@ class CheckFreeBusyQuery(Check):
 
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
-        "freebusy-query.rfc4791",
+        "freebusy-query",
     }
 
     def _run_check(self) -> None:
@@ -1773,24 +1751,614 @@ class CheckFreeBusyQuery(Check):
             ## If we got here without exception, the feature is supported
             ## Verify we got a valid freebusy object
             if freebusy and hasattr(freebusy, "vobject_instance"):
-                self.set_feature("freebusy-query.rfc4791", True)
+                self.set_feature("freebusy-query", True)
             else:
                 self.set_feature(
-                    "freebusy-query.rfc4791",
+                    "freebusy-query",
                     {"support": "unsupported", "behaviour": "freebusy query returned invalid or empty response"},
                 )
         except (ReportError, DAVError, NotFoundError) as e:
             ## Server doesn't support freebusy queries
             ## Common responses: 500 Internal Server Error, 501 Not Implemented
-            self.set_feature(
-                "freebusy-query.rfc4791", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"}
-            )
+            self.set_feature("freebusy-query", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"})
         except Exception as e:
             ## Unexpected error
             self.set_feature(
-                "freebusy-query.rfc4791",
+                "freebusy-query",
                 {"support": "broken", "behaviour": f"unexpected error during freebusy query: {e}"},
             )
+
+
+class CheckScheduling(Check):
+    """
+    Checks support for CalDAV Scheduling (RFC6638).
+
+    Calls client.supports_scheduling() to detect whether the server
+    advertises scheduling support.
+    """
+
+    features_to_be_checked = {"scheduling"}
+
+    def _run_check(self) -> None:
+        self.set_feature("scheduling", self.client.supports_scheduling())
+
+
+class CheckSchedulingDetails(Check):
+    """
+    Checks RFC6638 scheduling sub-features: mailbox (inbox/outbox) and
+    calendar-user-address-set.  Depends on CheckScheduling; when scheduling
+    is unsupported both sub-features are recorded as unsupported immediately.
+    """
+
+    depends_on = {CheckScheduling, CheckGetCurrentUserPrincipal}
+    features_to_be_checked = {"scheduling.mailbox", "scheduling.calendar-user-address-set"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling"):
+            self.set_feature("scheduling.mailbox", False)
+            self.set_feature("scheduling.calendar-user-address-set", False)
+            return
+
+        principal = self.checker.principal
+        if principal is None:
+            self.set_feature("scheduling.mailbox", {"support": "unknown"})
+            self.set_feature("scheduling.calendar-user-address-set", {"support": "unknown"})
+            return
+
+        ## Check inbox + outbox
+        try:
+            principal.schedule_inbox()
+            principal.schedule_outbox()
+            self.set_feature("scheduling.mailbox", True)
+        except NotFoundError:
+            self.set_feature("scheduling.mailbox", False)
+        except Exception as e:
+            self.set_feature("scheduling.mailbox", {"support": "broken", "behaviour": str(e)})
+
+        ## Check calendar-user-address-set
+        try:
+            principal.calendar_user_address_set()
+            self.set_feature("scheduling.calendar-user-address-set", True)
+        except NotFoundError:
+            self.set_feature("scheduling.calendar-user-address-set", False)
+        except Exception as e:
+            self.set_feature(
+                "scheduling.calendar-user-address-set",
+                {"support": "broken", "behaviour": str(e)},
+            )
+
+
+class CheckFreeBusyQueryRFC6638(Check):
+    """
+    Checks support for RFC6638 freebusy query via the schedule outbox (section 4.1).
+
+    POSTs a VFREEBUSY REQUEST to the principal's schedule outbox listing an
+    attendee, and checks whether the server responds without error.  When a
+    second principal is available (via extra_principals), queries that
+    principal's free/busy — a more realistic cross-user scenario.  Reports
+    unknown when no second principal is configured, since RFC6638 is a
+    multi-user protocol and a self-query would give unreliable results.
+
+    Distinct from CheckFreeBusyQuery which uses a REPORT against a
+    calendar collection.  Requires scheduling and scheduling.mailbox.
+    """
+
+    depends_on = {CheckSchedulingDetails}
+    features_to_be_checked = {"scheduling.freebusy-query"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
+            self.set_feature("scheduling.freebusy-query", False)
+            return
+
+        principal = self.checker.principal
+        if principal is None:
+            self.set_feature("scheduling.freebusy-query", {"support": "unknown"})
+            return
+
+        ## Determine the attendee address to query.
+        ## Prefer a second principal (cross-user scenario); fall back to self-query.
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            attendee_principal = extra_principals[0]
+            try:
+                attendee_address = attendee_principal.get_vcal_address()
+            except Exception:
+                attendee_username = getattr(attendee_principal.client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
+                )
+            if not attendee_address:
+                self.set_feature("scheduling.freebusy-query", {"support": "unknown"})
+                return
+        else:
+            ## No second principal — cannot perform a meaningful cross-user probe.
+            ## RFC6638 is a multi-user protocol; mark as unknown rather than
+            ## testing against ourselves (self-queries may produce false results).
+            ## (The early return above already handles the no-scheduling case.)
+            self.set_feature(
+                "scheduling.freebusy-query",
+                {
+                    "support": "unknown",
+                    "behaviour": "not tested: only one user configured; server claims scheduling support",
+                },
+            )
+            return
+
+        dtstart = datetime(2000, 1, 9, 0, 0, 0, tzinfo=utc)
+        dtend = datetime(2000, 1, 10, 0, 0, 0, tzinfo=utc)
+
+        try:
+            principal.freebusy_request(dtstart, dtend, [attendee_address])
+            self.set_feature("scheduling.freebusy-query")
+        except (AuthorizationError, DAVError, NotFoundError) as e:
+            self.set_feature("scheduling.freebusy-query", {"support": "ungraceful", "behaviour": str(e)})
+        except Exception as e:
+            self.set_feature("scheduling.freebusy-query", {"support": "broken", "behaviour": str(e)})
+
+
+class CheckScheduleTag(Check):
+    """
+    Checks support for the Schedule-Tag response header and property (RFC6638 sections 3.2-3.3).
+
+    Creates a scheduling object resource (a VEVENT with an ORGANIZER property),
+    GETs it back and checks whether the server returns a Schedule-Tag response
+    header (captured into props by caldav's load()) and exposes the schedule-tag
+    DAV property via PROPFIND, as mandated by RFC6638 section 3.2.
+
+    This check is skipped when the server does not advertise CalDAV scheduling
+    support, since Schedule-Tag is only required on scheduling object resources.
+    """
+
+    depends_on = {CheckSchedulingDetails, PrepareCalendar}
+    features_to_be_checked = {"scheduling.schedule-tag"}
+
+    def _run_check(self) -> None:
+        from caldav.elements import cdav as _cdav
+
+        if not self.feature_checked("scheduling"):
+            self.set_feature("scheduling.schedule-tag", False)
+            return
+
+        ## Resolve the authenticated user's calendar address so that the probe
+        ## event has an ORGANIZER that matches the session.  Servers like Stalwart
+        ## only assign a Schedule-Tag when the ORGANIZER equals the authenticated
+        ## user; a fake address causes the PUT to succeed but return no tag.
+        principal = self.checker.principal
+        if self.feature_checked("scheduling.calendar-user-address-set"):
+            try:
+                own_address = str(principal.get_vcal_address())
+            except Exception:
+                self.set_feature("scheduling.schedule-tag", {"support": "unknown"})
+                return
+        else:
+            username = getattr(self.client, "username", None)
+            if not username or "@" not in str(username):
+                self.set_feature("scheduling.schedule-tag", {"support": "unknown"})
+                return
+            own_address = "mailto:" + username
+
+        cal = self.checker.calendar
+        probe_uid = "csc-schedule-tag-probe"
+        ## Resolve a second attendee address. Prefer a real local account (so
+        ## servers like Stalwart trigger full scheduling semantics) and fall back
+        ## to a dummy address for single-account setups.
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            try:
+                attendee_address = str(extra_principals[0].get_vcal_address())
+            except Exception:
+                attendee_username = getattr(extra_principals[0].client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username
+                    if attendee_username and "@" in str(attendee_username)
+                    else "mailto:csc-probe-attendee@example.com"
+                )
+        else:
+            attendee_address = "mailto:csc-probe-attendee@example.com"
+
+        ## Minimal scheduling object resource: a VEVENT with an ORGANIZER property.
+        ## Per RFC6638 section 2.3.4, the presence of ORGANIZER makes this a
+        ## scheduling object resource and obliges the server to return Schedule-Tag.
+        ## The ORGANIZER must match the authenticated user; the second ATTENDEE is a
+        ## real local account when available so that servers like Stalwart apply full
+        ## scheduling semantics and assign a Schedule-Tag.
+        probe_ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{probe_uid}\r\n"
+            "DTSTART:20000101T100000Z\r\n"
+            "DTEND:20000101T110000Z\r\n"
+            "SUMMARY:caldav-server-tester schedule-tag probe\r\n"
+            f"ORGANIZER:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE:{attendee_address}\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+        try:
+            event = cal.add_event(probe_ical)
+
+            ## RFC6638 s3.2: server MUST return Schedule-Tag on successful PUT.
+            if event.props.get(_cdav.ScheduleTag.tag):
+                self.set_feature("scheduling.schedule-tag")
+                return
+
+            ## Fallback: GET the resource and check the Schedule-Tag response header.
+            event.load()
+            tag_from_get = event.props.get(_cdav.ScheduleTag.tag)
+
+            if tag_from_get:
+                self.set_feature("scheduling.schedule-tag")
+                return
+
+            ## Fallback: try PROPFIND for the schedule-tag DAV property
+            tag_from_propfind = event.get_property(_cdav.ScheduleTag(), use_cached=False)
+            if tag_from_propfind:
+                self.set_feature("scheduling.schedule-tag")
+            else:
+                self.set_feature(
+                    "scheduling.schedule-tag",
+                    {
+                        "support": "unsupported",
+                        "behaviour": "server did not return Schedule-Tag header on GET or via PROPFIND",
+                    },
+                )
+        except (DAVError, PutError) as e:
+            self.set_feature("scheduling.schedule-tag", {"support": "ungraceful", "behaviour": str(e)})
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag", {"support": "broken", "behaviour": str(e)})
+        finally:
+            try:
+                cal.object_by_uid(probe_uid).delete()
+            except Exception:
+                pass
+
+
+class CheckSchedulingInboxDelivery(Check):
+    """
+    Checks two related scheduling features:
+      scheduling.mailbox.inbox-delivery – whether incoming iTIP REQUEST messages
+        appear in the attendee's schedule-inbox (RFC6638 section 4.1).
+      scheduling.auto-schedule – whether the server automatically processes
+        iTIP REQUESTs and adds the event to the attendee's calendar without
+        requiring explicit inbox acceptance (RFC6638 SCHEDULE-AGENT=SERVER).
+
+    When a second principal is available (via ServerQuirkChecker.extra_principals),
+    uses a cross-user probe: the main user invites the second user and checks
+    both the inbox and the attendee's calendar.  Reports unknown for both
+    features when no second principal is configured, since RFC6638 is a
+    multi-user protocol and self-invite results are unreliable (some servers
+    skip self-invite delivery entirely, which RFC6638 permits).
+    """
+
+    depends_on = {CheckSchedulingDetails, PrepareCalendar}
+    features_to_be_checked = {"scheduling.mailbox.inbox-delivery", "scheduling.auto-schedule"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
+            self.set_feature("scheduling.mailbox.inbox-delivery", False)
+            self.set_feature("scheduling.auto-schedule", False)
+            return
+
+        principal = self.checker.principal
+
+        ## Determine own address for composing the probe invite.
+        ## Prefer calendar-user-address-set; fall back to the client username
+        ## when it is unavailable (mirrors the fix for
+        ## https://github.com/python-caldav/caldav/issues/399).
+        if self.feature_checked("scheduling.calendar-user-address-set"):
+            try:
+                own_address = principal.get_vcal_address()
+            except Exception:
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+                return
+        else:
+            username = getattr(self.client, "username", None)
+            if not username or "@" not in str(username):
+                ## No address source available; cannot compose probe invite.
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+                return
+            own_address = "mailto:" + username
+
+        ## Decide probe mode: cross-user (preferred) or self-invite (fallback)
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            attendee_principal = extra_principals[0]
+            try:
+                attendee_address = attendee_principal.get_vcal_address()
+            except Exception:
+                ## Fall back to attendee's username when calendar-user-address-set
+                ## is unavailable on that account too.
+                attendee_username = getattr(attendee_principal.client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
+                )
+            attendees = [attendee_address] if attendee_address else [attendee_principal]
+        else:
+            ## No second principal — cannot perform a meaningful cross-user probe.
+            ## RFC6638 is a multi-user protocol; mark as unknown rather than
+            ## testing against ourselves (self-invites may be skipped per RFC6638).
+            ## (The early return above already handles the no-scheduling case.)
+            behaviour = "not tested: only one user configured; server claims scheduling support"
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": behaviour})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown", "behaviour": behaviour})
+            return
+
+        ## Some servers (e.g. sabre/dav / Davis) require the attendee to have at
+        ## least one calendar before they will deliver scheduling messages to the
+        ## inbox.  Create a temporary calendar for the attendee if needed and
+        ## remove it after the probe.
+        attendee_temp_cal = None
+        if extra_principals:
+            try:
+                if not attendee_principal.calendars():
+                    attendee_temp_cal = attendee_principal.make_calendar(
+                        cal_id="csc-inbox-probe-attendee-cal",
+                        name="csc-inbox-probe-attendee-cal",
+                    )
+            except Exception:
+                pass
+
+        ## Snapshot attendee inbox before the probe
+        try:
+            inbox = attendee_principal.schedule_inbox()
+            inbox_before = {item.url for item in inbox.get_items()}
+        except Exception:
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+            return
+
+        ## Create the probe ical event
+        from caldav.lib.vcal import create_ical
+
+        probe_uid = "csc-inbox-delivery-probe-event"
+        ## Use a future date: some servers (e.g. Cyrus) skip iTIP delivery for past events.
+        probe_ical = create_ical(
+            objtype="VEVENT",
+            uid=probe_uid,
+            summary="caldav-server-tester inbox-delivery probe",
+            dtstart=datetime(2099, 6, 15, 10, 0, 0, tzinfo=utc),
+            dtend=datetime(2099, 6, 15, 11, 0, 0, tzinfo=utc),
+        )
+
+        ## Use a temporary calendar if possible, fall back to the shared checker calendar
+        probe_cal_id = "csc-inbox-delivery-probe"
+        use_temp_calendar = self.feature_checked("create-calendar") and self.feature_checked("delete-calendar")
+        if use_temp_calendar:
+            try:
+                probe_calendar = principal.make_calendar(cal_id=probe_cal_id, name=probe_cal_id)
+            except Exception:
+                use_temp_calendar = False
+                probe_calendar = self.checker.calendar
+        else:
+            probe_calendar = self.checker.calendar
+
+        try:
+            probe_calendar.save_with_invites(probe_ical, attendees)
+        except Exception as e:
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+            return
+
+        ## Check if anything new arrived in the attendee inbox.
+        ## Poll for up to 30 seconds before concluding that inbox delivery is unsupported:
+        ## some servers (e.g. Davis, DAViCal) deliver scheduling messages asynchronously,
+        ## and deleting the probe event before polling would race with that delivery.
+        new_items: set = set()
+        try:
+            for _ in range(30):
+                inbox_after = {item.url for item in inbox.get_items()}
+                new_items = inbox_after - inbox_before
+                if new_items:
+                    break
+                time.sleep(1)
+            if new_items:
+                ## Clean up the inbox item(s) using the attendee's client
+                attendee_client = attendee_principal.client
+                for url in new_items:
+                    try:
+                        DAVObject(client=attendee_client, url=url).delete()
+                    except Exception:
+                        pass
+                self.set_feature("scheduling.mailbox.inbox-delivery", True)
+            else:
+                self.set_feature("scheduling.mailbox.inbox-delivery", False)
+
+            ## Check whether the event was auto-scheduled into the attendee's calendar.
+            ## Only detectable with a cross-user probe; report unknown in self-invite mode.
+            if extra_principals:
+                auto_scheduled = False
+                try:
+                    auto_scheduled = any(
+                        event.icalendar_component.get("UID") == probe_uid
+                        for cal in attendee_principal.calendars()
+                        for event in cal.get_events()
+                    )
+                except Exception:
+                    pass
+                if auto_scheduled:
+                    try:
+                        for cal in attendee_principal.calendars():
+                            for event in cal.get_events():
+                                if event.icalendar_component.get("UID") == probe_uid:
+                                    event.delete()
+                    except Exception:
+                        pass
+                self.set_feature("scheduling.auto-schedule", auto_scheduled)
+            else:
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+        except Exception as e:
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+        finally:
+            ## Clean up the probe event/calendar now that polling is done.
+            ## This is intentionally done AFTER polling so that async delivery
+            ## is not cancelled by deleting the originating event too early.
+            if use_temp_calendar:
+                try:
+                    probe_calendar.delete()
+                except Exception:
+                    pass
+            else:
+                try:
+                    probe_calendar.object_by_uid(probe_uid).delete()
+                except Exception:
+                    pass
+            ## Clean up the temporary attendee calendar if we created one.
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
+
+
+class CheckScheduleTagStablePartstat(Check):
+    """
+    Verifies that a PARTSTAT-only attendee update does not change the Schedule-Tag
+    (RFC6638 section 3.2 requirement).
+
+    Requires a cross-user setup (extra_principals) and auto-schedule behaviour so
+    that the probe event lands in the attendee's calendar automatically.  The check
+    is skipped (reported as unknown) when either prerequisite is absent.
+    """
+
+    depends_on = {CheckScheduleTag, CheckSchedulingInboxDelivery, PrepareCalendar}
+    features_to_be_checked = {"scheduling.schedule-tag.stable-partstat"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling.schedule-tag"):
+            self.set_feature("scheduling.schedule-tag.stable-partstat", False)
+            return
+
+        extra_principals = self.checker.extra_principals
+        if not extra_principals:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        if not self.feature_checked("scheduling.auto-schedule"):
+            ## Without auto-schedule the event won't appear in the attendee's
+            ## calendar automatically; skip rather than implement full inbox-accept.
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        principal = self.checker.principal
+        attendee_principal = extra_principals[0]
+
+        try:
+            own_address = str(principal.get_vcal_address())
+        except Exception:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        try:
+            attendee_address = str(attendee_principal.get_vcal_address())
+        except Exception:
+            attendee_username = getattr(attendee_principal.client, "username", None)
+            if not attendee_username or "@" not in str(attendee_username):
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+                return
+            attendee_address = "mailto:" + attendee_username
+
+        probe_uid = f"csc_tag_partstat_probe_{uuid.uuid4().hex}"
+        probe_ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{probe_uid}\r\n"
+            "DTSTART:20300601T100000Z\r\n"
+            "DTEND:20300601T110000Z\r\n"
+            "SUMMARY:caldav-server-tester schedule-tag partstat-stability probe\r\n"
+            f"ORGANIZER:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{attendee_address}\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+        probe_cal = self.checker.calendar
+        try:
+            probe_cal.save_with_invites(probe_ical, [principal, attendee_address])
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown", "behaviour": str(e)})
+            return
+
+        ## Wait for the event to appear in the attendee's calendar (auto-schedule)
+        attendee_event = None
+        for _ in range(15):
+            try:
+                for cal in attendee_principal.calendars():
+                    try:
+                        attendee_event = cal.event_by_uid(probe_uid)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if attendee_event:
+                break
+            time.sleep(1)
+
+        if attendee_event is None:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            self._cleanup(probe_cal, probe_uid, attendee_principal)
+            return
+
+        try:
+            attendee_event.load()
+            tag_before = attendee_event.schedule_tag
+            if tag_before is None:
+                ## Server doesn't return Schedule-Tag for the attendee copy; can't test stability
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+                return
+
+            attendee_event.change_attendee_status(partstat="ACCEPTED")
+            attendee_event.save()
+            attendee_event.load()
+            tag_after = attendee_event.schedule_tag
+
+            if tag_after is None:
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            elif tag_before == tag_after:
+                self.set_feature("scheduling.schedule-tag.stable-partstat")
+            else:
+                self.set_feature(
+                    "scheduling.schedule-tag.stable-partstat",
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"tag changed after PARTSTAT-only update: {tag_before!r} → {tag_after!r}",
+                    },
+                )
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown", "behaviour": str(e)})
+        finally:
+            self._cleanup(probe_cal, probe_uid, attendee_principal)
+
+    def _cleanup(self, probe_cal, probe_uid: str, attendee_principal) -> None:
+        try:
+            probe_cal.object_by_uid(probe_uid).delete()
+        except Exception:
+            pass
+        try:
+            for cal in attendee_principal.calendars():
+                try:
+                    cal.event_by_uid(probe_uid).delete()
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 class CheckTimezone(Check):
