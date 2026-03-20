@@ -238,6 +238,29 @@ myserver:
             support: full
 ```
 
+## Configuring multiple accounts
+
+Some checks (e.g. scheduling) require two user accounts on the same server.
+Define each account as its own section in `~/.config/caldav/calendar.conf` and
+pass `--config-section` multiple times.  The first section is the primary
+account; the rest become extra clients for multi-user checks:
+
+```
+caldav-server-tester --config-section alice --config-section bob
+```
+
+```yaml
+alice:
+    caldav_url: https://example.com/dav
+    caldav_username: alice
+    caldav_password: secret1
+
+bob:
+    caldav_url: https://example.com/dav
+    caldav_username: bob
+    caldav_password: secret2
+```
+
 ## Safety
 
 For servers that supports `MKCALENDAR`, a dedicated calendar will be
