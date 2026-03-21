@@ -1807,6 +1807,51 @@ class CheckScheduling(Check):
         self.set_feature("scheduling", self.client.supports_scheduling())
 
 
+class CheckSchedulingDetails(Check):
+    """
+    Checks RFC6638 scheduling sub-features: mailbox (inbox/outbox) and
+    calendar-user-address-set.  Depends on CheckScheduling; when scheduling
+    is unsupported both sub-features are recorded as unsupported immediately.
+    """
+
+    depends_on = {CheckScheduling, CheckGetCurrentUserPrincipal}
+    features_to_be_checked = {"scheduling.mailbox", "scheduling.calendar-user-address-set"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling"):
+            self.set_feature("scheduling.mailbox", False)
+            self.set_feature("scheduling.calendar-user-address-set", False)
+            return
+
+        principal = self.checker.principal
+        if principal is None:
+            self.set_feature("scheduling.mailbox", {"support": "unknown"})
+            self.set_feature("scheduling.calendar-user-address-set", {"support": "unknown"})
+            return
+
+        ## Check inbox + outbox
+        try:
+            principal.schedule_inbox()
+            principal.schedule_outbox()
+            self.set_feature("scheduling.mailbox", True)
+        except NotFoundError:
+            self.set_feature("scheduling.mailbox", False)
+        except Exception as e:
+            self.set_feature("scheduling.mailbox", {"support": "broken", "behaviour": str(e)})
+
+        ## Check calendar-user-address-set
+        try:
+            principal.calendar_user_address_set()
+            self.set_feature("scheduling.calendar-user-address-set", True)
+        except NotFoundError:
+            self.set_feature("scheduling.calendar-user-address-set", False)
+        except Exception as e:
+            self.set_feature(
+                "scheduling.calendar-user-address-set",
+                {"support": "broken", "behaviour": str(e)},
+            )
+
+
 class CheckTimezone(Check):
     """
     Checks support for non-UTC timezone information in events.
