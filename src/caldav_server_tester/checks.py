@@ -82,6 +82,19 @@ class CheckMakeDeleteCalendar(Check):
     }
     depends_on = {CheckGetCurrentUserPrincipal}
 
+    @staticmethod
+    def _calendar_is_accessible(cal) -> bool:
+        """Probe whether a calendar is accessible by calling events().
+
+        Returns True if events() succeeds, False if the server returns any DAV
+        error (404 Not Found, 403 Forbidden, 500 Internal Server Error, etc.).
+        """
+        try:
+            cal.events()
+            return True
+        except DAVError:
+            return False
+
     def _try_make_calendar(self, cal_id, **kwargs):
         """
         Does some attempts on creating and deleting calendars, and sets some
@@ -125,18 +138,14 @@ class CheckMakeDeleteCalendar(Check):
                     except Exception:
                         self.set_feature("create-calendar.set-displayname", False)
 
-        except DAVError as e:
+        except DAVError:
             ## calendar creation created an exception.  Maybe the calendar exists?
-            ## in any case, return exception
             cal = self.checker.principal.calendar(cal_id=cal_id)
-            try:
-                cal.events()
-            except Exception:
+            if not self._calendar_is_accessible(cal):
                 cal = None
             if not cal:
                 ## cal not made and does not exist, exception thrown.
-                ## Caller to decide why the calendar was not made
-                return (False, e)
+                return False
 
         assert cal
 
@@ -144,10 +153,8 @@ class CheckMakeDeleteCalendar(Check):
             ## Use DAVObject.delete directly to bypass Calendar.delete()
             ## workarounds - we want to test the server's raw DELETE behavior
             DAVObject.delete(cal)
-            try:
-                cal = self.checker.principal.calendar(cal_id=cal_id)
-                events = cal.events()
-            except NotFoundError:
+            cal = self.checker.principal.calendar(cal_id=cal_id)
+            if not self._calendar_is_accessible(cal):
                 cal = None
             ## Delete throw no exceptions, but was the calendar deleted?
             if not cal or self.checker.features_checked.is_supported("create-calendar.auto"):
@@ -160,24 +167,22 @@ class CheckMakeDeleteCalendar(Check):
                 ## Calendar not deleted.
                 ## Perhaps the server needs some time to delete the calendar
                 time.sleep(10)
-                try:
-                    cal = self.checker.principal.calendar(cal_id=cal_id)
-                    assert cal
-                    cal.events()
+                cal = self.checker.principal.calendar(cal_id=cal_id)
+                if self._calendar_is_accessible(cal):
                     ## Calendar not deleted, but no exception thrown.
                     ## Perhaps it's a "move to thrashbin"-regime on the server
                     self.set_feature(
                         "delete-calendar",
                         {"support": "unknown", "behaviour": "move to trashbin?"},
                     )
-                except NotFoundError as e:
+                else:
                     ## Calendar was deleted, it just took some time.
                     self.set_feature(
                         "delete-calendar",
                         {"support": "fragile", "behaviour": "delayed deletion"},
                     )
-                    return (calmade, e)
-            return (calmade, None)
+                    return calmade
+            return calmade
         except DAVError as e:
             time.sleep(10)
             try:
@@ -191,7 +196,7 @@ class CheckMakeDeleteCalendar(Check):
                 )
             except DAVError as e2:
                 self.set_feature("delete-calendar", False)
-            return (calmade, None)
+            return calmade
 
     def _run_check(self):
         try:
@@ -201,7 +206,10 @@ class CheckMakeDeleteCalendar(Check):
         except (
             NotFoundError,
             AuthorizationError,
-        ):  ## robur throws a 403 .. and that's ok
+            ReportError,
+        ):  ## robur throws a 403 .. and that's ok.
+            ## Some unknown server throws 500 internal server error ... well, we should survive that, too
+            ## (perhaps we should do an `except Exception` instead?)
             self.set_feature("create-calendar.auto", False)
 
         ## Check on "no_default_calendar" flag
@@ -214,7 +222,7 @@ class CheckMakeDeleteCalendar(Check):
 
         _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
         makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
-        if makeret[0]:
+        if makeret:
             ## calendar created
             ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
             if self.checker.features_checked.is_supported("delete-calendar"):
@@ -223,12 +231,12 @@ class CheckMakeDeleteCalendar(Check):
                 self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
         makeret = self._try_make_calendar(name=str(uuid.uuid4()), cal_id="pythoncaldav-test")
-        if makeret[0]:
+        if makeret:
             self.set_feature("create-calendar.set-displayname", True)
             self.set_feature("delete-calendar.free-namespace", False)
             return
         makeret = self._try_make_calendar(cal_id="pythoncaldav-test")
-        if makeret[0]:
+        if makeret:
             self.set_feature("create-calendar.set-displayname", False)
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
@@ -237,18 +245,18 @@ class CheckMakeDeleteCalendar(Check):
             return
         unique_id1 = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id1, name=str(uuid.uuid4()))
-        if makeret[0]:
+        if makeret:
             self.set_feature("delete-calendar.free-namespace", False)
             self.set_feature("create-calendar.set-displayname", True)
             return
         unique_id = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id)
-        if makeret[0]:
+        if makeret:
             self.set_feature("create-calendar.set-displayname", False)
             self.set_feature("delete-calendar.free-namespace", False)
             return
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
-        if makeret[0]:
+        if makeret:
             self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", False)
