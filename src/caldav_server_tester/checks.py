@@ -1852,6 +1852,105 @@ class CheckSchedulingDetails(Check):
             )
 
 
+class CheckSchedulingInboxDelivery(Check):
+    """
+    Checks whether the server delivers incoming scheduling REQUEST messages to
+    the attendee's schedule-inbox (RFC6638 section 3.1), or whether the server
+    implements automatic scheduling (RFC6638 section 3.2.3) where invitations
+    are auto-processed and placed directly on the calendar.
+
+    Uses a self-invite as a probe: save an event with the user's own calendar
+    address as attendee and observe whether it appears in the inbox.
+    Requires scheduling and mailbox support; skipped otherwise.
+    """
+
+    depends_on = {CheckSchedulingDetails, PrepareCalendar}
+    features_to_be_checked = {"scheduling.inbox-delivery"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
+            self.set_feature("scheduling.inbox-delivery", False)
+            return
+
+        if not self.feature_checked("scheduling.calendar-user-address-set"):
+            ## Can't compose invite without knowing own address
+            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            return
+
+        principal = self.checker.principal
+        try:
+            own_address = principal.get_vcal_address()
+        except Exception:
+            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            return
+
+        ## Snapshot inbox before the probe
+        try:
+            inbox = principal.schedule_inbox()
+            inbox_before = {item.url for item in inbox.get_items()}
+        except Exception:
+            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            return
+
+        ## Create the probe ical event
+        from caldav.lib.vcal import create_ical
+
+        probe_uid = "csc-inbox-delivery-probe-event"
+        probe_ical = create_ical(
+            objtype="VEVENT",
+            uid=probe_uid,
+            summary="caldav-server-tester inbox-delivery probe",
+            dtstart=datetime(2000, 6, 15, 10, 0, 0, tzinfo=utc),
+            dtend=datetime(2000, 6, 15, 11, 0, 0, tzinfo=utc),
+        )
+
+        ## Use a temporary calendar if possible, fall back to the shared checker calendar
+        probe_cal_id = "csc-inbox-delivery-probe"
+        use_temp_calendar = self.feature_checked("create-calendar") and self.feature_checked("delete-calendar")
+        if use_temp_calendar:
+            try:
+                probe_calendar = principal.make_calendar(cal_id=probe_cal_id, name=probe_cal_id)
+            except Exception:
+                use_temp_calendar = False
+                probe_calendar = self.checker.calendar
+        else:
+            probe_calendar = self.checker.calendar
+
+        try:
+            probe_calendar.save_with_invites(probe_ical, [principal, own_address])
+        except Exception as e:
+            self.set_feature("scheduling.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            return
+        finally:
+            if use_temp_calendar:
+                try:
+                    probe_calendar.delete()
+                except Exception:
+                    pass
+            else:
+                try:
+                    probe_calendar.object_by_uid(probe_uid).delete()
+                except Exception:
+                    pass
+
+        ## Check if anything new arrived in the inbox
+        try:
+            inbox_after = {item.url for item in inbox.get_items()}
+            new_items = inbox_after - inbox_before
+            if new_items:
+                ## Clean up the inbox item(s)
+                for url in new_items:
+                    try:
+                        DAVObject(client=self.client, url=url).delete()
+                    except Exception:
+                        pass
+                self.set_feature("scheduling.inbox-delivery", True)
+            else:
+                self.set_feature("scheduling.inbox-delivery", False)
+        except Exception as e:
+            self.set_feature("scheduling.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+
+
 class CheckTimezone(Check):
     """
     Checks support for non-UTC timezone information in events.
