@@ -1862,6 +1862,11 @@ class CheckSchedulingInboxDelivery(Check):
     Uses a self-invite as a probe: save an event with the user's own calendar
     address as attendee and observe whether it appears in the inbox.
     Requires scheduling and mailbox support; skipped otherwise.
+
+    Limitation: some servers (e.g. Cyrus) skip self-invite delivery entirely
+    (RFC6638 allows this).  For those servers this probe will observe
+    "unsupported" even though cross-user invites ARE delivered to the inbox.
+    A correct result for such servers requires a two-user probe.
     """
 
     depends_on = {CheckSchedulingDetails, PrepareCalendar}
