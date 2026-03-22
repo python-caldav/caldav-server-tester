@@ -1859,14 +1859,23 @@ class CheckSchedulingInboxDelivery(Check):
     implements automatic scheduling (RFC6638 section 3.2.3) where invitations
     are auto-processed and placed directly on the calendar.
 
-    Uses a self-invite as a probe: save an event with the user's own calendar
-    address as attendee and observe whether it appears in the inbox.
-    Requires scheduling and mailbox support; skipped otherwise.
+    When a second principal is available (via ServerQuirkChecker.extra_principals),
+    uses a cross-user probe: the main user invites the second user and checks
+    whether an iTIP message appears in the second user's inbox.  This is more
+    accurate than the self-invite fallback because some servers (e.g. Cyrus) skip
+    self-invite delivery entirely (RFC6638 allows this) but do deliver cross-user
+    invites to the inbox.
 
-    Limitation: some servers (e.g. Cyrus) skip self-invite delivery entirely
-    (RFC6638 allows this).  For those servers this probe will observe
-    "unsupported" even though cross-user invites ARE delivered to the inbox.
-    A correct result for such servers requires a two-user probe.
+    Falls back to a self-invite probe (main user invites itself) when no second
+    principal is configured.  That fallback may under-report inbox delivery for
+    servers that skip self-invites.
+
+    Result values:
+      full    – invite appeared in attendee inbox; attendee must accept manually.
+      quirk   – invite appeared in inbox AND was also auto-scheduled directly into
+                the attendee's calendar (server does both; client need not process inbox).
+      unsupported – invite did not appear in inbox; server implements automatic
+                scheduling or skips self-invite delivery.
     """
 
     depends_on = {CheckSchedulingDetails, PrepareCalendar}
@@ -1889,9 +1898,23 @@ class CheckSchedulingInboxDelivery(Check):
             self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
             return
 
-        ## Snapshot inbox before the probe
+        ## Decide probe mode: cross-user (preferred) or self-invite (fallback)
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            attendee_principal = extra_principals[0]
+            try:
+                attendee_address = attendee_principal.get_vcal_address()
+            except Exception:
+                attendee_address = None
+            attendees = [attendee_address or attendee_principal]
+        else:
+            ## Self-invite fallback
+            attendee_principal = principal
+            attendees = [principal, own_address]
+
+        ## Snapshot attendee inbox before the probe
         try:
-            inbox = principal.schedule_inbox()
+            inbox = attendee_principal.schedule_inbox()
             inbox_before = {item.url for item in inbox.get_items()}
         except Exception:
             self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
@@ -1901,12 +1924,13 @@ class CheckSchedulingInboxDelivery(Check):
         from caldav.lib.vcal import create_ical
 
         probe_uid = "csc-inbox-delivery-probe-event"
+        ## Use a future date: some servers (e.g. Cyrus) skip iTIP delivery for past events.
         probe_ical = create_ical(
             objtype="VEVENT",
             uid=probe_uid,
             summary="caldav-server-tester inbox-delivery probe",
-            dtstart=datetime(2000, 6, 15, 10, 0, 0, tzinfo=utc),
-            dtend=datetime(2000, 6, 15, 11, 0, 0, tzinfo=utc),
+            dtstart=datetime(2099, 6, 15, 10, 0, 0, tzinfo=utc),
+            dtend=datetime(2099, 6, 15, 11, 0, 0, tzinfo=utc),
         )
 
         ## Use a temporary calendar if possible, fall back to the shared checker calendar
@@ -1922,7 +1946,7 @@ class CheckSchedulingInboxDelivery(Check):
             probe_calendar = self.checker.calendar
 
         try:
-            probe_calendar.save_with_invites(probe_ical, [principal, own_address])
+            probe_calendar.save_with_invites(probe_ical, attendees)
         except Exception as e:
             self.set_feature("scheduling.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
             return
@@ -1938,18 +1962,50 @@ class CheckSchedulingInboxDelivery(Check):
                 except Exception:
                     pass
 
-        ## Check if anything new arrived in the inbox
+        ## Check if anything new arrived in the attendee inbox
         try:
             inbox_after = {item.url for item in inbox.get_items()}
             new_items = inbox_after - inbox_before
             if new_items:
-                ## Clean up the inbox item(s)
+                ## Clean up the inbox item(s) using the attendee's client
+                attendee_client = attendee_principal.client
                 for url in new_items:
                     try:
-                        DAVObject(client=self.client, url=url).delete()
+                        DAVObject(client=attendee_client, url=url).delete()
                     except Exception:
                         pass
-                self.set_feature("scheduling.inbox-delivery", True)
+                ## Also check whether the event was auto-scheduled into the attendee's calendar.
+                ## If so, the server implements both auto-scheduling and inbox notification
+                ## delivery (quirk behaviour: client need not process the inbox).
+                auto_scheduled = False
+                if extra_principals:
+                    try:
+                        auto_scheduled = any(
+                            event.icalendar_component.get("UID") == probe_uid
+                            for cal in attendee_principal.calendars()
+                            for event in cal.get_events()
+                        )
+                    except Exception:
+                        pass
+                    ## Clean up auto-scheduled event if present
+                    if auto_scheduled:
+                        try:
+                            for cal in attendee_principal.calendars():
+                                for event in cal.get_events():
+                                    if event.icalendar_component.get("UID") == probe_uid:
+                                        event.delete()
+                        except Exception:
+                            pass
+                if auto_scheduled:
+                    self.set_feature(
+                        "scheduling.inbox-delivery",
+                        {
+                            "support": "quirk",
+                            "behaviour": "server delivers iTIP notification to inbox AND auto-schedules into calendar",
+                        },
+                    )
+                else:
+                    self.set_feature("scheduling.inbox-delivery", True)
             else:
                 self.set_feature("scheduling.inbox-delivery", False)
         except Exception as e:
