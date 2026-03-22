@@ -17,13 +17,20 @@ class ServerQuirkChecker:
     * Methods for checking all features or a specific feature
     """
 
-    def __init__(self, client_obj, debug_mode="logging"):
+    def __init__(self, client_obj, debug_mode="logging", extra_clients=None):
         self._client_obj = client_obj
+        self._extra_clients = list(extra_clients or [])
         self._features_checked = FeatureSet()
         self._default_calendar = None
         self._checks_run = set()  ## checks that has already been running
         self.expected_features = self._client_obj.features
         self.principal = self._client_obj.principal()
+        self.extra_principals = []
+        for ec in self._extra_clients:
+            try:
+                self.extra_principals.append(ec.principal())
+            except Exception:
+                pass  ## Skip clients that fail to authenticate or connect
         self.debug_mode = debug_mode
 
         ## Handle search-cache delay if configured.
