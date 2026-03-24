@@ -4,14 +4,13 @@ A command-line tool that probes a CalDAV server and reports which features and
 RFC requirements it supports, which ones it handles quirky, and which ones it
 gets wrong.
 
-It is a companion to the [caldav](https://github.com/python-caldav/caldav)
+It is a companion to the [CalDAV](https://github.com/python-caldav/caldav)
 Python client library and produces output that is compatible with that
-library's `compatibility_hints.py` feature-flag system.
-
-> **Status**: alpha / pre-1.0.  The checks are useful today, but the
-> interface may change before the 1.0 release.
+library's `compatibility_hints.py` feature-flag system.  See https://caldav.readthedocs.io/latest/configfile.html#testing-server-compatibility on how to use it for configuring your server compatibility in a formt that the libary can read.
 
 ## What it checks
+
+The full list is currently maintained in the CalDAV library, https://github.com/python-caldav/caldav/blob/master/caldav/compatibility_hints.py - the checks includes:
 
 - Calendar creation and deletion (`MKCALENDAR`)
 - Saving and loading events, tasks, and journals
@@ -32,7 +31,7 @@ For full usage information, including all CLI options and output formats, see
 make install
 ```
 
-(This auto-detects `uv`, `pipx`, or `pip` and does the right thing.)
+(This auto-detects `uv`, `pipx`, or `pip` and does the right thing.  Hopefully.)
 
 ## Quick example
 
