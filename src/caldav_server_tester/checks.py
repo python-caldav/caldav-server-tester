@@ -249,6 +249,62 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar", False)
 
 
+class CheckSupportedComponents(Check):
+    """
+    Checks whether the server returns the supported-calendar-component-set property
+    (RFC 4791 section 5.2.3).
+
+    Strategy: if the server supports calendar creation, create a VTODO-only
+    calendar and ask for its supported component set.  If the server returns
+    exactly ["VTODO"] the property is advertised correctly (full).  If it
+    returns the RFC default (all types) the server does not advertise the
+    property (unsupported).
+
+    When calendar creation is not available we fall back to inspecting the
+    main test calendar; in that case we can only detect "full" support if the
+    server returns a strict subset of the full default list.
+    """
+
+    depends_on = {CheckMakeDeleteCalendar}
+    features_to_be_checked = {"get-supported-components"}
+
+    def _run_check(self):
+        cal = None
+        try:
+            if self.checker.features_checked.is_supported("create-calendar"):
+                cal = self.checker.principal.make_calendar(
+                    cal_id="csc_supported_components_check",
+                    name="csc_supported_components_check",
+                    supported_calendar_component_set=["VTODO"],
+                )
+                components = cal.get_supported_components()
+                ## If the server honoured the component set restriction,
+                ## the property must be present and working.
+                if set(components) == {"VTODO"}:
+                    self.set_feature("get-supported-components")
+                else:
+                    self.set_feature("get-supported-components", False)
+            elif hasattr(self.checker, "calendar"):
+                components = self.checker.calendar.get_supported_components()
+                ## When a strict subset comes back the property must be present.
+                ## If the full default comes back we cannot distinguish "full
+                ## support for all types" from "property absent".
+                if set(components) < {"VEVENT", "VTODO", "VJOURNAL"}:
+                    self.set_feature("get-supported-components")
+                else:
+                    self.set_feature("get-supported-components", "unknown")
+            else:
+                self.set_feature("get-supported-components", "unknown")
+        except Exception:
+            self.set_feature("get-supported-components", False)
+        finally:
+            if cal is not None:
+                try:
+                    cal.delete()
+                except Exception:
+                    pass
+
+
 class PrepareCalendar(Check):
     """
     This "check" doesn't check anything, but ensures the calendar has some known events
