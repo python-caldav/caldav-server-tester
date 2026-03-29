@@ -922,36 +922,20 @@ class CheckSearch(Check):
             self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
-        ## regardless of date?  Uses a year-2000 event to detect sliding-window servers
-        ## (e.g. OX) that hide old non-recurring events from REPORT.
+        ## regardless of date?  Uses the year-2000 non-recurring event csc_simple_event1
+        ## already placed by PrepareCalendar (so indexing delays don't affect the result)
+        ## to detect sliding-window servers (e.g. OX) that hide old non-recurring events.
         ## Uses _request_report_build_resultlist directly to bypass the search.unlimited-time-range
         ## workaround in search.py, so the actual server behaviour is observed.
-        temp_event = None
-        temp_uid = f"csc_no_time_range_{uuid.uuid4().hex[:8]}"
         try:
-            temp_event = cal.save_object(
-                Event,
-                summary="no-time-range check event",
-                uid=temp_uid,
-                dtstart=datetime(2000, 6, 15, 12, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 6, 15, 13, 0, 0, tzinfo=utc),
-            )
-            ## Respect the search-cache delay (e.g. Bedework) before querying.
-            ## We use _request_report_build_resultlist directly (to bypass the
-            ## search.unlimited-time-range workaround in _search_impl), which also
-            ## bypasses the Calendar.search delay wrapper in checker.py.
-            search_cache = self.checker._client_obj.features.is_supported("search-cache", return_type=dict)
-            if search_cache.get("behaviour") == "delay":
-                time.sleep(search_cache.get("delay", 1))
-            ## Build VEVENT query without time range and call REPORT directly
             searcher = CalDAVSearcher(comp_class=Event)
             xml, comp_class = searcher.build_search_xml_query()
             _, objects = cal._request_report_build_resultlist(xml, comp_class)
-            found = any(o.id == temp_uid for o in objects)
+            found = any(o.id == "csc_simple_event1" for o in objects)
             if found:
                 self.set_feature("search.unlimited-time-range")
             elif objects:
-                ## Server returned some events but missed the old-date event:
+                ## Server returned some events but missed the old-date non-recurring event:
                 ## it uses a sliding time window (broken, not unsupported)
                 self.set_feature("search.unlimited-time-range", {"support": "broken"})
             else:
@@ -959,12 +943,6 @@ class CheckSearch(Check):
                 self.set_feature("search.unlimited-time-range", "unsupported")
         except (AuthorizationError, DAVError):
             self.set_feature("search.unlimited-time-range", "ungraceful")
-        finally:
-            if temp_event:
-                try:
-                    temp_event.delete()
-                except Exception:
-                    pass
 
 
 class CheckIsNotDefined(Check):
@@ -1855,9 +1833,9 @@ class CheckSchedulingDetails(Check):
 class CheckSchedulingInboxDelivery(Check):
     """
     Checks whether the server delivers incoming scheduling REQUEST messages to
-    the attendee's schedule-inbox (RFC6638 section 3.1), or whether the server
-    implements automatic scheduling (RFC6638 section 3.2.3) where invitations
-    are auto-processed and placed directly on the calendar.
+    the attendee's schedule-inbox (RFC6638 section 4.1), or whether the server
+    implements server-side automatic scheduling where invitations are
+    auto-processed and placed directly on the calendar.
 
     When a second principal is available (via ServerQuirkChecker.extra_principals),
     uses a cross-user probe: the main user invites the second user and checks
@@ -1879,23 +1857,23 @@ class CheckSchedulingInboxDelivery(Check):
     """
 
     depends_on = {CheckSchedulingDetails, PrepareCalendar}
-    features_to_be_checked = {"scheduling.inbox-delivery"}
+    features_to_be_checked = {"scheduling.mailbox.inbox-delivery"}
 
     def _run_check(self) -> None:
         if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
-            self.set_feature("scheduling.inbox-delivery", False)
+            self.set_feature("scheduling.mailbox.inbox-delivery", False)
             return
 
         if not self.feature_checked("scheduling.calendar-user-address-set"):
             ## Can't compose invite without knowing own address
-            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
             return
 
         principal = self.checker.principal
         try:
             own_address = principal.get_vcal_address()
         except Exception:
-            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
             return
 
         ## Decide probe mode: cross-user (preferred) or self-invite (fallback)
@@ -1917,7 +1895,7 @@ class CheckSchedulingInboxDelivery(Check):
             inbox = attendee_principal.schedule_inbox()
             inbox_before = {item.url for item in inbox.get_items()}
         except Exception:
-            self.set_feature("scheduling.inbox-delivery", {"support": "unknown"})
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
             return
 
         ## Create the probe ical event
@@ -1948,7 +1926,7 @@ class CheckSchedulingInboxDelivery(Check):
         try:
             probe_calendar.save_with_invites(probe_ical, attendees)
         except Exception as e:
-            self.set_feature("scheduling.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
             return
         finally:
             if use_temp_calendar:
@@ -1998,18 +1976,18 @@ class CheckSchedulingInboxDelivery(Check):
                             pass
                 if auto_scheduled:
                     self.set_feature(
-                        "scheduling.inbox-delivery",
+                        "scheduling.mailbox.inbox-delivery",
                         {
                             "support": "quirk",
                             "behaviour": "server delivers iTIP notification to inbox AND auto-schedules into calendar",
                         },
                     )
                 else:
-                    self.set_feature("scheduling.inbox-delivery", True)
+                    self.set_feature("scheduling.mailbox.inbox-delivery", True)
             else:
-                self.set_feature("scheduling.inbox-delivery", False)
+                self.set_feature("scheduling.mailbox.inbox-delivery", False)
         except Exception as e:
-            self.set_feature("scheduling.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
 
 
 class CheckTimezone(Check):
