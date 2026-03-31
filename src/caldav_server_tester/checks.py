@@ -1903,11 +1903,31 @@ class CheckSchedulingInboxDelivery(Check):
             attendee_principal = principal
             attendees = [principal, own_address]
 
+        ## Some servers (e.g. sabre/dav / Davis) require the attendee to have at
+        ## least one calendar before they will deliver scheduling messages to the
+        ## inbox.  Create a temporary calendar for the attendee if needed and
+        ## remove it after the probe.
+        attendee_temp_cal = None
+        if extra_principals:
+            try:
+                if not attendee_principal.calendars():
+                    attendee_temp_cal = attendee_principal.make_calendar(
+                        cal_id="csc-inbox-probe-attendee-cal",
+                        name="csc-inbox-probe-attendee-cal",
+                    )
+            except Exception:
+                pass
+
         ## Snapshot attendee inbox before the probe
         try:
             inbox = attendee_principal.schedule_inbox()
             inbox_before = {item.url for item in inbox.get_items()}
         except Exception:
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
             self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
             return
 
@@ -1941,22 +1961,11 @@ class CheckSchedulingInboxDelivery(Check):
         except Exception as e:
             self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
             return
-        finally:
-            if use_temp_calendar:
-                try:
-                    probe_calendar.delete()
-                except Exception:
-                    pass
-            else:
-                try:
-                    probe_calendar.object_by_uid(probe_uid).delete()
-                except Exception:
-                    pass
 
         ## Check if anything new arrived in the attendee inbox.
-        ## Some servers (e.g. Davis/DAViCal) deliver scheduling messages
-        ## asynchronously, so poll for up to 30 seconds before concluding that
-        ## inbox delivery is unsupported.
+        ## Poll for up to 30 seconds before concluding that inbox delivery is unsupported:
+        ## some servers (e.g. Davis, DAViCal) deliver scheduling messages asynchronously,
+        ## and deleting the probe event before polling would race with that delivery.
         new_items: set = set()
         try:
             for _ in range(30):
@@ -2009,6 +2018,26 @@ class CheckSchedulingInboxDelivery(Check):
                 self.set_feature("scheduling.mailbox.inbox-delivery", False)
         except Exception as e:
             self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+        finally:
+            ## Clean up the probe event/calendar now that polling is done.
+            ## This is intentionally done AFTER polling so that async delivery
+            ## is not cancelled by deleting the originating event too early.
+            if use_temp_calendar:
+                try:
+                    probe_calendar.delete()
+                except Exception:
+                    pass
+            else:
+                try:
+                    probe_calendar.object_by_uid(probe_uid).delete()
+                except Exception:
+                    pass
+            ## Clean up the temporary attendee calendar if we created one.
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
 
 
 class CheckTimezone(Check):
