@@ -6,6 +6,12 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
+## [Unreleased]
+
+### Fixed
+
+* `CheckSchedulingInboxDelivery` now falls back to the client username as the sender/attendee email address when the server does not expose `calendar-user-address-set`.  Previously the check always reported `unknown` inbox-delivery status in that case.  Mirrors the fix for https://github.com/python-caldav/caldav/issues/399 in the caldav library.
+
 ## [1.0.1] - 2026-03-19
 
 ### Fixed

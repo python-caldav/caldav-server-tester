@@ -1864,17 +1864,25 @@ class CheckSchedulingInboxDelivery(Check):
             self.set_feature("scheduling.mailbox.inbox-delivery", False)
             return
 
-        if not self.feature_checked("scheduling.calendar-user-address-set"):
-            ## Can't compose invite without knowing own address
-            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
-            return
-
         principal = self.checker.principal
-        try:
-            own_address = principal.get_vcal_address()
-        except Exception:
-            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
-            return
+
+        ## Determine own address for composing the probe invite.
+        ## Prefer calendar-user-address-set; fall back to the client username
+        ## when it is unavailable (mirrors the fix for
+        ## https://github.com/python-caldav/caldav/issues/399).
+        if self.feature_checked("scheduling.calendar-user-address-set"):
+            try:
+                own_address = principal.get_vcal_address()
+            except Exception:
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                return
+        else:
+            username = getattr(self.client, "username", None)
+            if not username or "@" not in str(username):
+                ## No address source available; cannot compose probe invite.
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                return
+            own_address = "mailto:" + username
 
         ## Decide probe mode: cross-user (preferred) or self-invite (fallback)
         extra_principals = self.checker.extra_principals
@@ -1883,8 +1891,13 @@ class CheckSchedulingInboxDelivery(Check):
             try:
                 attendee_address = attendee_principal.get_vcal_address()
             except Exception:
-                attendee_address = None
-            attendees = [attendee_address or attendee_principal]
+                ## Fall back to attendee's username when calendar-user-address-set
+                ## is unavailable on that account too.
+                attendee_username = getattr(attendee_principal.client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
+                )
+            attendees = [attendee_address] if attendee_address else [attendee_principal]
         else:
             ## Self-invite fallback
             attendee_principal = principal
