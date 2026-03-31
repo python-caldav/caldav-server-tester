@@ -1953,10 +1953,18 @@ class CheckSchedulingInboxDelivery(Check):
                 except Exception:
                     pass
 
-        ## Check if anything new arrived in the attendee inbox
+        ## Check if anything new arrived in the attendee inbox.
+        ## Some servers (e.g. Davis/DAViCal) deliver scheduling messages
+        ## asynchronously, so poll for up to 30 seconds before concluding that
+        ## inbox delivery is unsupported.
+        new_items: set = set()
         try:
-            inbox_after = {item.url for item in inbox.get_items()}
-            new_items = inbox_after - inbox_before
+            for _ in range(30):
+                inbox_after = {item.url for item in inbox.get_items()}
+                new_items = inbox_after - inbox_before
+                if new_items:
+                    break
+                time.sleep(1)
             if new_items:
                 ## Clean up the inbox item(s) using the attendee's client
                 attendee_client = attendee_principal.client

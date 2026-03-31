@@ -11,6 +11,7 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 ### Fixed
 
 * `CheckSchedulingInboxDelivery` now falls back to the client username as the sender/attendee email address when the server does not expose `calendar-user-address-set`.  Previously the check always reported `unknown` inbox-delivery status in that case.  Mirrors the fix for https://github.com/python-caldav/caldav/issues/399 in the caldav library.
+* `CheckSchedulingInboxDelivery` now polls the attendee inbox for up to 30 seconds after saving the probe invite, matching the retry loop used by the integration tests.  This prevents false `unsupported` results on servers (e.g. Davis, DAViCal) that deliver scheduling messages asynchronously.
 
 ## [1.0.1] - 2026-03-19
 
