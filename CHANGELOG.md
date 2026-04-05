@@ -8,10 +8,18 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-* `CheckSchedulingInboxDelivery` now falls back to the client username as the sender/attendee email address when the server does not expose `calendar-user-address-set`.  Previously the check always reported `unknown` inbox-delivery status in that case.  Mirrors the fix for https://github.com/python-caldav/caldav/issues/399 in the caldav library.
-* `CheckSchedulingInboxDelivery` now polls the attendee inbox for up to 30 seconds after saving the probe invite, matching the retry loop used by the integration tests.  This prevents false `unsupported` results on servers (e.g. Davis, DAViCal) that deliver scheduling messages asynchronously.
+* New `CheckScheduling` check: probes RFC6638 scheduling support and records the result under the `scheduling` feature flag.
+* New `CheckSchedulingDetails` check: verifies that the principal has a functional `schedule-inbox`/`schedule-outbox` and `calendar-user-address-set` as required by RFC6638, recording results under `scheduling.mailbox` and `scheduling.calendar-user-address-set`.
+* New `CheckSchedulingInboxDelivery` check: probes whether the server delivers incoming iTIP `REQUEST` messages to the attendee's schedule-inbox (`scheduling.mailbox.inbox-delivery`); also detects automatic scheduling (RFC6638).
+  - Uses a cross-user probe (preferred) when a second principal is configured: the main user invites the extra user and checks their inbox.  This gives accurate results on servers (e.g. Cyrus IMAP) that skip self-invite delivery.
+  - Falls back to a self-invite probe when only one user is available (note: some servers skip self-invite delivery per RFC6638, so results may show `unsupported` even when cross-user delivery works).
+* `--config-section` CLI option now accepts multiple values; the first section is the primary connection and subsequent sections supply extra users for multi-user checks such as `CheckSchedulingInboxDelivery`.
+
+### Changed
+
+* `scheduling.inbox-delivery` renamed to `scheduling.mailbox.inbox-delivery` (aligns with the caldav library rename).
 
 ## [1.0.1] - 2026-03-19
 
