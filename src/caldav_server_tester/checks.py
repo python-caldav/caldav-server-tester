@@ -455,8 +455,23 @@ class PrepareCalendar(Check):
             due=datetime(2000, 1, 9, 13, 0, 0, tzinfo=utc),
         )
 
+        ## Task with DTSTART + DURATION (no DUE): used by CheckOpenTimeRangeSearch
+        ## for two tests:
+        ## 1. Duration overlap: DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
+        ##    Searches overlapping the interval [12:00, 14:00] should return this task.
+        ##    RFC4791 section 9.9: VTODO overlaps [start, end] if DTSTART+DURATION > start.
+        ## 2. Open-start filtering: DTSTART=2000-01-18 is after end=2000-01-15, so this
+        ##    task must NOT be returned by an end-only search with end=2000-01-15.
+        add_if_not_existing(
+            Todo,
+            summary="task with dtstart and duration (no due)",
+            uid="csc_task_with_duration",
+            dtstart=datetime(2000, 1, 18, 12, 0, 0, tzinfo=utc),
+            duration=timedelta(hours=2),
+        )
+
         ## TODO: there are more variants to be tested - dtstart date and due date,
-        ## dtstart and duration, only duration, no time spec at all, ...
+        ## only duration, no time spec at all, ...
 
         try:
             event_with_alarm = add_if_not_existing(
@@ -861,6 +876,9 @@ class CheckSearch(Check):
         elif self.feature_checked("search.text.category"):
             ## Can't test combined search without old-dates support
             ## (test data is in year 2000)
+            self.set_feature("search.combined-is-logical-and", None)
+        else:
+            ## Can't test combined search without category search support
             self.set_feature("search.combined-is-logical-and", None)
 
         try:
@@ -1914,8 +1932,6 @@ class CheckScheduleTag(Check):
     features_to_be_checked = {"scheduling.schedule-tag"}
 
     def _run_check(self) -> None:
-        from caldav.elements import cdav as _cdav
-
         if not self.feature_checked("scheduling"):
             self.set_feature("scheduling.schedule-tag", False)
             return
@@ -1969,12 +1985,12 @@ class CheckScheduleTag(Check):
             "PRODID:-//caldav-server-tester//test//EN\r\n"
             "BEGIN:VEVENT\r\n"
             f"UID:{probe_uid}\r\n"
-            "DTSTART:20000101T100000Z\r\n"
-            "DTEND:20000101T110000Z\r\n"
+            "DTSTART:20300101T100000Z\r\n"
+            "DTEND:20300101T110000Z\r\n"
             "SUMMARY:caldav-server-tester schedule-tag probe\r\n"
             f"ORGANIZER:{own_address}\r\n"
-            f"ATTENDEE;RSVP=TRUE:{own_address}\r\n"
-            f"ATTENDEE;RSVP=TRUE:{attendee_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{attendee_address}\r\n"
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
@@ -1983,30 +1999,17 @@ class CheckScheduleTag(Check):
             event = cal.add_event(probe_ical)
 
             ## RFC6638 s3.2: server MUST return Schedule-Tag on successful PUT.
-            if event.props.get(_cdav.ScheduleTag.tag):
+            if event.schedule_tag:
                 self.set_feature("scheduling.schedule-tag")
                 return
 
-            ## Fallback: GET the resource and check the Schedule-Tag response header.
-            event.load()
-            tag_from_get = event.props.get(_cdav.ScheduleTag.tag)
-
-            if tag_from_get:
-                self.set_feature("scheduling.schedule-tag")
-                return
-
-            ## Fallback: try PROPFIND for the schedule-tag DAV property
-            tag_from_propfind = event.get_property(_cdav.ScheduleTag(), use_cached=False)
-            if tag_from_propfind:
-                self.set_feature("scheduling.schedule-tag")
-            else:
-                self.set_feature(
-                    "scheduling.schedule-tag",
-                    {
-                        "support": "unsupported",
-                        "behaviour": "server did not return Schedule-Tag header on GET or via PROPFIND",
-                    },
-                )
+            self.set_feature(
+                "scheduling.schedule-tag",
+                {
+                    "support": "unsupported",
+                    "behaviour": "server did not return Schedule-Tag header on GET or via PROPFIND",
+                },
+            )
         except (DAVError, PutError) as e:
             self.set_feature("scheduling.schedule-tag", {"support": "ungraceful", "behaviour": str(e)})
         except Exception as e:
@@ -2425,3 +2428,319 @@ class CheckTimezone(Check):
                 "save-load.event.timezone",
                 {"support": "broken", "behaviour": f"Unexpected error during timezone test: {e}"},
             )
+
+
+class CheckRelatedTo(Check):
+    """Check if RELATED-TO properties (RFC5545 section 3.8.4.5) are preserved.
+
+    Saves an event with two RELATED-TO lines and loads it back.
+    - full: both RELATED-TO lines preserved
+    - broken: only the first RELATED-TO line preserved (subsequent ones stripped)
+    - unsupported: all RELATED-TO lines stripped
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.icalendar.related-to"}
+
+    def _run_check(self):
+        cal = self.checker.calendar
+        uid = f"csc_related_to_{uuid.uuid4().hex[:8]}"
+        test_obj = None
+        try:
+            test_obj = cal.save_object(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//tobixen//Caldav-Server-Tester//en_DK
+BEGIN:VEVENT
+UID:{uid}
+DTSTART:20000601T120000Z
+DTEND:20000601T130000Z
+DTSTAMP:20000101T000000Z
+SUMMARY:event with related-to for feature detection
+RELATED-TO;RELTYPE=PARENT:some-parent-uid
+RELATED-TO;RELTYPE=SIBLING:some-sibling-uid
+END:VEVENT
+END:VCALENDAR""",
+            )
+            test_obj.load()
+            count = test_obj.data.count("RELATED-TO")
+            if count == 0:
+                self.set_feature("save-load.icalendar.related-to", False)
+            elif count == 1:
+                self.set_feature(
+                    "save-load.icalendar.related-to",
+                    {
+                        "support": "broken",
+                        "behaviour": "first RELATED-TO line preserved but subsequent RELATED-TO lines are stripped",
+                    },
+                )
+            else:
+                assert count == 2
+                self.set_feature("save-load.icalendar.related-to")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("save-load.icalendar.related-to", {"support": "ungraceful", "behaviour": str(e)})
+        finally:
+            if test_obj:
+                try:
+                    test_obj.delete()
+                except Exception:
+                    pass
+
+
+class CheckOpenTimeRangeSearch(Check):
+    """Check open-ended time-range search behaviour for VTODOs and VEVENTs.
+
+    RFC4791 section 9.9: the CALDAV:time-range element's "start" and "end"
+    attributes are both optional; if absent, assume -infinity and +infinity
+    respectively.  At least one must be present.
+
+    - search.time-range.open.start.duration: components with DTSTART+DURATION (no
+      DTEND/DUE) must be found by time-range searches overlapping their computed
+      interval.  Tested for both VTODO (csc_task_with_duration) and VEVENT
+      (csc_event_with_duration).  If support is asymmetric across component types
+      the feature is marked "broken" with a behaviour note; separate per-component
+      sub-features may be introduced in a future iteration.
+
+    - search.time-range.open.start: when searching with only an end bound (open
+      start, start assumed -infinity), tasks whose DTSTART is after the end bound
+      must NOT be returned.  Uses end=2000-01-01 (all year-2000 tasks start Jan 8+).
+
+    - search.time-range.open.end: when searching with only a start bound (open end,
+      end assumed +infinity), tasks that overlap the start bound must be returned.
+      Uses start=2000-01-09 to find csc_simple_task3 (DTSTART=2000-01-09T12:00Z,
+      DUE=2000-01-09T13:00Z); per RFC4791 sec 9.9 condition for VTODO with DTSTART+DUE
+      and absent end: (start < DUE) OR (start <= DTSTART) → TRUE.
+    """
+
+    depends_on = {CheckSearch}
+    features_to_be_checked = {
+        "search.time-range.open.start.duration",
+        "search.time-range.open.start",
+        "search.time-range.open.end",
+    }
+
+    def _run_check(self):
+        if not self.feature_checked("search.time-range.todo"):
+            for feat in self.features_to_be_checked:
+                self.set_feature(feat, None)
+            return
+
+        tasklist = self.checker.tasklist
+        cal = self.checker.calendar
+
+        ## Test 1: Components with DTSTART+DURATION must be found by time-range
+        ## searches that overlap their computed interval.
+        ## RFC4791 section 9.9:
+        ##   VEVENT (duration > 0s): (start < DTSTART+DURATION) AND (end > DTSTART)
+        ##   VTODO:  (start <= DTSTART+DURATION) AND ((end > DTSTART) OR (end >= DTSTART+DURATION))
+
+        ## Test 1a: VTODO — csc_task_with_duration (DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends 14:00Z).
+        ## Two overlap scenarios:
+        ##   a) Search [13:00, 15:00]: start inside duration, end after → must match.
+        ##   b) Search [11:00, 13:00]: start before DTSTART, end inside duration → must match.
+        ## Sanity: csc_simple_task3 (DTSTART=Jan 9) must NOT appear in a Jan-18 search.
+        todo_dur_ok = None
+        dur_err = None
+        try:
+            results_a = tasklist.search(
+                start=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
+                end=datetime(2000, 1, 18, 15, 0, 0, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            results_b = tasklist.search(
+                start=datetime(2000, 1, 18, 11, 0, 0, tzinfo=utc),
+                end=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            found_a = any(r.component.get("UID") == "csc_task_with_duration" for r in results_a)
+            found_b = any(r.component.get("UID") == "csc_task_with_duration" for r in results_b)
+            not_spurious = not any(r.component.get("UID") == "csc_simple_task3" for r in results_a)
+            todo_dur_ok = found_a and found_b and not_spurious
+        except (AuthorizationError, DAVError) as e:
+            todo_dur_ok = False
+            dur_err = str(e)
+
+        ## Test 1b: VEVENT — csc_event_with_duration (DTSTART=2000-01-17T12:00Z, DURATION=PT1H → ends 13:00Z).
+        ## Only run if event time-range search is known to work.
+        ## Two overlap scenarios:
+        ##   a) Search [12:30, 14:00]: start inside duration, end after → must match.
+        ##   b) Search [11:00, 12:30]: start before DTSTART, end inside duration → must match.
+        ## Sanity: csc_simple_event1 (Jan 1) must NOT appear in a Jan-17 search.
+        event_dur_ok = None
+        if self.feature_checked("search.time-range.event"):
+            try:
+                ev_a = cal.search(
+                    start=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
+                    end=datetime(2000, 1, 17, 14, 0, 0, tzinfo=utc),
+                    event=True,
+                    post_filter=False,
+                )
+                ev_b = cal.search(
+                    start=datetime(2000, 1, 17, 11, 0, 0, tzinfo=utc),
+                    end=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
+                    event=True,
+                    post_filter=False,
+                )
+                ev_found_a = any(r.component.get("UID") == "csc_event_with_duration" for r in ev_a)
+                ev_found_b = any(r.component.get("UID") == "csc_event_with_duration" for r in ev_b)
+                ev_not_spurious = not any(r.component.get("UID") == "csc_simple_event1" for r in ev_a)
+                event_dur_ok = ev_found_a and ev_found_b and ev_not_spurious
+            except (AuthorizationError, DAVError) as e:
+                event_dur_ok = False
+                if not dur_err:
+                    dur_err = str(e)
+
+        ## Combine VTODO and VEVENT duration results.
+        if event_dur_ok is None:
+            ## Event search not tested; report based on VTODO result only.
+            if todo_dur_ok:
+                self.set_feature("search.time-range.open.start.duration")
+            elif dur_err:
+                self.set_feature(
+                    "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
+                )
+            else:
+                self.set_feature("search.time-range.open.start.duration", False)
+        elif todo_dur_ok == event_dur_ok:
+            ## Both results agree.
+            if todo_dur_ok:
+                self.set_feature("search.time-range.open.start.duration")
+            elif dur_err:
+                self.set_feature(
+                    "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
+                )
+            else:
+                self.set_feature("search.time-range.open.start.duration", False)
+        else:
+            ## Asymmetric: one component type works, the other does not.
+            todo_status = "supported" if todo_dur_ok else "unsupported"
+            event_status = "supported" if event_dur_ok else "unsupported"
+            self.set_feature(
+                "search.time-range.open.start.duration",
+                {
+                    "support": "broken",
+                    "behaviour": f"asymmetric DURATION support: VTODO {todo_status}, VEVENT {event_status}",
+                },
+            )
+
+        ## Test 2: open-start search (only end bound, start assumed -infinity).
+        ## Must not return tasks whose DTSTART is after the end bound.
+        ## All year-2000 tasks have DTSTART on Jan 8 or later, so a search ending
+        ## at 2000-01-01 should return none of them.
+        ## Uses csc_simple_task3 (DTSTART+DUE) and csc_task_with_duration (DTSTART+DURATION).
+        known_future_uids = {"csc_simple_task3", "csc_task_with_duration"}
+        try:
+            results = tasklist.search(
+                end=datetime(2000, 1, 1, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            returned_uids = {r.component.get("UID") for r in results}
+            found_future = bool(returned_uids & known_future_uids)
+            if found_future:
+                self.set_feature(
+                    "search.time-range.open.start",
+                    {
+                        "support": "broken",
+                        "behaviour": "tasks with DTSTART after end bound returned when only an end bound is given",
+                    },
+                )
+            else:
+                self.set_feature("search.time-range.open.start")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.open.start", {"support": "ungraceful", "behaviour": str(e)})
+
+        ## Test 3: open-end search (only start bound, end assumed +infinity).
+        ## RFC4791 sec 9.9: for VTODO with DTSTART+DUE and absent end (+infinity),
+        ## condition is (start < DUE) OR (start <= DTSTART).
+        ## csc_simple_task3 (DTSTART=2000-01-09T12:00Z, DUE=2000-01-09T13:00Z) with
+        ## start=2000-01-09T00:00Z: (Jan 9 < Jan 9T13:00) = TRUE → must be returned.
+        try:
+            results = tasklist.search(
+                start=datetime(2000, 1, 9, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            found = any(r.component.get("UID") == "csc_simple_task3" for r in results)
+            self.set_feature("search.time-range.open.end", found)
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.open.end", {"support": "ungraceful", "behaviour": str(e)})
+
+
+class CheckTodoTimeRangeStrict(Check):
+    """Check that VTODO time-range searches do not return tasks outside the searched range.
+
+    Motivated by a xandikos bug where having a VTODO with DTSTART+DURATION (no DUE) on
+    the calendar caused xandikos's index-fallback logic to also return other tasks whose
+    DTSTART+DUE were entirely outside the searched range.
+
+    Two probes:
+    1. A freshly created VTODO with DTSTART+DUE in March 2000 must NOT appear in a
+       [Jan 9, Jan 10] search.  This exercises the same code path as the xandikos bug
+       (index-based filtering of a task with both DTSTART and DUE in the index).
+    2. csc_task_with_duration (DTSTART=2000-01-18, DURATION=PT2H) must NOT appear in the
+       same search.  This exercises the DURATION fallback path (no DUE means the server
+       must fall back from index-based filtering to a full file check).
+    """
+
+    depends_on = {CheckSearch}
+    features_to_be_checked = {"search.time-range.todo.strict"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("search.time-range.todo.old-dates"):
+            self.set_feature("search.time-range.todo.strict", None)
+            return
+
+        tasklist = self.checker.tasklist
+        temp_todo = None
+        try:
+            ## Create a task clearly outside the Jan 9-10 search window.
+            ## DTSTART=2000-03-15 is two months after the range end (Jan 10), so a
+            ## correct server must not return it.  Unlike csc_task_future (which was
+            ## removed because xandikos returned it erroneously), this task is created
+            ## fresh so it is present exactly during this check and then cleaned up.
+            temp_todo = tasklist.save_object(
+                Todo,
+                uid="csc_temp_outside_range",
+                summary="temporary task outside search range (should not appear in Jan search)",
+                dtstart=datetime(2000, 3, 15, 12, 0, 0, tzinfo=utc),
+                due=datetime(2000, 3, 15, 13, 0, 0, tzinfo=utc),
+            )
+
+            results = tasklist.search(
+                start=datetime(2000, 1, 9, tzinfo=utc),
+                end=datetime(2000, 1, 10, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            returned_uids = {r.component.get("UID") for r in results}
+
+            ## Neither the fresh March task nor the pre-existing Jan-18 DURATION task
+            ## should appear in a Jan 9-10 search.
+            false_positive_uids = returned_uids & {"csc_temp_outside_range", "csc_task_with_duration"}
+            if false_positive_uids:
+                self.set_feature(
+                    "search.time-range.todo.strict",
+                    {
+                        "support": "broken",
+                        "behaviour": f"tasks outside range returned: {sorted(false_positive_uids)}",
+                    },
+                )
+            else:
+                self.set_feature("search.time-range.todo.strict")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.todo.strict", {"support": "ungraceful", "behaviour": str(e)})
+        finally:
+            if temp_todo:
+                try:
+                    temp_todo.delete()
+                except Exception:
+                    pass
