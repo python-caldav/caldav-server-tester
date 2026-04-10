@@ -1289,7 +1289,7 @@ class CheckRecurrenceSearch(Check):
             len(exception) == 1
             and exception[0].component["dtstart"] == datetime(2000, 2, 13, 12, 0, 0, tzinfo=utc)
             and exception[0].component["summary"] == "February recurrence with different summary"
-            and getattr(exception[0].component.get("RECURRENCE_ID"), "dt", None)
+            and getattr(exception[0].component.get("RECURRENCE-ID"), "dt", None)
             == datetime(2000, 2, 13, 12, tzinfo=utc),
         )
 
