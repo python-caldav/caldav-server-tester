@@ -144,3 +144,4 @@ cython_debug/
 .vscode/
 .idea/
 *.iml
+/.prompts/
