@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from caldav.calendarobjectresource import Event, Journal, Todo
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
-from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PropfindError, PutError, ReportError
 from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
@@ -247,6 +247,114 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
         else:
             self.set_feature("create-calendar", False)
+
+
+class CheckGetSupportedComponents(Check):
+    """
+    Checks whether the server returns the supported-calendar-component-set
+    property (RFC 4791 section 5.2.3) by calling get_supported_components()
+    with with_fallback=False on any available calendar.
+
+    'full'       — server returns the property
+    'unsupported'— property absent (RFC-compliant; fallback used by the library)
+    'ungraceful' — PROPFIND for the property raised an unexpected exception
+    'unknown'    — no calendar available to test against
+    """
+
+    depends_on = {CheckMakeDeleteCalendar}
+    features_to_be_checked = {"get-supported-components"}
+
+    def _run_check(self):
+        ## Use the prepared test calendar if available, otherwise try any calendar
+        cal = getattr(self.checker, "calendar", None)
+        if cal is None:
+            cals = self.checker.principal.calendars() if self.checker.principal else []
+            if not cals:
+                self.set_feature("get-supported-components", "unknown")
+                return
+            cal = cals[0]
+        try:
+            cal.get_supported_components(with_fallback=False)
+            self.set_feature("get-supported-components")
+        except PropfindError:
+            self.set_feature("get-supported-components", False)
+        except Exception:
+            self.set_feature("get-supported-components", "ungraceful")
+
+
+class CheckCreateCalendarWithComponentSet(Check):
+    """
+    Checks whether the server honours the supported-calendar-component-set
+    restriction specified at MKCALENDAR time.
+
+    Strategy:
+    1. Create a VTODO-only calendar.
+    2. If get-supported-components is supported, verify the property on the
+       new calendar reflects the restriction (returns ["VTODO"]).
+    3. If get-supported-components is not supported, try saving a VEVENT to
+       the VTODO-only calendar.  If the server rejects it, the restriction
+       is enforced.
+
+    'full'       — restriction honoured (property correct OR wrong-type rejected)
+    'unsupported'— restriction silently ignored (wrong-type accepted, or
+                   property returns wrong value)
+    'ungraceful' — MKCALENDAR with component set specification fails
+    'unknown'    — cannot determine (e.g. calendar creation not supported)
+    """
+
+    depends_on = {CheckGetSupportedComponents, CheckMakeDeleteCalendar}
+    features_to_be_checked = {"create-calendar.with-supported-component-types"}
+
+    def _run_check(self):
+        if not self.checker.features_checked.is_supported("create-calendar"):
+            self.set_feature("create-calendar.with-supported-component-types", "unknown")
+            return
+
+        cal = None
+        try:
+            cal = self.checker.principal.make_calendar(
+                cal_id="csc_component_set_check",
+                name="csc_component_set_check",
+                supported_calendar_component_set=["VTODO"],
+            )
+
+            if self.checker.features_checked.is_supported("get-supported-components"):
+                ## Property is supported; check it reflects our restriction
+                try:
+                    components = cal.get_supported_components(with_fallback=False)
+                    if set(components) == {"VTODO"}:
+                        self.set_feature("create-calendar.with-supported-component-types")
+                    else:
+                        self.set_feature("create-calendar.with-supported-component-types", False)
+                except Exception:
+                    self.set_feature("create-calendar.with-supported-component-types", False)
+            else:
+                ## Property not supported; probe by trying to save the wrong type
+                try:
+                    cal.save_object(
+                        Event,
+                        summary="csc component type probe",
+                        uid="csc_component_type_probe",
+                        dtstart=datetime(2000, 1, 1, 12, 0, 0, tzinfo=utc),
+                        dtend=datetime(2000, 1, 1, 13, 0, 0, tzinfo=utc),
+                    )
+                    ## Server accepted a VEVENT in a VTODO-only calendar — restriction not enforced
+                    self.set_feature("create-calendar.with-supported-component-types", False)
+                except DAVError:
+                    ## Server rejected the wrong type — restriction is enforced
+                    self.set_feature("create-calendar.with-supported-component-types")
+
+        except DAVError:
+            ## MKCALENDAR with component set failed
+            self.set_feature("create-calendar.with-supported-component-types", "ungraceful")
+        except Exception:
+            self.set_feature("create-calendar.with-supported-component-types", False)
+        finally:
+            if cal is not None:
+                try:
+                    cal.delete()
+                except Exception:
+                    pass
 
 
 class PrepareCalendar(Check):
