@@ -1955,7 +1955,7 @@ class CheckScheduleTag(Check):
             own_address = "mailto:" + username
 
         cal = self.checker.calendar
-        probe_uid = "csc-schedule-tag-probe"
+        probe_uid = f"csc_schedule_tag_probe_{uuid.uuid4().hex}"
         ## Resolve a second attendee address. Prefer a real local account (so
         ## servers like Stalwart trigger full scheduling semantics) and fall back
         ## to a dummy address for single-account setups.
@@ -2125,7 +2125,7 @@ class CheckSchedulingInboxDelivery(Check):
         ## Create the probe ical event
         from caldav.lib.vcal import create_ical
 
-        probe_uid = "csc-inbox-delivery-probe-event"
+        probe_uid = f"csc_inbox_delivery_probe_{uuid.uuid4().hex}"
         ## Use a future date: some servers (e.g. Cyrus) skip iTIP delivery for past events.
         probe_ical = create_ical(
             objtype="VEVENT",
