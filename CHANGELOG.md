@@ -10,28 +10,6 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 ### Added
 
-* `CheckSchedulingInboxDelivery` now falls back to the client username as the sender/attendee email address when the server does not expose `calendar-user-address-set`.  Previously the check always reported `unknown` inbox-delivery status in that case.  Mirrors the fix for https://github.com/python-caldav/caldav/issues/399 in the caldav library.
-* `CheckSchedulingInboxDelivery` now polls the attendee inbox for up to 30 seconds after saving the probe invite, matching the retry loop used by the integration tests.  This prevents false `unsupported` results on servers (e.g. Davis, DAViCal) that deliver scheduling messages asynchronously.
-* New `CheckScheduleTag` check: verifies that the server returns a `Schedule-Tag` response header on GET of a scheduling object resource and exposes the `schedule-tag` DAV property via PROPFIND (`scheduling.schedule-tag`), as required by RFC6638 sections 3.2-3.3.
-* New `CheckScheduleTagStablePartstat` check: verifies that a PARTSTAT-only attendee update does not change the Schedule-Tag (`scheduling.schedule-tag.stable-partstat`), as required by RFC6638 section 3.2. Requires a cross-user setup (extra_principals) and server-side auto-scheduling.
-* New `CheckScheduling` check: probes RFC6638 scheduling support and records the result under the `scheduling` feature flag.
-* New `CheckSchedulingDetails` check: verifies that the principal has a functional `schedule-inbox`/`schedule-outbox` and `calendar-user-address-set` as required by RFC6638, recording results under `scheduling.mailbox` and `scheduling.calendar-user-address-set`.
-* New `CheckSchedulingInboxDelivery` check: probes whether the server delivers incoming iTIP `REQUEST` messages to the attendee's schedule-inbox (`scheduling.mailbox.inbox-delivery`); also detects automatic scheduling (RFC6638).
-  - Uses a cross-user probe (preferred) when a second principal is configured: the main user invites the extra user and checks their inbox.  This gives accurate results on servers (e.g. Cyrus IMAP) that skip self-invite delivery.
-  - Falls back to a self-invite probe when only one user is available (note: some servers skip self-invite delivery per RFC6638, so results may show `unsupported` even when cross-user delivery works).
-* `--config-section` CLI option now accepts multiple values; the first section is the primary connection and subsequent sections supply extra users for multi-user checks such as `CheckSchedulingInboxDelivery`.
-
-### Added
-
-* New `CheckOpenTimeRangeSearch` check: probes open-ended time-range search behaviour as specified in RFC4791 section 9.9 (absent `start`/`end` attributes default to -infinity/+infinity).
-  - `search.time-range.open.end`: searches with only a start bound return overlapping components.
-  - `search.time-range.open.start`: searches with only an end bound correctly exclude components whose DTSTART is after the bound.
-  - `search.time-range.open.start.duration`: components specifying their interval via DTSTART+DURATION (no DTEND/DUE) are correctly matched; tested for both VTODO and VEVENT.
-
-### Changed
-
-* Old compatibility flag `no_search_openended` replaced by `search.time-range.open.end` feature (requires an updated caldav library).
-* `scheduling.inbox-delivery` renamed to `scheduling.mailbox.inbox-delivery` (aligns with the caldav library rename).
 * Lots of new test probing the scheduling features.  Those requires multiple user accounts on the server.  This can now be configured.
 * Lots of new tests probing edge-cases wrg of date searching, open-ended searches, etc
 
