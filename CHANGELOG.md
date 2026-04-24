@@ -6,11 +6,30 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
+## [1.1] - 2026-04-24
+
+This release works with caldav 3.2 and higher.
+
+### Added
+
+* Lots of new test probing the scheduling features.  Those requires multiple user accounts on the server.  This can now be configured.
+* Lots of new tests probing edge-cases wrg of date searching, open-ended searches, etc
+
+### AI-disclaimer
+
+This release has been predominantly coded with AI-assistance.  The level of scrutiny done on this tool is a bit less than the level of scrutiny done on the caldav libary.  Then again, I don't expect you to run this checker directly towards some calendars that are also used in production.
+
 ## [1.0.1] - 2026-03-19
 
 ### Fixed
 - `--name radicale` (and other lowercase names) failed to find servers in the caldav test registry after the caldav library renamed its server entries to capitalised names (`Radicale`, `Xandikos`).  The registry lookup is now case-insensitive.
 - `--name` registry lookup silently returned nothing when the caldav-server-tester's own `tests/` package shadowed the caldav project's `tests/test_servers` in `sys.modules` or via the CWD entry in `sys.path`.  The registry is now loaded via `importlib` using the explicit file path, bypassing `sys.path` resolution.
+
+### Fixed
+
+* `CheckSearch` now sets `search.combined-is-logical-and` to `None` when category search is unsupported, preventing a spurious `AssertionError` in the post-check consistency validation.
+* `run_check` now raises `AssertionError` (instead of silently logging) when a check class fails to set all declared `features_to_be_checked` or sets undeclared features.
+* Removed `tests/test_compat_xandikos.py` (redundant with the integration tests in the caldav project's `testCheckCompatibility`).
 
 ### Documentation
 *  Updated USAGE.md

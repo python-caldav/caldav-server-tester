@@ -116,14 +116,12 @@ class Check:
                     parent_keys.add(feature_)
                     break
         missing_keys -= to_remove
-        if missing_keys:
-            logging.error("%s failed to check declared features: %s", self.__class__.__name__, missing_keys)
+        assert not missing_keys, f"{self.__class__.__name__} failed to check declared features: {missing_keys}"
 
         ## Everything checked should be declared
         extra_keys = new_keys - self.features_to_be_checked
         extra_keys -= {x for x in extra_keys if any(x.startswith(y) for y in parent_keys)}
-        if extra_keys:
-            logging.error("%s checked undeclared features: %s", self.__class__.__name__, extra_keys)
+        assert not extra_keys, f"{self.__class__.__name__} checked undeclared features: {extra_keys}"
 
         self.checker._checks_run.add(self.__class__)
 

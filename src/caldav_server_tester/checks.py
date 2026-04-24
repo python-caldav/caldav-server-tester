@@ -212,12 +212,15 @@ class CheckMakeDeleteCalendar(Check):
         except Exception:
             self.set_feature("get-current-user-principal.has-calendar", False)
 
+        _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
         makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
         if makeret[0]:
             ## calendar created
             ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
         makeret = self._try_make_calendar(name=str(uuid.uuid4()), cal_id="pythoncaldav-test")
         if makeret[0]:
@@ -229,6 +232,8 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar.set-displayname", False)
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
         unique_id1 = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id1, name=str(uuid.uuid4()))
@@ -245,8 +250,19 @@ class CheckMakeDeleteCalendar(Check):
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
         if makeret[0]:
             self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
+            if self.checker.features_checked.is_supported("delete-calendar"):
+                self.set_feature("delete-calendar.free-namespace", False)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
         else:
             self.set_feature("create-calendar", False)
+            self.set_feature(
+                "delete-calendar", {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"}
+            )
+            self.set_feature(
+                "delete-calendar.free-namespace",
+                {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"},
+            )
 
 
 class PrepareCalendar(Check):
@@ -455,8 +471,23 @@ class PrepareCalendar(Check):
             due=datetime(2000, 1, 9, 13, 0, 0, tzinfo=utc),
         )
 
+        ## Task with DTSTART + DURATION (no DUE): used by CheckOpenTimeRangeSearch
+        ## for two tests:
+        ## 1. Duration overlap: DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
+        ##    Searches overlapping the interval [12:00, 14:00] should return this task.
+        ##    RFC4791 section 9.9: VTODO overlaps [start, end] if DTSTART+DURATION > start.
+        ## 2. Open-start filtering: DTSTART=2000-01-18 is after end=2000-01-15, so this
+        ##    task must NOT be returned by an end-only search with end=2000-01-15.
+        add_if_not_existing(
+            Todo,
+            summary="task with dtstart and duration (no due)",
+            uid="csc_task_with_duration",
+            dtstart=datetime(2000, 1, 18, 12, 0, 0, tzinfo=utc),
+            duration=timedelta(hours=2),
+        )
+
         ## TODO: there are more variants to be tested - dtstart date and due date,
-        ## dtstart and duration, only duration, no time spec at all, ...
+        ## only duration, no time spec at all, ...
 
         try:
             event_with_alarm = add_if_not_existing(
@@ -862,6 +893,9 @@ class CheckSearch(Check):
             ## Can't test combined search without old-dates support
             ## (test data is in year 2000)
             self.set_feature("search.combined-is-logical-and", None)
+        else:
+            ## Can't test combined search without category search support
+            self.set_feature("search.combined-is-logical-and", None)
 
         try:
             if self.feature_checked("search.time-range.todo.old-dates"):
@@ -922,36 +956,20 @@ class CheckSearch(Check):
             self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
-        ## regardless of date?  Uses a year-2000 event to detect sliding-window servers
-        ## (e.g. OX) that hide old non-recurring events from REPORT.
+        ## regardless of date?  Uses the year-2000 non-recurring event csc_simple_event1
+        ## already placed by PrepareCalendar (so indexing delays don't affect the result)
+        ## to detect sliding-window servers (e.g. OX) that hide old non-recurring events.
         ## Uses _request_report_build_resultlist directly to bypass the search.unlimited-time-range
         ## workaround in search.py, so the actual server behaviour is observed.
-        temp_event = None
-        temp_uid = f"csc_no_time_range_{uuid.uuid4().hex[:8]}"
         try:
-            temp_event = cal.save_object(
-                Event,
-                summary="no-time-range check event",
-                uid=temp_uid,
-                dtstart=datetime(2000, 6, 15, 12, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 6, 15, 13, 0, 0, tzinfo=utc),
-            )
-            ## Respect the search-cache delay (e.g. Bedework) before querying.
-            ## We use _request_report_build_resultlist directly (to bypass the
-            ## search.unlimited-time-range workaround in _search_impl), which also
-            ## bypasses the Calendar.search delay wrapper in checker.py.
-            search_cache = self.checker._client_obj.features.is_supported("search-cache", return_type=dict)
-            if search_cache.get("behaviour") == "delay":
-                time.sleep(search_cache.get("delay", 1))
-            ## Build VEVENT query without time range and call REPORT directly
             searcher = CalDAVSearcher(comp_class=Event)
             xml, comp_class = searcher.build_search_xml_query()
             _, objects = cal._request_report_build_resultlist(xml, comp_class)
-            found = any(o.id == temp_uid for o in objects)
+            found = any(o.id == "csc_simple_event1" for o in objects)
             if found:
                 self.set_feature("search.unlimited-time-range")
             elif objects:
-                ## Server returned some events but missed the old-date event:
+                ## Server returned some events but missed the old-date non-recurring event:
                 ## it uses a sliding time window (broken, not unsupported)
                 self.set_feature("search.unlimited-time-range", {"support": "broken"})
             else:
@@ -959,12 +977,6 @@ class CheckSearch(Check):
                 self.set_feature("search.unlimited-time-range", "unsupported")
         except (AuthorizationError, DAVError):
             self.set_feature("search.unlimited-time-range", "ungraceful")
-        finally:
-            if temp_event:
-                try:
-                    temp_event.delete()
-                except Exception:
-                    pass
 
 
 class CheckIsNotDefined(Check):
@@ -1756,7 +1768,7 @@ class CheckFreeBusyQuery(Check):
 
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
-        "freebusy-query.rfc4791",
+        "freebusy-query",
     }
 
     def _run_check(self) -> None:
@@ -1773,24 +1785,599 @@ class CheckFreeBusyQuery(Check):
             ## If we got here without exception, the feature is supported
             ## Verify we got a valid freebusy object
             if freebusy and hasattr(freebusy, "vobject_instance"):
-                self.set_feature("freebusy-query.rfc4791", True)
+                self.set_feature("freebusy-query", True)
             else:
                 self.set_feature(
-                    "freebusy-query.rfc4791",
+                    "freebusy-query",
                     {"support": "unsupported", "behaviour": "freebusy query returned invalid or empty response"},
                 )
         except (ReportError, DAVError, NotFoundError) as e:
             ## Server doesn't support freebusy queries
             ## Common responses: 500 Internal Server Error, 501 Not Implemented
-            self.set_feature(
-                "freebusy-query.rfc4791", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"}
-            )
+            self.set_feature("freebusy-query", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"})
         except Exception as e:
             ## Unexpected error
             self.set_feature(
-                "freebusy-query.rfc4791",
+                "freebusy-query",
                 {"support": "broken", "behaviour": f"unexpected error during freebusy query: {e}"},
             )
+
+
+class CheckScheduling(Check):
+    """
+    Checks support for CalDAV Scheduling (RFC6638).
+
+    Calls client.supports_scheduling() to detect whether the server
+    advertises scheduling support.
+    """
+
+    features_to_be_checked = {"scheduling"}
+
+    def _run_check(self) -> None:
+        self.set_feature("scheduling", self.client.supports_scheduling())
+
+
+class CheckSchedulingDetails(Check):
+    """
+    Checks RFC6638 scheduling sub-features: mailbox (inbox/outbox) and
+    calendar-user-address-set.  Depends on CheckScheduling; when scheduling
+    is unsupported both sub-features are recorded as unsupported immediately.
+    """
+
+    depends_on = {CheckScheduling, CheckGetCurrentUserPrincipal}
+    features_to_be_checked = {"scheduling.mailbox", "scheduling.calendar-user-address-set"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling"):
+            self.set_feature("scheduling.mailbox", False)
+            self.set_feature("scheduling.calendar-user-address-set", False)
+            return
+
+        principal = self.checker.principal
+        if principal is None:
+            self.set_feature("scheduling.mailbox", {"support": "unknown"})
+            self.set_feature("scheduling.calendar-user-address-set", {"support": "unknown"})
+            return
+
+        ## Check inbox + outbox
+        try:
+            principal.schedule_inbox()
+            principal.schedule_outbox()
+            self.set_feature("scheduling.mailbox", True)
+        except NotFoundError:
+            self.set_feature("scheduling.mailbox", False)
+        except Exception as e:
+            self.set_feature("scheduling.mailbox", {"support": "broken", "behaviour": str(e)})
+
+        ## Check calendar-user-address-set
+        try:
+            principal.calendar_user_address_set()
+            self.set_feature("scheduling.calendar-user-address-set", True)
+        except NotFoundError:
+            self.set_feature("scheduling.calendar-user-address-set", False)
+        except Exception as e:
+            self.set_feature(
+                "scheduling.calendar-user-address-set",
+                {"support": "broken", "behaviour": str(e)},
+            )
+
+
+class CheckFreeBusyQueryRFC6638(Check):
+    """
+    Checks support for RFC6638 freebusy query via the schedule outbox (section 4.1).
+
+    POSTs a VFREEBUSY REQUEST to the principal's schedule outbox listing an
+    attendee, and checks whether the server responds without error.  When a
+    second principal is available (via extra_principals), queries that
+    principal's free/busy — a more realistic cross-user scenario.  Reports
+    unknown when no second principal is configured, since RFC6638 is a
+    multi-user protocol and a self-query would give unreliable results.
+
+    Distinct from CheckFreeBusyQuery which uses a REPORT against a
+    calendar collection.  Requires scheduling and scheduling.mailbox.
+    """
+
+    depends_on = {CheckSchedulingDetails}
+    features_to_be_checked = {"scheduling.freebusy-query"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
+            self.set_feature("scheduling.freebusy-query", False)
+            return
+
+        principal = self.checker.principal
+        if principal is None:
+            self.set_feature("scheduling.freebusy-query", {"support": "unknown"})
+            return
+
+        ## Determine the attendee address to query.
+        ## Prefer a second principal (cross-user scenario); fall back to self-query.
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            attendee_principal = extra_principals[0]
+            try:
+                attendee_address = attendee_principal.get_vcal_address()
+            except Exception:
+                attendee_username = getattr(attendee_principal.client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
+                )
+            if not attendee_address:
+                self.set_feature("scheduling.freebusy-query", {"support": "unknown"})
+                return
+        else:
+            ## No second principal — cannot perform a meaningful cross-user probe.
+            ## RFC6638 is a multi-user protocol; mark as unknown rather than
+            ## testing against ourselves (self-queries may produce false results).
+            ## (The early return above already handles the no-scheduling case.)
+            self.set_feature(
+                "scheduling.freebusy-query",
+                {
+                    "support": "unknown",
+                    "behaviour": "not tested: only one user configured; server claims scheduling support",
+                },
+            )
+            return
+
+        dtstart = datetime(2000, 1, 9, 0, 0, 0, tzinfo=utc)
+        dtend = datetime(2000, 1, 10, 0, 0, 0, tzinfo=utc)
+
+        try:
+            principal.freebusy_request(dtstart, dtend, [attendee_address])
+            self.set_feature("scheduling.freebusy-query")
+        except (AuthorizationError, DAVError, NotFoundError) as e:
+            self.set_feature("scheduling.freebusy-query", {"support": "ungraceful", "behaviour": str(e)})
+        except Exception as e:
+            self.set_feature("scheduling.freebusy-query", {"support": "broken", "behaviour": str(e)})
+
+
+class CheckScheduleTag(Check):
+    """
+    Checks support for the Schedule-Tag response header and property (RFC6638 sections 3.2-3.3).
+
+    Creates a scheduling object resource (a VEVENT with an ORGANIZER property),
+    GETs it back and checks whether the server returns a Schedule-Tag response
+    header (captured into props by caldav's load()) and exposes the schedule-tag
+    DAV property via PROPFIND, as mandated by RFC6638 section 3.2.
+
+    This check is skipped when the server does not advertise CalDAV scheduling
+    support, since Schedule-Tag is only required on scheduling object resources.
+    """
+
+    depends_on = {CheckSchedulingDetails, PrepareCalendar}
+    features_to_be_checked = {"scheduling.schedule-tag"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling"):
+            self.set_feature("scheduling.schedule-tag", False)
+            return
+
+        ## Resolve the authenticated user's calendar address so that the probe
+        ## event has an ORGANIZER that matches the session.  Servers like Stalwart
+        ## only assign a Schedule-Tag when the ORGANIZER equals the authenticated
+        ## user; a fake address causes the PUT to succeed but return no tag.
+        principal = self.checker.principal
+        if self.feature_checked("scheduling.calendar-user-address-set"):
+            try:
+                own_address = str(principal.get_vcal_address())
+            except Exception:
+                self.set_feature("scheduling.schedule-tag", {"support": "unknown"})
+                return
+        else:
+            username = getattr(self.client, "username", None)
+            if not username or "@" not in str(username):
+                self.set_feature("scheduling.schedule-tag", {"support": "unknown"})
+                return
+            own_address = "mailto:" + username
+
+        cal = self.checker.calendar
+        probe_uid = f"csc_schedule_tag_probe_{uuid.uuid4().hex}"
+        ## Resolve a second attendee address. Prefer a real local account (so
+        ## servers like Stalwart trigger full scheduling semantics) and fall back
+        ## to a dummy address for single-account setups.
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            try:
+                attendee_address = str(extra_principals[0].get_vcal_address())
+            except Exception:
+                attendee_username = getattr(extra_principals[0].client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username
+                    if attendee_username and "@" in str(attendee_username)
+                    else "mailto:csc-probe-attendee@example.com"
+                )
+        else:
+            attendee_address = "mailto:csc-probe-attendee@example.com"
+
+        ## Minimal scheduling object resource: a VEVENT with an ORGANIZER property.
+        ## Per RFC6638 section 2.3.4, the presence of ORGANIZER makes this a
+        ## scheduling object resource and obliges the server to return Schedule-Tag.
+        ## The ORGANIZER must match the authenticated user; the second ATTENDEE is a
+        ## real local account when available so that servers like Stalwart apply full
+        ## scheduling semantics and assign a Schedule-Tag.
+        probe_ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{probe_uid}\r\n"
+            "DTSTART:20300101T100000Z\r\n"
+            "DTEND:20300101T110000Z\r\n"
+            "SUMMARY:caldav-server-tester schedule-tag probe\r\n"
+            f"ORGANIZER:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{attendee_address}\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+        try:
+            event = cal.add_event(probe_ical)
+
+            ## RFC6638 s3.2: server MUST return Schedule-Tag on successful PUT.
+            if event.schedule_tag:
+                self.set_feature("scheduling.schedule-tag")
+                return
+
+            self.set_feature(
+                "scheduling.schedule-tag",
+                {
+                    "support": "unsupported",
+                    "behaviour": "server did not return Schedule-Tag header on GET or via PROPFIND",
+                },
+            )
+        except (DAVError, PutError) as e:
+            self.set_feature("scheduling.schedule-tag", {"support": "ungraceful", "behaviour": str(e)})
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag", {"support": "broken", "behaviour": str(e)})
+        finally:
+            try:
+                cal.object_by_uid(probe_uid).delete()
+            except Exception:
+                pass
+
+
+class CheckSchedulingInboxDelivery(Check):
+    """
+    Checks two related scheduling features:
+      scheduling.mailbox.inbox-delivery – whether incoming iTIP REQUEST messages
+        appear in the attendee's schedule-inbox (RFC6638 section 4.1).
+      scheduling.auto-schedule – whether the server automatically processes
+        iTIP REQUESTs and adds the event to the attendee's calendar without
+        requiring explicit inbox acceptance (RFC6638 SCHEDULE-AGENT=SERVER).
+
+    When a second principal is available (via ServerQuirkChecker.extra_principals),
+    uses a cross-user probe: the main user invites the second user and checks
+    both the inbox and the attendee's calendar.  Reports unknown for both
+    features when no second principal is configured, since RFC6638 is a
+    multi-user protocol and self-invite results are unreliable (some servers
+    skip self-invite delivery entirely, which RFC6638 permits).
+    """
+
+    depends_on = {CheckSchedulingDetails, PrepareCalendar}
+    features_to_be_checked = {"scheduling.mailbox.inbox-delivery", "scheduling.auto-schedule"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
+            self.set_feature("scheduling.mailbox.inbox-delivery", False)
+            self.set_feature("scheduling.auto-schedule", False)
+            return
+
+        principal = self.checker.principal
+
+        ## Determine own address for composing the probe invite.
+        ## Prefer calendar-user-address-set; fall back to the client username
+        ## when it is unavailable (mirrors the fix for
+        ## https://github.com/python-caldav/caldav/issues/399).
+        if self.feature_checked("scheduling.calendar-user-address-set"):
+            try:
+                own_address = principal.get_vcal_address()
+            except Exception:
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+                return
+        else:
+            username = getattr(self.client, "username", None)
+            if not username or "@" not in str(username):
+                ## No address source available; cannot compose probe invite.
+                self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+                return
+            own_address = "mailto:" + username
+
+        ## Decide probe mode: cross-user (preferred) or self-invite (fallback)
+        extra_principals = self.checker.extra_principals
+        if extra_principals:
+            attendee_principal = extra_principals[0]
+            try:
+                attendee_address = attendee_principal.get_vcal_address()
+            except Exception:
+                ## Fall back to attendee's username when calendar-user-address-set
+                ## is unavailable on that account too.
+                attendee_username = getattr(attendee_principal.client, "username", None)
+                attendee_address = (
+                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
+                )
+            attendees = [attendee_address] if attendee_address else [attendee_principal]
+        else:
+            ## No second principal — cannot perform a meaningful cross-user probe.
+            ## RFC6638 is a multi-user protocol; mark as unknown rather than
+            ## testing against ourselves (self-invites may be skipped per RFC6638).
+            ## (The early return above already handles the no-scheduling case.)
+            behaviour = "not tested: only one user configured; server claims scheduling support"
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": behaviour})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown", "behaviour": behaviour})
+            return
+
+        ## Some servers (e.g. sabre/dav / Davis) require the attendee to have at
+        ## least one calendar before they will deliver scheduling messages to the
+        ## inbox.  Create a temporary calendar for the attendee if needed and
+        ## remove it after the probe.
+        attendee_temp_cal = None
+        if extra_principals:
+            try:
+                if not attendee_principal.calendars():
+                    attendee_temp_cal = attendee_principal.make_calendar(
+                        cal_id="csc-inbox-probe-attendee-cal",
+                        name="csc-inbox-probe-attendee-cal",
+                    )
+            except Exception:
+                pass
+
+        ## Snapshot attendee inbox before the probe
+        try:
+            inbox = attendee_principal.schedule_inbox()
+            inbox_before = {item.url for item in inbox.get_items()}
+        except Exception:
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown"})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+            return
+
+        ## Create the probe ical event
+        from caldav.lib.vcal import create_ical
+
+        probe_uid = f"csc_inbox_delivery_probe_{uuid.uuid4().hex}"
+        ## Use a future date: some servers (e.g. Cyrus) skip iTIP delivery for past events.
+        probe_ical = create_ical(
+            objtype="VEVENT",
+            uid=probe_uid,
+            summary="caldav-server-tester inbox-delivery probe",
+            dtstart=datetime(2099, 6, 15, 10, 0, 0, tzinfo=utc),
+            dtend=datetime(2099, 6, 15, 11, 0, 0, tzinfo=utc),
+        )
+
+        ## Use a temporary calendar if possible, fall back to the shared checker calendar
+        probe_cal_id = "csc-inbox-delivery-probe"
+        use_temp_calendar = self.feature_checked("create-calendar") and self.feature_checked("delete-calendar")
+        if use_temp_calendar:
+            try:
+                probe_calendar = principal.make_calendar(cal_id=probe_cal_id, name=probe_cal_id)
+            except Exception:
+                use_temp_calendar = False
+                probe_calendar = self.checker.calendar
+        else:
+            probe_calendar = self.checker.calendar
+
+        try:
+            probe_calendar.save_with_invites(probe_ical, attendees)
+        except Exception as e:
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+            return
+
+        ## Check if anything new arrived in the attendee inbox.
+        ## Poll for up to 30 seconds before concluding that inbox delivery is unsupported:
+        ## some servers (e.g. Davis, DAViCal) deliver scheduling messages asynchronously,
+        ## and deleting the probe event before polling would race with that delivery.
+        new_items: set = set()
+        try:
+            for _ in range(30):
+                inbox_after = {item.url for item in inbox.get_items()}
+                new_items = inbox_after - inbox_before
+                if new_items:
+                    break
+                time.sleep(1)
+            if new_items:
+                ## Clean up the inbox item(s) using the attendee's client
+                attendee_client = attendee_principal.client
+                for url in new_items:
+                    try:
+                        DAVObject(client=attendee_client, url=url).delete()
+                    except Exception:
+                        pass
+                self.set_feature("scheduling.mailbox.inbox-delivery", True)
+            else:
+                self.set_feature("scheduling.mailbox.inbox-delivery", False)
+
+            ## Check whether the event was auto-scheduled into the attendee's calendar.
+            ## Only detectable with a cross-user probe; report unknown in self-invite mode.
+            if extra_principals:
+                auto_scheduled = False
+                try:
+                    auto_scheduled = any(
+                        event.icalendar_component.get("UID") == probe_uid
+                        for cal in attendee_principal.calendars()
+                        for event in cal.get_events()
+                    )
+                except Exception:
+                    pass
+                if auto_scheduled:
+                    try:
+                        for cal in attendee_principal.calendars():
+                            for event in cal.get_events():
+                                if event.icalendar_component.get("UID") == probe_uid:
+                                    event.delete()
+                    except Exception:
+                        pass
+                self.set_feature("scheduling.auto-schedule", auto_scheduled)
+            else:
+                self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+        except Exception as e:
+            self.set_feature("scheduling.mailbox.inbox-delivery", {"support": "unknown", "behaviour": str(e)})
+            self.set_feature("scheduling.auto-schedule", {"support": "unknown"})
+        finally:
+            ## Clean up the probe event/calendar now that polling is done.
+            ## This is intentionally done AFTER polling so that async delivery
+            ## is not cancelled by deleting the originating event too early.
+            if use_temp_calendar:
+                try:
+                    probe_calendar.delete()
+                except Exception:
+                    pass
+            else:
+                try:
+                    probe_calendar.object_by_uid(probe_uid).delete()
+                except Exception:
+                    pass
+            ## Clean up the temporary attendee calendar if we created one.
+            if attendee_temp_cal:
+                try:
+                    attendee_temp_cal.delete()
+                except Exception:
+                    pass
+
+
+class CheckScheduleTagStablePartstat(Check):
+    """
+    Verifies that a PARTSTAT-only attendee update does not change the Schedule-Tag
+    (RFC6638 section 3.2 requirement).
+
+    Requires a cross-user setup (extra_principals) and auto-schedule behaviour so
+    that the probe event lands in the attendee's calendar automatically.  The check
+    is skipped (reported as unknown) when either prerequisite is absent.
+    """
+
+    depends_on = {CheckScheduleTag, CheckSchedulingInboxDelivery, PrepareCalendar}
+    features_to_be_checked = {"scheduling.schedule-tag.stable-partstat"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("scheduling.schedule-tag"):
+            self.set_feature("scheduling.schedule-tag.stable-partstat", False)
+            return
+
+        extra_principals = self.checker.extra_principals
+        if not extra_principals:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        if not self.feature_checked("scheduling.auto-schedule"):
+            ## Without auto-schedule the event won't appear in the attendee's
+            ## calendar automatically; skip rather than implement full inbox-accept.
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        principal = self.checker.principal
+        attendee_principal = extra_principals[0]
+
+        try:
+            own_address = str(principal.get_vcal_address())
+        except Exception:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+
+        try:
+            attendee_address = str(attendee_principal.get_vcal_address())
+        except Exception:
+            attendee_username = getattr(attendee_principal.client, "username", None)
+            if not attendee_username or "@" not in str(attendee_username):
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+                return
+            attendee_address = "mailto:" + attendee_username
+
+        probe_uid = f"csc_tag_partstat_probe_{uuid.uuid4().hex}"
+        probe_ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{probe_uid}\r\n"
+            "DTSTART:20300601T100000Z\r\n"
+            "DTEND:20300601T110000Z\r\n"
+            "SUMMARY:caldav-server-tester schedule-tag partstat-stability probe\r\n"
+            f"ORGANIZER:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{own_address}\r\n"
+            f"ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:{attendee_address}\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+        probe_cal = self.checker.calendar
+        try:
+            probe_cal.save_with_invites(probe_ical, [principal, attendee_address])
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown", "behaviour": str(e)})
+            return
+
+        ## Wait for the event to appear in the attendee's calendar (auto-schedule)
+        attendee_event = None
+        for _ in range(15):
+            try:
+                for cal in attendee_principal.calendars():
+                    try:
+                        attendee_event = cal.event_by_uid(probe_uid)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if attendee_event:
+                break
+            time.sleep(1)
+
+        if attendee_event is None:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            self._cleanup(probe_cal, probe_uid, attendee_principal)
+            return
+
+        try:
+            attendee_event.load()
+            tag_before = attendee_event.schedule_tag
+            if tag_before is None:
+                ## Server doesn't return Schedule-Tag for the attendee copy; can't test stability
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+                return
+
+            attendee_event.change_attendee_status(partstat="ACCEPTED")
+            attendee_event.save()
+            attendee_event.load()
+            tag_after = attendee_event.schedule_tag
+
+            if tag_after is None:
+                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            elif tag_before == tag_after:
+                self.set_feature("scheduling.schedule-tag.stable-partstat")
+            else:
+                self.set_feature(
+                    "scheduling.schedule-tag.stable-partstat",
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"tag changed after PARTSTAT-only update: {tag_before!r} → {tag_after!r}",
+                    },
+                )
+        except Exception as e:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown", "behaviour": str(e)})
+        finally:
+            self._cleanup(probe_cal, probe_uid, attendee_principal)
+
+    def _cleanup(self, probe_cal, probe_uid: str, attendee_principal) -> None:
+        try:
+            probe_cal.object_by_uid(probe_uid).delete()
+        except Exception:
+            pass
+        try:
+            for cal in attendee_principal.calendars():
+                try:
+                    cal.event_by_uid(probe_uid).delete()
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 class CheckTimezone(Check):
@@ -1857,3 +2444,319 @@ class CheckTimezone(Check):
                 "save-load.event.timezone",
                 {"support": "broken", "behaviour": f"Unexpected error during timezone test: {e}"},
             )
+
+
+class CheckRelatedTo(Check):
+    """Check if RELATED-TO properties (RFC5545 section 3.8.4.5) are preserved.
+
+    Saves an event with two RELATED-TO lines and loads it back.
+    - full: both RELATED-TO lines preserved
+    - broken: only the first RELATED-TO line preserved (subsequent ones stripped)
+    - unsupported: all RELATED-TO lines stripped
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.icalendar.related-to"}
+
+    def _run_check(self):
+        cal = self.checker.calendar
+        uid = f"csc_related_to_{uuid.uuid4().hex[:8]}"
+        test_obj = None
+        try:
+            test_obj = cal.save_object(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//tobixen//Caldav-Server-Tester//en_DK
+BEGIN:VEVENT
+UID:{uid}
+DTSTART:20000601T120000Z
+DTEND:20000601T130000Z
+DTSTAMP:20000101T000000Z
+SUMMARY:event with related-to for feature detection
+RELATED-TO;RELTYPE=PARENT:some-parent-uid
+RELATED-TO;RELTYPE=SIBLING:some-sibling-uid
+END:VEVENT
+END:VCALENDAR""",
+            )
+            test_obj.load()
+            count = test_obj.data.count("RELATED-TO")
+            if count == 0:
+                self.set_feature("save-load.icalendar.related-to", False)
+            elif count == 1:
+                self.set_feature(
+                    "save-load.icalendar.related-to",
+                    {
+                        "support": "broken",
+                        "behaviour": "first RELATED-TO line preserved but subsequent RELATED-TO lines are stripped",
+                    },
+                )
+            else:
+                assert count == 2
+                self.set_feature("save-load.icalendar.related-to")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("save-load.icalendar.related-to", {"support": "ungraceful", "behaviour": str(e)})
+        finally:
+            if test_obj:
+                try:
+                    test_obj.delete()
+                except Exception:
+                    pass
+
+
+class CheckOpenTimeRangeSearch(Check):
+    """Check open-ended time-range search behaviour for VTODOs and VEVENTs.
+
+    RFC4791 section 9.9: the CALDAV:time-range element's "start" and "end"
+    attributes are both optional; if absent, assume -infinity and +infinity
+    respectively.  At least one must be present.
+
+    - search.time-range.open.start.duration: components with DTSTART+DURATION (no
+      DTEND/DUE) must be found by time-range searches overlapping their computed
+      interval.  Tested for both VTODO (csc_task_with_duration) and VEVENT
+      (csc_event_with_duration).  If support is asymmetric across component types
+      the feature is marked "broken" with a behaviour note; separate per-component
+      sub-features may be introduced in a future iteration.
+
+    - search.time-range.open.start: when searching with only an end bound (open
+      start, start assumed -infinity), tasks whose DTSTART is after the end bound
+      must NOT be returned.  Uses end=2000-01-01 (all year-2000 tasks start Jan 8+).
+
+    - search.time-range.open.end: when searching with only a start bound (open end,
+      end assumed +infinity), tasks that overlap the start bound must be returned.
+      Uses start=2000-01-09 to find csc_simple_task3 (DTSTART=2000-01-09T12:00Z,
+      DUE=2000-01-09T13:00Z); per RFC4791 sec 9.9 condition for VTODO with DTSTART+DUE
+      and absent end: (start < DUE) OR (start <= DTSTART) → TRUE.
+    """
+
+    depends_on = {CheckSearch}
+    features_to_be_checked = {
+        "search.time-range.open.start.duration",
+        "search.time-range.open.start",
+        "search.time-range.open.end",
+    }
+
+    def _run_check(self):
+        if not self.feature_checked("search.time-range.todo"):
+            for feat in self.features_to_be_checked:
+                self.set_feature(feat, None)
+            return
+
+        tasklist = self.checker.tasklist
+        cal = self.checker.calendar
+
+        ## Test 1: Components with DTSTART+DURATION must be found by time-range
+        ## searches that overlap their computed interval.
+        ## RFC4791 section 9.9:
+        ##   VEVENT (duration > 0s): (start < DTSTART+DURATION) AND (end > DTSTART)
+        ##   VTODO:  (start <= DTSTART+DURATION) AND ((end > DTSTART) OR (end >= DTSTART+DURATION))
+
+        ## Test 1a: VTODO — csc_task_with_duration (DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends 14:00Z).
+        ## Two overlap scenarios:
+        ##   a) Search [13:00, 15:00]: start inside duration, end after → must match.
+        ##   b) Search [11:00, 13:00]: start before DTSTART, end inside duration → must match.
+        ## Sanity: csc_simple_task3 (DTSTART=Jan 9) must NOT appear in a Jan-18 search.
+        todo_dur_ok = None
+        dur_err = None
+        try:
+            results_a = tasklist.search(
+                start=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
+                end=datetime(2000, 1, 18, 15, 0, 0, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            results_b = tasklist.search(
+                start=datetime(2000, 1, 18, 11, 0, 0, tzinfo=utc),
+                end=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            found_a = any(r.component.get("UID") == "csc_task_with_duration" for r in results_a)
+            found_b = any(r.component.get("UID") == "csc_task_with_duration" for r in results_b)
+            not_spurious = not any(r.component.get("UID") == "csc_simple_task3" for r in results_a)
+            todo_dur_ok = found_a and found_b and not_spurious
+        except (AuthorizationError, DAVError) as e:
+            todo_dur_ok = False
+            dur_err = str(e)
+
+        ## Test 1b: VEVENT — csc_event_with_duration (DTSTART=2000-01-17T12:00Z, DURATION=PT1H → ends 13:00Z).
+        ## Only run if event time-range search is known to work.
+        ## Two overlap scenarios:
+        ##   a) Search [12:30, 14:00]: start inside duration, end after → must match.
+        ##   b) Search [11:00, 12:30]: start before DTSTART, end inside duration → must match.
+        ## Sanity: csc_simple_event1 (Jan 1) must NOT appear in a Jan-17 search.
+        event_dur_ok = None
+        if self.feature_checked("search.time-range.event"):
+            try:
+                ev_a = cal.search(
+                    start=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
+                    end=datetime(2000, 1, 17, 14, 0, 0, tzinfo=utc),
+                    event=True,
+                    post_filter=False,
+                )
+                ev_b = cal.search(
+                    start=datetime(2000, 1, 17, 11, 0, 0, tzinfo=utc),
+                    end=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
+                    event=True,
+                    post_filter=False,
+                )
+                ev_found_a = any(r.component.get("UID") == "csc_event_with_duration" for r in ev_a)
+                ev_found_b = any(r.component.get("UID") == "csc_event_with_duration" for r in ev_b)
+                ev_not_spurious = not any(r.component.get("UID") == "csc_simple_event1" for r in ev_a)
+                event_dur_ok = ev_found_a and ev_found_b and ev_not_spurious
+            except (AuthorizationError, DAVError) as e:
+                event_dur_ok = False
+                if not dur_err:
+                    dur_err = str(e)
+
+        ## Combine VTODO and VEVENT duration results.
+        if event_dur_ok is None:
+            ## Event search not tested; report based on VTODO result only.
+            if todo_dur_ok:
+                self.set_feature("search.time-range.open.start.duration")
+            elif dur_err:
+                self.set_feature(
+                    "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
+                )
+            else:
+                self.set_feature("search.time-range.open.start.duration", False)
+        elif todo_dur_ok == event_dur_ok:
+            ## Both results agree.
+            if todo_dur_ok:
+                self.set_feature("search.time-range.open.start.duration")
+            elif dur_err:
+                self.set_feature(
+                    "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
+                )
+            else:
+                self.set_feature("search.time-range.open.start.duration", False)
+        else:
+            ## Asymmetric: one component type works, the other does not.
+            todo_status = "supported" if todo_dur_ok else "unsupported"
+            event_status = "supported" if event_dur_ok else "unsupported"
+            self.set_feature(
+                "search.time-range.open.start.duration",
+                {
+                    "support": "broken",
+                    "behaviour": f"asymmetric DURATION support: VTODO {todo_status}, VEVENT {event_status}",
+                },
+            )
+
+        ## Test 2: open-start search (only end bound, start assumed -infinity).
+        ## Must not return tasks whose DTSTART is after the end bound.
+        ## All year-2000 tasks have DTSTART on Jan 8 or later, so a search ending
+        ## at 2000-01-01 should return none of them.
+        ## Uses csc_simple_task3 (DTSTART+DUE) and csc_task_with_duration (DTSTART+DURATION).
+        known_future_uids = {"csc_simple_task3", "csc_task_with_duration"}
+        try:
+            results = tasklist.search(
+                end=datetime(2000, 1, 1, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            returned_uids = {r.component.get("UID") for r in results}
+            found_future = bool(returned_uids & known_future_uids)
+            if found_future:
+                self.set_feature(
+                    "search.time-range.open.start",
+                    {
+                        "support": "broken",
+                        "behaviour": "tasks with DTSTART after end bound returned when only an end bound is given",
+                    },
+                )
+            else:
+                self.set_feature("search.time-range.open.start")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.open.start", {"support": "ungraceful", "behaviour": str(e)})
+
+        ## Test 3: open-end search (only start bound, end assumed +infinity).
+        ## RFC4791 sec 9.9: for VTODO with DTSTART+DUE and absent end (+infinity),
+        ## condition is (start < DUE) OR (start <= DTSTART).
+        ## csc_simple_task3 (DTSTART=2000-01-09T12:00Z, DUE=2000-01-09T13:00Z) with
+        ## start=2000-01-09T00:00Z: (Jan 9 < Jan 9T13:00) = TRUE → must be returned.
+        try:
+            results = tasklist.search(
+                start=datetime(2000, 1, 9, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            found = any(r.component.get("UID") == "csc_simple_task3" for r in results)
+            self.set_feature("search.time-range.open.end", found)
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.open.end", {"support": "ungraceful", "behaviour": str(e)})
+
+
+class CheckTodoTimeRangeStrict(Check):
+    """Check that VTODO time-range searches do not return tasks outside the searched range.
+
+    Motivated by a xandikos bug where having a VTODO with DTSTART+DURATION (no DUE) on
+    the calendar caused xandikos's index-fallback logic to also return other tasks whose
+    DTSTART+DUE were entirely outside the searched range.
+
+    Two probes:
+    1. A freshly created VTODO with DTSTART+DUE in March 2000 must NOT appear in a
+       [Jan 9, Jan 10] search.  This exercises the same code path as the xandikos bug
+       (index-based filtering of a task with both DTSTART and DUE in the index).
+    2. csc_task_with_duration (DTSTART=2000-01-18, DURATION=PT2H) must NOT appear in the
+       same search.  This exercises the DURATION fallback path (no DUE means the server
+       must fall back from index-based filtering to a full file check).
+    """
+
+    depends_on = {CheckSearch}
+    features_to_be_checked = {"search.time-range.todo.strict"}
+
+    def _run_check(self) -> None:
+        if not self.feature_checked("search.time-range.todo.old-dates"):
+            self.set_feature("search.time-range.todo.strict", None)
+            return
+
+        tasklist = self.checker.tasklist
+        temp_todo = None
+        try:
+            ## Create a task clearly outside the Jan 9-10 search window.
+            ## DTSTART=2000-03-15 is two months after the range end (Jan 10), so a
+            ## correct server must not return it.  Unlike csc_task_future (which was
+            ## removed because xandikos returned it erroneously), this task is created
+            ## fresh so it is present exactly during this check and then cleaned up.
+            temp_todo = tasklist.save_object(
+                Todo,
+                uid="csc_temp_outside_range",
+                summary="temporary task outside search range (should not appear in Jan search)",
+                dtstart=datetime(2000, 3, 15, 12, 0, 0, tzinfo=utc),
+                due=datetime(2000, 3, 15, 13, 0, 0, tzinfo=utc),
+            )
+
+            results = tasklist.search(
+                start=datetime(2000, 1, 9, tzinfo=utc),
+                end=datetime(2000, 1, 10, tzinfo=utc),
+                todo=True,
+                include_completed=True,
+                post_filter=False,
+            )
+            returned_uids = {r.component.get("UID") for r in results}
+
+            ## Neither the fresh March task nor the pre-existing Jan-18 DURATION task
+            ## should appear in a Jan 9-10 search.
+            false_positive_uids = returned_uids & {"csc_temp_outside_range", "csc_task_with_duration"}
+            if false_positive_uids:
+                self.set_feature(
+                    "search.time-range.todo.strict",
+                    {
+                        "support": "broken",
+                        "behaviour": f"tasks outside range returned: {sorted(false_positive_uids)}",
+                    },
+                )
+            else:
+                self.set_feature("search.time-range.todo.strict")
+        except (AuthorizationError, DAVError) as e:
+            self.set_feature("search.time-range.todo.strict", {"support": "ungraceful", "behaviour": str(e)})
+        finally:
+            if temp_todo:
+                try:
+                    temp_todo.delete()
+                except Exception:
+                    pass
