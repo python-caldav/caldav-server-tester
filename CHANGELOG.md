@@ -6,12 +6,18 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
-## [Unreleased]
+## [1.1] - 2026-04-24
+
+This release works with caldav 3.2 and higher.
 
 ### Added
 
 * Lots of new test probing the scheduling features.  Those requires multiple user accounts on the server.  This can now be configured.
 * Lots of new tests probing edge-cases wrg of date searching, open-ended searches, etc
+
+### AI-disclaimer
+
+This release has been predominantly coded with AI-assistance.  The level of scrutiny done on this tool is a bit less than the level of scrutiny done on the caldav libary.  Then again, I don't expect you to run this checker directly towards some calendars that are also used in production.
 
 ## [1.0.1] - 2026-03-19
 
