@@ -212,12 +212,15 @@ class CheckMakeDeleteCalendar(Check):
         except Exception:
             self.set_feature("get-current-user-principal.has-calendar", False)
 
+        _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
         makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
         if makeret[0]:
             ## calendar created
             ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
         makeret = self._try_make_calendar(name=str(uuid.uuid4()), cal_id="pythoncaldav-test")
         if makeret[0]:
@@ -229,6 +232,8 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar.set-displayname", False)
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
         unique_id1 = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id1, name=str(uuid.uuid4()))
@@ -245,8 +250,19 @@ class CheckMakeDeleteCalendar(Check):
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
         if makeret[0]:
             self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
+            if self.checker.features_checked.is_supported("delete-calendar"):
+                self.set_feature("delete-calendar.free-namespace", False)
+            else:
+                self.set_feature("delete-calendar.free-namespace", _unknown_del)
         else:
             self.set_feature("create-calendar", False)
+            self.set_feature(
+                "delete-calendar", {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"}
+            )
+            self.set_feature(
+                "delete-calendar.free-namespace",
+                {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"},
+            )
 
 
 class PrepareCalendar(Check):
