@@ -757,6 +757,57 @@ END:VCALENDAR""",
         self._check_get_by_url(calendar)
 
 
+class CheckMutable(Check):
+    """
+    Checks whether the server allows modification of existing calendar objects.
+
+    Modifies the SUMMARY of csc_simple_event1, saves it, reloads it, and
+    verifies the server accepted the update.  Replaces the old 'no_overwrite'
+    compatibility flag.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.mutable"}
+
+    def _run_check(self) -> None:
+        cal = self.checker.calendar
+        uid = "csc_simple_event1"
+
+        try:
+            event = cal.event_by_uid(uid)
+        except NotFoundError:
+            event = Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+
+        vevent = event.icalendar_instance.walk("VEVENT")[0]
+        original_summary = str(vevent.get("SUMMARY", ""))
+        modified_summary = original_summary + " (mutable-check)"
+
+        try:
+            vevent["SUMMARY"] = modified_summary
+            event.save()
+            event.load()
+
+            vevent_reloaded = event.icalendar_instance.walk("VEVENT")[0]
+            current_summary = str(vevent_reloaded.get("SUMMARY", ""))
+
+            if current_summary == modified_summary:
+                self.set_feature("save-load.mutable")
+            else:
+                self.set_feature(
+                    "save-load.mutable",
+                    {"support": "broken", "behaviour": "modification not reflected after save and reload"},
+                )
+        except (DAVError, AuthorizationError):
+            self.set_feature("save-load.mutable", False)
+        finally:
+            try:
+                vevent_restore = event.icalendar_instance.walk("VEVENT")[0]
+                vevent_restore["SUMMARY"] = original_summary
+                event.save()
+            except Exception:
+                pass
+
+
 class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
