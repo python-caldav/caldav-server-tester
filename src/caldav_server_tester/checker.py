@@ -172,7 +172,7 @@ class ServerQuirkChecker:
         all_keys = set(observed) | set(expected_all)
         for key in all_keys:
             obs_support = observed.get(key, {}).get("support", "unknown")
-            exp_support = expected_all.get(key, {}).get("support", "unknown")
+            exp_support = self.expected_features.is_supported(key, str)
             if obs_support != exp_support:
                 diff[key] = {"expected": exp_support, "observed": obs_support}
         return diff

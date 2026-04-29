@@ -6,6 +6,11 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
+## [Unreleased]
+
+### Fixed
+- `--diff` reported expected support as `unknown` for features not explicitly listed in the server profile. `_compute_diff` now uses `is_supported()` to resolve defaults (typically `full`) instead of falling back to a hard-coded `"unknown"`.
+
 ## [1.1] - 2026-04-24
 
 This release works with caldav 3.2 and higher.
