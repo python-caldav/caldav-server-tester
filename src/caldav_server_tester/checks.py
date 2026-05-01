@@ -777,6 +777,7 @@ class CheckMutable(Check):
             event = cal.event_by_uid(uid)
         except NotFoundError:
             event = Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+            event.load()
 
         vevent = event.icalendar_instance.walk("VEVENT")[0]
         original_summary = str(vevent.get("SUMMARY", ""))
