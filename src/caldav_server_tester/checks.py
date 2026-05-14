@@ -1365,6 +1365,30 @@ class CheckRecurrenceSearch(Check):
             == datetime(2000, 2, 13, 12, tzinfo=utc),
         )
 
+        ## RFC 4791 §9.6.5: non-initial expanded instances MUST include RECURRENCE-ID;
+        ## the initial instance MAY omit it.  Query a range covering both the regular
+        ## Feb 12 occurrence and the Feb 13 exception to detect servers that omit
+        ## RECURRENCE-ID on the initial instance, and annotate the expanded.event feature.
+        multi = cal.search(
+            start=datetime(2000, 2, 12, tzinfo=utc),
+            end=datetime(2000, 2, 14, tzinfo=utc),
+            event=True,
+            server_expand=True,
+            post_filter=False,
+        )
+        if len(multi) == 2:
+            initial = next(
+                (e for e in multi if e.component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc)),
+                None,
+            )
+            if initial is not None and getattr(initial.component.get("RECURRENCE-ID"), "dt", None) is None:
+                self.set_feature(
+                    "search.recurrences.expanded.event",
+                    {
+                        "behaviour": "initial occurrence lacks RECURRENCE-ID; RFC 4791 §9.6.5 permits this — clients must fall back to DTSTART"
+                    },
+                )
+
 
 class CheckCaseSensitiveSearch(Check):
     """
