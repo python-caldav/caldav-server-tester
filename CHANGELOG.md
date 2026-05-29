@@ -6,14 +6,30 @@ This file should adhere to [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), though some earlier releases may be incompatible with the SemVer standard.
 
-## [Unreleased]
+This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
+
+## [1.2.0] - 2026-04-24
+
+This release works with caldav 3.2.1.
+
+### Added
+- New `CheckMutable` check: verifies that the server allows modification of existing calendar objects (`save-load.mutable`). Replaces the old `no_overwrite` compatibility flag.  The problem with immutable events have been observed on Google many years ago - since I don't know any servers with this behaviour (possibly Google, but so far I haven't run this script against Google), the check hasn't really been tested properly.
+- RFC 4791 §9.6.5 states that the first occurrence in a server-expanded recurrence set may omit the `RECURRENCE-ID`.  We consider `search.recurrences.expanded.event` to be "supported" in this case, with a text-note in the behaviour-field.  If I remember correct, Cyrus did omit this, but the behaviour got changed shortly after I did this check.
 
 ### Fixed
-- `--diff` reported expected support as `unknown` for features not explicitly listed in the server profile. `_compute_diff` now uses `is_supported()` to resolve defaults (typically `full`) instead of falling back to a hard-coded `"unknown"`.
+- `--diff` reported expected support as `unknown` for features not explicitly listed in the server profile instead of using the default support level (typically `full`).
+- `CheckMakeDeleteCalendar` now tolerates HTTP 500 responses when probing whether a calendar exists (triggered by a server bug; see calendar-cli#114).
+- `delete-calendar` and `delete-calendar.free-namespace` are now marked `unknown` instead of causing an assertion failure when `create-calendar` is unsupported (e.g. Posteo).
+- Fixed `RECURRENCE_ID` → `RECURRENCE-ID` (underscore vs hyphen) in the expanded exception check; the wrong form caused `component.get()` to always return `None`, making `search.recurrences.expanded.exception` silently always fail.
+- Scheduling probe events now use unique UIDs to avoid false `unsupported` results on re-runs against servers (e.g. Zimbra) that remember previously scheduled event UIDs.
 
-## [1.1] - 2026-04-24
+### AI-disclaimer
 
-This release works with caldav 3.2 and higher.
+The notes given for release 1.1.0 applies to 1.2.0 as well.  CHANGELOG-entry was AI-generated and then partly rewritten by hand.
+
+## [1.1.0] - 2026-04-24
+
+This release works with caldav 3.2.0.
 
 ### Added
 
