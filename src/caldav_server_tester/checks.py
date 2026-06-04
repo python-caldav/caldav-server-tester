@@ -818,6 +818,8 @@ class CheckSearch(Check):
         "search.time-range.todo",
         "search.time-range.todo.old-dates",
         "search.comp-type.optional",
+        "search.time-range.comp-type-optional",
+        "search.text.comp-type-optional",
         "search.combined-is-logical-and",
         "search.unlimited-time-range",
     }  ## TODO: we can do so much better than this
@@ -957,15 +959,16 @@ class CheckSearch(Check):
             ## Can't test combined search without category search support
             self.set_feature("search.combined-is-logical-and", None)
 
+        ## search.comp-type.optional: when a calendar-query omits the component
+        ## type, does the server return all objects?  This must be tested WITHOUT a
+        ## time-range: a comp-type-less query that carries a time-range is a
+        ## separate feature (search.time-range.comp-type-optional below), because
+        ## RFC4791 section 9.7 forbids a CALDAV:time-range directly under VCALENDAR.
+        ## compatibility_workarounds=False makes the library send the bare
+        ## comp-type-less query verbatim instead of splitting it per component type
+        ## or injecting a sliding-window time-range.
         try:
-            if self.feature_checked("search.time-range.todo.old-dates"):
-                objects = cal.search(
-                    start=datetime(2000, 1, 1, tzinfo=utc),
-                    end=datetime(2001, 1, 1, tzinfo=utc),
-                    post_filter=False,
-                )
-            else:
-                objects = _filter_2000(cal.search(post_filter=False))
+            objects = list(_filter_2000(cal.search(post_filter=False, compatibility_workarounds=False)))
             if len(objects) == 0:
                 self.set_feature(
                     "search.comp-type.optional",
@@ -985,13 +988,7 @@ class CheckSearch(Check):
             elif (
                 cal != tasklist
                 and len(objects)
-                + len(
-                    tasklist.search(
-                        start=datetime(2000, 1, 1, tzinfo=utc),
-                        end=datetime(2001, 1, 1, tzinfo=utc),
-                        post_filter=False,
-                    )
-                )
+                + len(list(_filter_2000(tasklist.search(post_filter=False, compatibility_workarounds=False))))
                 == self.checker.cnt
             ):
                 self.set_feature(
@@ -1014,6 +1011,121 @@ class CheckSearch(Check):
                 )
         except Exception:
             self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
+
+        ## search.time-range.comp-type-optional: does the server accept a
+        ## calendar-query that carries a time-range but does NOT specify a
+        ## component type?  RFC4791 section 9.7 only allows a CALDAV:time-range
+        ## inside a comp-filter for VEVENT/VTODO/VJOURNAL/VFREEBUSY/VALARM, never
+        ## directly under VCALENDAR - so 'unsupported' here is FULLY RFC-COMPLIANT
+        ## and not a server defect (SabreDAV-based servers such as Baikal reject it
+        ## with HTTP 400 "You cannot add time-range filters on the VCALENDAR
+        ## component").  compatibility_workarounds=False sends the raw query so we
+        ## observe the server's actual reaction rather than the library's
+        ## per-component-type split.  Recent dates are used to avoid conflating with
+        ## old-date restrictions.  See
+        ## https://github.com/python-caldav/caldav/issues/681
+        ## We must verify that a known in-range object is actually RETURNED, not
+        ## merely that the query did not raise: some servers (e.g. SOGo) accept the
+        ## query without error but silently return nothing when no component type is
+        ## given, which is not real support.
+        now = datetime.now(tz=utc)
+        tr_uid = f"csc_tr_comptype_optional_{uuid.uuid4().hex[:8]}"
+        tr_event = None
+        try:
+            tr_event = cal.save_object(
+                Event,
+                summary="time-range comp-type-optional check event",
+                uid=tr_uid,
+                dtstart=datetime(now.year, now.month, now.day, 12, 0, 0, tzinfo=utc) + timedelta(days=1),
+                dtend=datetime(now.year, now.month, now.day, 13, 0, 0, tzinfo=utc) + timedelta(days=1),
+            )
+            objects = cal.search(
+                start=now,
+                end=now + timedelta(days=2),
+                post_filter=False,
+                compatibility_workarounds=False,
+            )
+            if any(tr_uid in o.data for o in objects):
+                self.set_feature("search.time-range.comp-type-optional")
+            else:
+                self.set_feature(
+                    "search.time-range.comp-type-optional",
+                    {
+                        "support": "unsupported",
+                        "description": "comp-type-less time-range query returns nothing (server silently ignores it or requires a component type)",
+                    },
+                )
+        except (ReportError, AuthorizationError, DAVError):
+            self.set_feature(
+                "search.time-range.comp-type-optional",
+                {
+                    "support": "unsupported",
+                    "description": "server rejects a time-range filter in a query without a component type (RFC4791 section 9.7 compliant)",
+                },
+            )
+        finally:
+            if tr_event:
+                try:
+                    tr_event.delete()
+                except Exception:
+                    pass
+
+        ## search.text.comp-type-optional: does a prop-filter (here CATEGORIES) work
+        ## without a component type?  Placed under VCALENDAR the prop-filter targets
+        ## VCALENDAR's own properties (which lack CATEGORIES), so servers typically
+        ## match nothing.  Only meaningful when category search itself works; otherwise
+        ## the result would be ambiguous.  compatibility_workarounds=False sends the raw
+        ## comp-type-less query.  See https://github.com/python-caldav/caldav/issues/681
+        if self.feature_checked("search.text.category"):
+            pf_uid = f"csc_pf_comptype_optional_{uuid.uuid4().hex[:8]}"
+            pf_cat = f"csccat{uuid.uuid4().hex[:8]}"
+            pf_event = None
+            try:
+                pf_event = cal.save_object(
+                    Event,
+                    summary="prop-filter comp-type-optional check event",
+                    uid=pf_uid,
+                    categories=pf_cat,
+                    dtstart=datetime(now.year, now.month, now.day, 12, 0, 0, tzinfo=utc) + timedelta(days=1),
+                    dtend=datetime(now.year, now.month, now.day, 13, 0, 0, tzinfo=utc) + timedelta(days=1),
+                )
+                objects = cal.search(
+                    category=pf_cat,
+                    post_filter=False,
+                    compatibility_workarounds=False,
+                )
+                if any(pf_uid in o.data for o in objects):
+                    self.set_feature("search.text.comp-type-optional")
+                else:
+                    self.set_feature(
+                        "search.text.comp-type-optional",
+                        {
+                            "support": "unsupported",
+                            "description": "comp-type-less prop-filter query returns nothing (prop-filter under VCALENDAR matches no component property)",
+                        },
+                    )
+            except (ReportError, AuthorizationError, DAVError):
+                self.set_feature(
+                    "search.text.comp-type-optional",
+                    {
+                        "support": "unsupported",
+                        "description": "server rejects a prop-filter in a query without a component type",
+                    },
+                )
+            finally:
+                if pf_event:
+                    try:
+                        pf_event.delete()
+                    except Exception:
+                        pass
+        else:
+            self.set_feature(
+                "search.text.comp-type-optional",
+                {
+                    "support": "unknown",
+                    "description": "cannot test - category/text search not supported by this server",
+                },
+            )
 
         ## search.unlimited-time-range: does a REPORT without a time range return all objects
         ## regardless of date?  Uses the year-2000 non-recurring event csc_simple_event1
