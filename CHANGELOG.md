@@ -11,6 +11,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 ## [Unreleased]
 
 ### Fixed
+- The `search.comp-type.optional` probe compared a single comp-type-less search against the global `cnt` object counter.  `cnt` aggregates the objects created across the event/task/journal calendars (and may include objects that failed to save), so on every server that stores journals or tasks in a *separate* calendar — because `save-load.journal.mixed-calendar` (or the task equivalent) is unsupported — the comp-type-less search on the main calendar could never reach `cnt`, and fully-working servers (Baikal, Davis, CCS, Ox, Zimbra, Bedework, …) were mislabelled `fragile`/`ungraceful`.  The probe now compares the comp-type-less query against the comp-type-*specific* queries (events + todos + journals) across every distinct calendar it populated.  See https://github.com/python-caldav/caldav/issues/681
 - `CheckMakeDeleteCalendar` verified `create-calendar.set-displayname` by looking the freshly created calendar up by its display name and asserting the id matched.  Display names are not unique, so a leftover calendar with the same name (e.g. on a server that doesn't free the namespace, or polluted by a previous test run) would shadow the probe calendar and make the feature be wrongly reported as `unsupported`.  The probe now looks the calendar up by `cal_id` and checks its display name directly.
 
 ## [1.2.0] - 2026-04-24

@@ -887,6 +887,94 @@ class CheckSearch(Check):
                 except Exception:
                     pass
 
+    def _comptype_search_calendars(self):
+        """The distinct calendars PrepareCalendar populated.
+
+        Events, tasks and journals may all live in one calendar, or be split
+        across up to three (e.g. servers that reject VTODO/VJOURNAL in a mixed
+        calendar get a dedicated ``..._tasks`` / ``..._journals`` calendar).
+        """
+        cals = []
+        for c in (self.checker.calendar, self.checker.tasklist, getattr(self.checker, "journallist", None)):
+            if c is not None and not any(c is seen for seen in cals):
+                cals.append(c)
+        return cals
+
+    def _probe_comptype_optional(self):
+        """Set ``search.comp-type.optional``: when a calendar-query omits the
+        component type, does the server still return every object?
+
+        The reference set is what the comp-type-*specific* queries (events +
+        todos + journals) return across every distinct calendar the checker
+        populated - NOT ``self.checker.cnt``.  ``cnt`` is a bookkeeping counter
+        that aggregates objects across the event/task/journal calendars and may
+        include objects that failed to save; comparing a single-calendar
+        comp-type-less search against it produced spurious "fragile"/"ungraceful"
+        verdicts on every server that stores journals or tasks in a separate
+        calendar (the comp-type-less search there can never reach ``cnt``).
+        See https://github.com/python-caldav/caldav/issues/681
+
+        This must be tested WITHOUT a time-range: a comp-type-less query that
+        carries a time-range is a separate feature
+        (search.time-range.comp-type-optional below), because RFC4791 section 9.7
+        forbids a CALDAV:time-range directly under VCALENDAR.
+        ``compatibility_workarounds=False`` makes the library send the bare
+        comp-type-less query verbatim instead of splitting it per component type.
+        """
+        try:
+            bare_urls = set()
+            typed_urls = set()
+            typed_todo_urls = set()
+            for c in self._comptype_search_calendars():
+                for obj in _filter_2000(c.search(post_filter=False, compatibility_workarounds=False)):
+                    bare_urls.add(str(obj.url))
+                for kwargs in (
+                    {"event": True},
+                    {"todo": True, "include_completed": True},
+                    {"journal": True},
+                ):
+                    try:
+                        for obj in _filter_2000(c.search(post_filter=False, **kwargs)):
+                            url = str(obj.url)
+                            typed_urls.add(url)
+                            if "todo" in kwargs:
+                                typed_todo_urls.add(url)
+                    except Exception:
+                        ## A component type the server does not support at all
+                        ## (e.g. VJOURNAL on CCS) - just skip it as a reference.
+                        pass
+
+            if not bare_urls:
+                self.set_feature(
+                    "search.comp-type.optional",
+                    {
+                        "support": "unsupported",
+                        "description": "search that does not include comptype yields nothing",
+                    },
+                )
+            elif typed_urls <= bare_urls:
+                ## the comp-type-less query returned (at least) everything the
+                ## comp-type-specific queries returned
+                self.set_feature("search.comp-type.optional")
+            elif typed_todo_urls and not (typed_todo_urls <= bare_urls):
+                self.set_feature(
+                    "search.comp-type.optional",
+                    {
+                        "support": "fragile",
+                        "description": "search that does not include comptype does not yield tasks",
+                    },
+                )
+            else:
+                self.set_feature(
+                    "search.comp-type.optional",
+                    {
+                        "support": "fragile",
+                        "description": "unexpected results from date-search without comp-type",
+                    },
+                )
+        except Exception:
+            self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
+
     def _run_check(self):
         cal = self.checker.calendar
         tasklist = self.checker.tasklist
@@ -954,58 +1042,8 @@ class CheckSearch(Check):
             ## Can't test combined search without category search support
             self.set_feature("search.combined-is-logical-and", None)
 
-        ## search.comp-type.optional: when a calendar-query omits the component
-        ## type, does the server return all objects?  This must be tested WITHOUT a
-        ## time-range: a comp-type-less query that carries a time-range is a
-        ## separate feature (search.time-range.comp-type-optional below), because
-        ## RFC4791 section 9.7 forbids a CALDAV:time-range directly under VCALENDAR.
-        ## compatibility_workarounds=False makes the library send the bare
-        ## comp-type-less query verbatim instead of splitting it per component type
-        ## or injecting a sliding-window time-range.
-        try:
-            objects = list(_filter_2000(cal.search(post_filter=False, compatibility_workarounds=False)))
-            if len(objects) == 0:
-                self.set_feature(
-                    "search.comp-type.optional",
-                    {
-                        "support": "unsupported",
-                        "description": "search that does not include comptype yields nothing",
-                    },
-                )
-            elif cal == tasklist and not any(x for x in objects if isinstance(x, Todo)):
-                self.set_feature(
-                    "search.comp-type.optional",
-                    {
-                        "support": "fragile",
-                        "description": "search that does not include comptype does not yield tasks",
-                    },
-                )
-            elif (
-                cal != tasklist
-                and len(objects)
-                + len(list(_filter_2000(tasklist.search(post_filter=False, compatibility_workarounds=False))))
-                == self.checker.cnt
-            ):
-                self.set_feature(
-                    "search.comp-type.optional",
-                    {
-                        "support": "full",
-                        "description": "comp-filter is redundant in search as a calendar can only hold one kind of components",
-                    },
-                )
-            elif len(objects) == self.checker.cnt:
-                self.set_feature("search.comp-type.optional")
-            else:
-                ## TODO ... we need to do more testing on search to conclude certainly on this one.  But at least we get something out.
-                self.set_feature(
-                    "search.comp-type.optional",
-                    {
-                        "support": "fragile",
-                        "description": "unexpected results from date-search without comp-type",
-                    },
-                )
-        except Exception:
-            self.set_feature("search.comp-type.optional", {"support": "ungraceful"})
+        ## search.comp-type.optional (see _probe_comptype_optional for details)
+        self._probe_comptype_optional()
 
         ## search.time-range.comp-type-optional: does the server accept a
         ## calendar-query that carries a time-range but does NOT specify a
