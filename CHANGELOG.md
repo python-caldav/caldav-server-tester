@@ -8,6 +8,11 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## [Unreleased]
+
+### Fixed
+- `CheckMakeDeleteCalendar` verified `create-calendar.set-displayname` by looking the freshly created calendar up by its display name and asserting the id matched.  Display names are not unique, so a leftover calendar with the same name (e.g. on a server that doesn't free the namespace, or polluted by a previous test run) would shadow the probe calendar and make the feature be wrongly reported as `unsupported`.  The probe now looks the calendar up by `cal_id` and checks its display name directly.
+
 ## [1.2.0] - 2026-04-24
 
 This release works with caldav 3.2.1.

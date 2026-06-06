@@ -118,25 +118,20 @@ class CheckMakeDeleteCalendar(Check):
             self.checker.principal.calendar(cal_id=cal_id).events()
             self.set_feature("create-calendar")
             if kwargs.get("name"):
+                ## Verify the calendar we just created (looked up by cal_id) got
+                ## the requested display name.  We deliberately do NOT look the
+                ## calendar up by display name: display names are not unique, so a
+                ## leftover calendar with the same name (e.g. from a previous test
+                ## run on a server that doesn't free the namespace) would shadow our
+                ## calendar and make us wrongly report the feature as unsupported.
                 try:
-                    name = "A calendar with this name should not exist"
-                    self.checker.principal.calendar(name=name).events()
-                    ## Server returned a calendar for a name that cannot exist;
-                    ## display-name lookup is unreliable on this server.
-                    logging.warning(
-                        "Server returned a calendar for a display name that should not exist; "
-                        "cannot verify create-calendar.set-displayname"
-                    )
-                    self.set_feature("create-calendar.set-displayname", False)
-                except Exception:
-                    ## This is not the exception, this is the normal
-                    try:
-                        cal2 = self.checker.principal.calendar(name=kwargs["name"])
-                        cal2.events()
-                        assert cal2.id == cal.id
+                    cal2 = self.checker.principal.calendar(cal_id=cal.id)
+                    if cal2.get_display_name() == kwargs["name"]:
                         self.set_feature("create-calendar.set-displayname")
-                    except Exception:
+                    else:
                         self.set_feature("create-calendar.set-displayname", False)
+                except Exception:
+                    self.set_feature("create-calendar.set-displayname", False)
 
         except DAVError:
             ## calendar creation created an exception.  Maybe the calendar exists?
