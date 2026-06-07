@@ -286,6 +286,7 @@ class PrepareCalendar(Check):
         "save-load.journal",
         "save-load.journal.mixed-calendar",
         "save-load.get-by-url",
+        "save-load.stable-url",
     }
 
     def _find_or_create_calendar(self, cal_id, name, test_cal_info):
@@ -656,6 +657,22 @@ END:VCALENDAR""",
         except Exception:
             self.set_feature("save-load.get-by-url", None)
 
+    def _check_stable_url(self, calendar):
+        """Check whether the server reports objects under the same URL the client stored them at.
+
+        Some servers (e.g. OX App Suite) canonicalize the calendar path, so an
+        object looked up via REPORT (object_by_uid) is reported under a different
+        URL than the one the client PUT to.  Clients must therefore not assume a
+        searched object's URL equals the URL it was created at.
+        """
+        try:
+            server_event = calendar.object_by_uid("csc_simple_event1")
+            client_url = calendar.url.join("csc_simple_event1.ics")
+            stable = server_event.url.canonical() == client_url.canonical()
+            self.set_feature("save-load.stable-url", stable)
+        except Exception:
+            self.set_feature("save-load.stable-url", None)
+
     def _run_check(self):
         ## NOTE: Any objects created here with a UID starting with "csc_" will be
         ## cleaned up by the csc_* fallback in checker.cleanup(). For servers that
@@ -750,6 +767,7 @@ END:VCALENDAR""",
         ## though todos were saved successfully (verified via load() above).
 
         self._check_get_by_url(calendar)
+        self._check_stable_url(calendar)
 
 
 class CheckMutable(Check):
