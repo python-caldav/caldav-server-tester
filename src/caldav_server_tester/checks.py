@@ -822,7 +822,7 @@ class CheckMutable(Check):
                 pass
 
 
-class CheckPutOverwrite(Check):
+class CheckIfMatchOptional(Check):
     """
     Checks whether an existing object can be repeatedly overwritten by a fresh
     PUT that carries no If-Match etag.
@@ -834,7 +834,7 @@ class CheckPutOverwrite(Check):
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"save-load.put-overwrite"}
+    features_to_be_checked = {"save-load.mutable.if-match-optional"}
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
@@ -851,7 +851,7 @@ class CheckPutOverwrite(Check):
         try:
             cal.add_event(data)
         except (DAVError, PutError):
-            self.set_feature("save-load.put-overwrite", None)
+            self.set_feature("save-load.mutable.if-match-optional", None)
             return
 
         try:
@@ -859,9 +859,9 @@ class CheckPutOverwrite(Check):
             ## concurrency (e.g. OX) tolerate the first then reject the second with 409.
             for _ in range(2):
                 Event(cal.client, data=data, parent=cal).save()
-            self.set_feature("save-load.put-overwrite")
+            self.set_feature("save-load.mutable.if-match-optional")
         except (DAVError, PutError):
-            self.set_feature("save-load.put-overwrite", False)
+            self.set_feature("save-load.mutable.if-match-optional", False)
         finally:
             try:
                 Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal).delete()
