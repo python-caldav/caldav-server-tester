@@ -822,6 +822,101 @@ class CheckMutable(Check):
                 pass
 
 
+class CheckPutOverwrite(Check):
+    """
+    Checks whether an existing object can be repeatedly overwritten by a fresh
+    PUT that carries no If-Match etag.
+
+    OX App Suite enforces optimistic concurrency and rejects such a blind
+    overwrite with 409 Conflict (it tolerates the first overwrite, then refuses
+    subsequent no-If-Match PUTs).  An etag-conditional save() still works, so
+    save-load.mutable stays full - this is a distinct, finer capability.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.put-overwrite"}
+
+    def _run_check(self) -> None:
+        cal = self.checker.calendar
+        uid = "csc_put_overwrite"
+        ts = (datetime.now(tz=utc) + timedelta(days=30)).strftime("%Y%m%dT%H%M%SZ")
+        end = (datetime.now(tz=utc) + timedelta(days=30, hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        data = (
+            "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//caldav-server-tester//EN\n"
+            f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{ts}\nDTSTART:{ts}\nDTEND:{end}\n"
+            "SUMMARY:put-overwrite check\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+        ## Use a dedicated, freshly-created object so the result is independent of
+        ## how many times the shared probe events have already been PUT.
+        try:
+            cal.add_event(data)
+        except (DAVError, PutError):
+            self.set_feature("save-load.put-overwrite", None)
+            return
+
+        try:
+            ## Two blind (no If-Match) overwrites - servers that enforce optimistic
+            ## concurrency (e.g. OX) tolerate the first then reject the second with 409.
+            for _ in range(2):
+                Event(cal.client, data=data, parent=cal).save()
+            self.set_feature("save-load.put-overwrite")
+        except (DAVError, PutError):
+            self.set_feature("save-load.put-overwrite", False)
+        finally:
+            try:
+                Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal).delete()
+            except Exception:
+                pass
+
+
+class CheckAttendeePartstat(Check):
+    """
+    Checks whether an attendee's PARTSTAT can be modified via a direct PUT.
+
+    OX App Suite forbids this (403 Forbidden, even with a matching etag) and
+    expects the change to be made through iTIP scheduling instead.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.mutable.attendee-partstat"}
+
+    def _run_check(self) -> None:
+        cal = self.checker.calendar
+        start = datetime.now(tz=utc) + timedelta(days=30)
+        try:
+            ev = cal.add_event(
+                uid="csc_attendee_partstat",
+                dtstart=start,
+                dtend=start + timedelta(hours=1),
+                summary="attendee partstat check",
+                ical_fragment=("ATTENDEE;ROLE=OPT-PARTICIPANT;PARTSTAT=TENTATIVE:MAILTO:csc-attendee@example.com"),
+            )
+        except (DAVError, PutError):
+            self.set_feature("save-load.mutable.attendee-partstat", None)
+            return
+
+        try:
+            ev.change_attendee_status(attendee="csc-attendee@example.com", PARTSTAT="ACCEPTED")
+        except Exception:
+            self.set_feature("save-load.mutable.attendee-partstat", None)
+            try:
+                ev.delete()
+            except Exception:
+                pass
+            return
+
+        try:
+            ev.save()
+            self.set_feature("save-load.mutable.attendee-partstat")
+        except (DAVError, AuthorizationError):
+            self.set_feature("save-load.mutable.attendee-partstat", False)
+        finally:
+            try:
+                ev.delete()
+            except Exception:
+                pass
+
+
 class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
