@@ -1866,14 +1866,18 @@ class CheckRecurrenceSearch(Check):
         ## Far-future occurrence of the monthly recurring event, to test whether
         ## implicit recurrence has an unlimited scope.  Deliberately decades out
         ## (and well beyond any sliding window), so window-restricted servers will
-        ## correctly report this as unsupported.
-        far_future_recurrence = cal.search(
-            start=datetime(2045, 3, 12, tzinfo=utc),
-            end=datetime(2045, 3, 13, tzinfo=utc),
-            event=True,
-            post_filter=False,
-        )
-        self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(far_future_recurrence) == 1)
+        ## correctly report this as unsupported.  Servers that enforce a max-date-time
+        ## (e.g. CCS) reject the query outright with 403 - treat that as unsupported.
+        try:
+            far_future_recurrence = cal.search(
+                start=datetime(2045, 3, 12, tzinfo=utc),
+                end=datetime(2045, 3, 13, tzinfo=utc),
+                event=True,
+                post_filter=False,
+            )
+            self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(far_future_recurrence) == 1)
+        except (AuthorizationError, DAVError):
+            self.set_feature("search.recurrences.includes-implicit.infinite-scope", False)
 
         ## server-side expansion
         events = cal.search(
