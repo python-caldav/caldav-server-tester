@@ -619,14 +619,17 @@ class PrepareCalendar(Check):
         recurring_event.load()
         self.set_feature("save-load.event.recurrences")
 
-        ## All-day (VALUE=DATE) yearly recurring event, used to test
-        ## whether the server handles implicit recurrence for all-day events.
-        ## DTSTART is <base>-02-01; the second occurrence is <base+1>-02-01.
+        ## All-day (VALUE=DATE) recurring event, used to test whether the server
+        ## handles implicit recurrence for all-day events.  Uses a MONTHLY (not
+        ## yearly) rrule so the second occurrence (<base>-03-01) stays close to the
+        ## master (<base>-02-01) and inside sliding-window servers' search windows -
+        ## a yearly rrule would put the second occurrence ~2 years out, outside
+        ## e.g. OX's window, producing a false "broken for all-day events" verdict.
         add_if_not_existing(
             Event,
-            summary="yearly recurring all-day event",
-            uid="csc_yearly_recurring_allday_event",
-            rrule={"FREQ": "YEARLY"},
+            summary="monthly recurring all-day event",
+            uid="csc_monthly_recurring_allday_event",
+            rrule={"FREQ": "MONTHLY"},
             dtstart=date(base, 2, 1),
         )
 
@@ -1793,12 +1796,14 @@ class CheckRecurrenceSearch(Check):
             post_filter=False,
         )
         implicit_datetime = len(events) == 1
-        ## Also check all-day (VALUE=DATE) recurring events: the yearly event
-        ## (DTSTART;VALUE=DATE:<base>-02-01) should be found in <base+1>-02-01 range.
+        ## Also check all-day (VALUE=DATE) recurring events: the monthly all-day
+        ## event (DTSTART;VALUE=DATE:<base>-02-01) should have its second occurrence
+        ## found in the <base>-03-01 range.  A monthly rrule keeps that occurrence
+        ## near (and inside sliding-window servers' search windows).
         try:
             allday_events = cal.search(
-                start=datetime(base + 1, 2, 1, tzinfo=utc),
-                end=datetime(base + 1, 2, 2, tzinfo=utc),
+                start=datetime(base, 3, 1, tzinfo=utc),
+                end=datetime(base, 3, 2, tzinfo=utc),
                 event=True,
                 post_filter=False,
             )
@@ -1807,9 +1812,6 @@ class CheckRecurrenceSearch(Check):
             implicit_allday = implicit_datetime
         if implicit_datetime and not implicit_allday:
             ## Datetime recurring events work but all-day (VALUE=DATE) events do not.
-            ## On a sliding-window server the all-day event's second occurrence (next
-            ## year + 1) may simply be out of window rather than truly broken, so this
-            ## verdict can be a false "fragile" on such servers - acceptable.
             self.set_feature(
                 "search.recurrences.includes-implicit.event",
                 {"support": "fragile", "behaviour": "broken for all-day (VALUE=DATE) events"},
