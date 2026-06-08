@@ -1319,6 +1319,20 @@ class CheckSearch(Check):
         ## using the dedicated csc_olddate_* probes that PrepareCalendar PUT far
         ## in the past.  Servers with a sliding window (e.g. OX) hide those, so
         ## this distinguishes "old-date search works" from "window-restricted".
+        ## We check the probe is PRESENT in the result rather than asserting an
+        ## exact count of 1: a next-year DUE-only task is interpreted by some
+        ## servers (e.g. Zimbra) as open-start (-inf..DUE) and so legitimately
+        ## overlaps a year-2000 range - that's a strict-filtering concern, not an
+        ## old-date-support one.
+        def _found(objs, uid):
+            for o in objs:
+                try:
+                    if str(o.icalendar_component.get("UID", "")) == uid:
+                        return True
+                except Exception:
+                    pass
+            return False
+
         try:
             events = cal.search(
                 start=datetime(2000, 1, 1, tzinfo=utc),
@@ -1326,7 +1340,7 @@ class CheckSearch(Check):
                 event=True,
                 post_filter=False,
             )
-            self.set_feature("search.time-range.event.old-dates", len(events) == 1)
+            self.set_feature("search.time-range.event.old-dates", _found(events, "csc_olddate_event"))
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.event.old-dates", "ungraceful")
 
@@ -1338,7 +1352,7 @@ class CheckSearch(Check):
                 include_completed=True,
                 post_filter=False,
             )
-            self.set_feature("search.time-range.todo.old-dates", len(tasks) == 1)
+            self.set_feature("search.time-range.todo.old-dates", _found(tasks, "csc_olddate_task"))
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.todo.old-dates", "ungraceful")
 
@@ -1864,14 +1878,17 @@ class CheckRecurrenceSearch(Check):
                 self.set_feature(feat, False)
             return
         ## Far-future occurrence of the monthly recurring event, to test whether
-        ## implicit recurrence has an unlimited scope.  Deliberately decades out
-        ## (and well beyond any sliding window), so window-restricted servers will
-        ## correctly report this as unsupported.  Servers that enforce a max-date-time
-        ## (e.g. CCS) reject the query outright with 403 - treat that as unsupported.
+        ## implicit recurrence has an unlimited scope.  The probe is ~45 years
+        ## ahead of the fixture (base+45, on the 12th to hit a monthly occurrence)
+        ## - kept relative to the base year so the gap stays large no matter when
+        ## the suite runs; a fixed year would shrink to ~18 years once the fixtures
+        ## moved to the near future, letting bounded-expansion servers (e.g. Zimbra)
+        ## look falsely "infinite".  Servers that enforce a max-date-time (e.g. CCS)
+        ## reject the query outright with 403 - treat that as unsupported.
         try:
             far_future_recurrence = cal.search(
-                start=datetime(2045, 3, 12, tzinfo=utc),
-                end=datetime(2045, 3, 13, tzinfo=utc),
+                start=datetime(base + 45, 3, 12, tzinfo=utc),
+                end=datetime(base + 45, 3, 13, tzinfo=utc),
                 event=True,
                 post_filter=False,
             )
