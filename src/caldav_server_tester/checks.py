@@ -994,6 +994,7 @@ class CheckSearch(Check):
         "search.text.category",
         "search.time-range.todo",
         "search.time-range.todo.old-dates",
+        "search.comp-type",
         "search.comp-type.optional",
         "search.time-range.comp-type-optional",
         "search.text.comp-type-optional",
@@ -1081,6 +1082,61 @@ class CheckSearch(Check):
             if c is not None and not any(c is seen for seen in cals):
                 cals.append(c)
         return cals
+
+    def _probe_comptype(self):
+        """Set ``search.comp-type``: when a calendar-query DOES specify a
+        component type, does the server return only objects of that type?
+
+        Per RFC4791 the server MUST filter a calendar-query by the requested
+        component type.  Some servers misclassify (e.g. Bedework returns
+        VTODOs for a VEVENT query) or ignore the comp-filter entirely and
+        return everything.  When that happens the library falls back to
+        client-side filtering, so we send the query with
+        ``compatibility_workarounds=False`` to observe the raw server
+        behaviour rather than the workaround.
+
+        Supported (``full``) means every comp-type-specific query returned
+        only objects of the requested type, across every distinct calendar the
+        checker populated.  A query that returns an object of a different type
+        is ``broken``.  If no typed query returns anything (nothing to judge
+        from) the result is left ``unknown``.
+        """
+        wanted = {
+            "VEVENT": {"event": True},
+            "VTODO": {"todo": True, "include_completed": True},
+            "VJOURNAL": {"journal": True},
+        }
+        try:
+            seen_any = False
+            mismatches = set()
+            for c in self._comptype_search_calendars():
+                for comp_name, kwargs in wanted.items():
+                    try:
+                        results = list(
+                            _filter_2000(c.search(post_filter=False, compatibility_workarounds=False, **kwargs))
+                        )
+                    except Exception:
+                        ## The server may refuse to search for a component type
+                        ## it does not support at all (e.g. VJOURNAL on CCS); it
+                        ## cannot misclassify what it won't search for, so skip
+                        ## it as a reference.
+                        continue
+                    for obj in results:
+                        got = obj.component.name
+                        seen_any = True
+                        if got != comp_name:
+                            mismatches.add(f"a {comp_name} query returned a {got}")
+            if not seen_any:
+                self.set_feature("search.comp-type", None)
+            elif mismatches:
+                self.set_feature(
+                    "search.comp-type",
+                    {"support": "broken", "behaviour": "; ".join(sorted(mismatches))},
+                )
+            else:
+                self.set_feature("search.comp-type")
+        except Exception:
+            self.set_feature("search.comp-type", {"support": "ungraceful"})
 
     def _probe_comptype_optional(self):
         """Set ``search.comp-type.optional``: when a calendar-query omits the
@@ -1223,6 +1279,10 @@ class CheckSearch(Check):
         else:
             ## Can't test combined search without category search support
             self.set_feature("search.combined-is-logical-and", None)
+
+        ## search.comp-type: does a query that DOES specify a component type
+        ## return only objects of that type? (see _probe_comptype for details)
+        self._probe_comptype()
 
         ## search.comp-type.optional (see _probe_comptype_optional for details)
         self._probe_comptype_optional()
