@@ -746,6 +746,45 @@ END:VCALENDAR""",
         except DAVError:
             self.set_feature("save-load.event.recurrences.exception", "ungraceful")
 
+        ## A second recurrence-with-exception event, identical in shape to the one
+        ## above but additionally carrying SEQUENCE on both the master and the
+        ## override - as real-world clients (e.g. Thunderbird) always do.  Some
+        ## servers (observed on Stalwart) only suppress the exception-overridden
+        ## occurrence during server-side expand when SEQUENCE is *absent*; with
+        ## SEQUENCE present they return both the original occurrence and the
+        ## override.  CheckRecurrenceSearch uses this fixture to detect that and
+        ## downgrade search.recurrences.expanded.exception to "fragile".
+        ## Placed on the 14th so its occurrences never collide with the
+        ## SEQUENCE-less exception event (13th) or the plain recurring event (12th).
+        try:
+            add_if_not_existing(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//tobixen//Caldav-Server-Tester//en_DK
+BEGIN:VEVENT
+UID:csc_monthly_recurring_with_exception_seq
+DTSTART:{base}0114T120000Z
+DTEND:{base}0114T130000Z
+DTSTAMP:20240429T181103Z
+SEQUENCE:1
+RRULE:FREQ=MONTHLY
+SUMMARY:Monthly recurring with exception (seq)
+END:VEVENT
+BEGIN:VEVENT
+UID:csc_monthly_recurring_with_exception_seq
+RECURRENCE-ID:{base}0214T120000Z
+DTSTART:{base}0214T120000Z
+DTEND:{base}0214T130000Z
+DTSTAMP:20240429T181103Z
+SEQUENCE:1
+SUMMARY:February recurrence with different summary (seq)
+END:VEVENT
+END:VCALENDAR""",
+            )
+        except DAVError:
+            pass
+
         self._create_olddate_probes()
 
         return True
@@ -1937,6 +1976,38 @@ class CheckRecurrenceSearch(Check):
             and getattr(exception[0].component.get("RECURRENCE-ID"), "dt", None)
             == datetime(base, 2, 13, 12, tzinfo=utc),
         )
+
+        ## The exception above carries no SEQUENCE.  A second fixture
+        ## (csc_monthly_recurring_with_exception_seq, on the 14th) is identical but
+        ## carries SEQUENCE on both components, as real-world clients always do.
+        ## Some servers (Stalwart) suppress the exception-overridden occurrence
+        ## during server-side expand only when SEQUENCE is absent; with SEQUENCE
+        ## present they return both the original occurrence and the override.  If
+        ## the SEQUENCE-less variant worked but the SEQUENCE one does not, the
+        ## feature is fragile rather than fully supported.
+        if self.checker.features_checked.is_supported("search.recurrences.expanded.exception"):
+            seq_exception = cal.search(
+                start=datetime(base, 2, 14, 11, tzinfo=utc),
+                end=datetime(base, 2, 14, 13, tzinfo=utc),
+                event=True,
+                server_expand=True,
+                post_filter=False,
+            )
+            seq_ok = (
+                len(seq_exception) == 1
+                and seq_exception[0].component["dtstart"] == datetime(base, 2, 14, 12, 0, 0, tzinfo=utc)
+                and seq_exception[0].component["summary"] == "February recurrence with different summary (seq)"
+                and getattr(seq_exception[0].component.get("RECURRENCE-ID"), "dt", None)
+                == datetime(base, 2, 14, 12, tzinfo=utc)
+            )
+            if not seq_ok:
+                self.set_feature(
+                    "search.recurrences.expanded.exception",
+                    {
+                        "support": "fragile",
+                        "behaviour": "server-side expand fails to suppress the exception-overridden occurrence when SEQUENCE is present",
+                    },
+                )
 
         ## RFC 4791 §9.6.5: non-initial expanded instances MUST include RECURRENCE-ID;
         ## the initial instance MAY omit it.  Query a range covering both the regular
