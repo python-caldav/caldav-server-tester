@@ -124,6 +124,7 @@ class TestCheckMakeDeleteCalendar:
             # Only mark as deleted if it was actually created
             if created[0]:
                 deleted[0] = True
+
         mock_test_calendar.delete = delete_cal
 
         # events() should raise NotFoundError after deletion
@@ -131,10 +132,12 @@ class TestCheckMakeDeleteCalendar:
             if deleted[0]:
                 raise NotFoundError("Calendar was deleted")
             return []
+
         mock_test_calendar.events.side_effect = events_side_effect
 
         # Track all calls for debugging
         calls = []
+
         def calendar_side_effect(cal_id=None, name=None):
             calls.append((cal_id, name))
 
@@ -175,6 +178,7 @@ class TestCheckMakeDeleteCalendar:
         def make_calendar_side_effect(cal_id=None, **kwargs):
             created[0] = True
             return mock_test_calendar
+
         principal.make_calendar.side_effect = make_calendar_side_effect
 
         check = CheckMakeDeleteCalendar(checker)
@@ -183,7 +187,9 @@ class TestCheckMakeDeleteCalendar:
         # Should detect auto-creation
         assert checker.features_checked.is_supported("create-calendar.auto")
 
-    @pytest.mark.skip(reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths")
+    @pytest.mark.skip(
+        reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"
+    )
     def test_calendar_no_auto_creation(self) -> None:
         """When accessing non-existent calendar fails, auto feature is not set"""
         checker, client, principal = self.create_checker_with_principal()
@@ -202,6 +208,7 @@ class TestCheckMakeDeleteCalendar:
 
         # Mock calendar lookup behavior
         call_count = [0]
+
         def calendar_side_effect(cal_id=None, name=None):
             call_count[0] += 1
             # Initial cleanup attempt - calendar doesn't exist
@@ -232,43 +239,70 @@ class TestCheckMakeDeleteCalendar:
         # Note: The actual result depends on complex flow, but calendar creation should succeed
         assert checker.features_checked.is_supported("create-calendar")
 
-    def test_calendar_creation_with_displayname(self) -> None:
-        """Calendar creation with display name should be detected"""
-        checker, client, principal = self.create_checker_with_principal()
+    def _run_displayname_probe(self, checker, principal, *, relocate, name_sticks=True):
+        """Drive CheckMakeDeleteCalendar._check_set_displayname() with a mocked
+        principal.
 
-        # Mock no auto-creation
-        principal.calendar.side_effect = NotFoundError("Not found")
+        relocate: if True, creating the calendar with a display name lands it
+                  under a display-name-derived URL (Zimbra-style rename/move).
+                  If False the URL stays at the cal_id (normal / OX-style).
+        name_sticks: if False, the display name given at creation is not applied.
+        """
+        probe_cal_id = "caldav-server-checker-displayname-test"
+        base = "https://example.com/dav/me/"
 
-        # Mock successful calendar creation with name
-        mock_calendar = Mock()
-        mock_calendar.events.return_value = []
-        mock_calendar.id = "caldav-server-checker-mkdel-test"
-        mock_calendar.delete = Mock()
+        created = {"name": None, "url": None}
 
-        principal.make_calendar.return_value = mock_calendar
+        def make_calendar(cal_id=None, name=None, **kwargs):
+            cal = Mock()
+            cal.url = base + cal_id + "/"
+            if name_sticks and name:
+                created["name"] = name
+                created["url"] = base + (name if relocate else cal_id) + "/"
+            return cal
 
-        # Mock calendar retrieval by name
-        calendar_calls = []
-        def calendar_side_effect(cal_id=None, name=None):
-            calendar_calls.append((cal_id, name))
-            if name == "Yep":
-                mock_calendar2 = Mock()
-                mock_calendar2.id = mock_calendar.id
-                mock_calendar2.events.return_value = []
-                return mock_calendar2
-            if cal_id == "caldav-server-checker-mkdel-test":
-                return mock_calendar
-            raise NotFoundError("Not found")
+        principal.make_calendar.side_effect = make_calendar
+        principal.calendar.return_value = Mock()  # for the cleanup delete()
 
-        principal.calendar.side_effect = calendar_side_effect
+        def calendars():
+            if created["name"] is None:
+                return []
+            c = Mock()
+            c.url = created["url"]
+            c.get_display_name.return_value = created["name"]
+            return [c]
+
+        principal.calendars.side_effect = calendars
 
         check = CheckMakeDeleteCalendar(checker)
-        check.run_check()
+        check._check_set_displayname()
 
-        # Should detect displayname support
+    def test_set_displayname_stable_url(self) -> None:
+        """A normal server keeps the calendar URL when a display name is set."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=False)
         assert checker.features_checked.is_supported("create-calendar.set-displayname")
+        assert checker.features_checked.is_supported("create-calendar.set-displayname.stable-url")
 
-    @pytest.mark.skip(reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths")
+    def test_set_displayname_relocates_url(self) -> None:
+        """Zimbra-style: setting the display name relocates the calendar URL."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=True)
+        # the name is still applied, so set-displayname itself is supported ...
+        assert checker.features_checked.is_supported("create-calendar.set-displayname")
+        # ... but the URL is not stable.
+        assert not checker.features_checked.is_supported("create-calendar.set-displayname.stable-url")
+        assert checker.features_checked.is_supported("create-calendar.set-displayname.stable-url", str) == "unsupported"
+
+    def test_set_displayname_not_applied(self) -> None:
+        """If the display name does not stick, set-displayname is unsupported."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=False, name_sticks=False)
+        assert not checker.features_checked.is_supported("create-calendar.set-displayname")
+
+    @pytest.mark.skip(
+        reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"
+    )
     def test_calendar_deletion_successful(self) -> None:
         """Successful calendar deletion should set delete-calendar feature"""
         checker, client, principal = self.create_checker_with_principal()
@@ -280,6 +314,7 @@ class TestCheckMakeDeleteCalendar:
 
         # Track deletion
         deleted_count = [0]
+
         def delete_side_effect():
             deleted_count[0] += 1
 
@@ -289,6 +324,7 @@ class TestCheckMakeDeleteCalendar:
 
         # After deletion, calendar should not be found
         call_count = [0]
+
         def calendar_lookup(cal_id=None, name=None):
             call_count[0] += 1
             # Initial cleanup - doesn't exist
@@ -316,7 +352,9 @@ class TestCheckMakeDeleteCalendar:
         # Should detect deletion support
         assert checker.features_checked.is_supported("delete-calendar")
 
-    @pytest.mark.skip(reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths")
+    @pytest.mark.skip(
+        reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"
+    )
     def test_calendar_has_default_calendar(self) -> None:
         """Principal with existing calendars should set has-calendar feature"""
         checker, client, principal = self.create_checker_with_principal()
@@ -339,6 +377,7 @@ class TestCheckMakeDeleteCalendar:
         principal.make_calendar.return_value = mock_test_cal
 
         call_count = [0]
+
         def calendar_lookup(cal_id=None, name=None):
             call_count[0] += 1
             # Initial cleanup
@@ -379,9 +418,7 @@ class TestPrepareCalendar:
         client = Mock()
         client.features = FeatureSet()
         # Mock expected_features to avoid lookup issues
-        client.features.copyFeatureSet(
-            {"test-calendar.compatibility-tests": {}}, collapse=False
-        )
+        client.features.copyFeatureSet({"test-calendar.compatibility-tests": {}}, collapse=False)
         checker = ServerQuirkChecker(client, debug_mode=None)
 
         # Mock principal
@@ -394,9 +431,7 @@ class TestPrepareCalendar:
         checker._checks_run.add(CheckMakeDeleteCalendar)
 
         # Mock that create-calendar is supported
-        checker._features_checked.copyFeatureSet(
-            {"create-calendar": {"support": "full"}}, collapse=False
-        )
+        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
 
         return checker, client, mock_principal
 
@@ -576,13 +611,13 @@ class TestCheckSearch:
 
         # Mock initial time-range searches
         def search_side_effect(**kwargs):
-            if 'category' in kwargs:
+            if "category" in kwargs:
                 # Category search returns one result
                 return [Mock()]
-            elif 'event' in kwargs and kwargs.get('event'):
+            elif "event" in kwargs and kwargs.get("event"):
                 # Time-range event search
                 return [Mock()]
-            elif 'todo' in kwargs:
+            elif "todo" in kwargs:
                 # Time-range todo search
                 return [Mock()]
             return []
@@ -601,11 +636,11 @@ class TestCheckSearch:
         checker, calendar, tasklist = self.create_checker_with_prepared_calendar()
 
         def search_side_effect(**kwargs):
-            if 'category' in kwargs:
+            if "category" in kwargs:
                 raise ReportError("Category not supported")
-            elif 'event' in kwargs and kwargs.get('event'):
+            elif "event" in kwargs and kwargs.get("event"):
                 return [Mock()]
-            elif 'todo' in kwargs:
+            elif "todo" in kwargs:
                 return [Mock()]
             return []
 
@@ -629,23 +664,23 @@ class TestCheckSearch:
             search_calls.append(kwargs)
 
             # Time-range only
-            if 'event' in kwargs and 'category' not in kwargs:
+            if "event" in kwargs and "category" not in kwargs:
                 return [Mock()]
 
             # Category + time range (wider range) = 1 result
-            if 'category' in kwargs and 'start' in kwargs:
-                start = kwargs['start']
+            if "category" in kwargs and "start" in kwargs:
+                start = kwargs["start"]
                 if start.day == 1 and start.hour == 11:
                     return [Mock()]  # Wider range matches
                 elif start.day == 1 and start.hour == 9:
                     return []  # Narrower range doesn't match
 
             # Just category
-            if 'category' in kwargs:
+            if "category" in kwargs:
                 return [Mock()]
 
             # Todos
-            if 'todo' in kwargs:
+            if "todo" in kwargs:
                 return [Mock()]
 
             return []
@@ -700,6 +735,7 @@ class TestCheckIsNotDefined:
         return events with UIDs matching what was actually saved.
         """
         import re
+
         saved_uids: list[str] = []
 
         def side_effect(cls, ical_str: str) -> Mock:

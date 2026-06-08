@@ -77,6 +77,7 @@ class CheckMakeDeleteCalendar(Check):
         "create-calendar.auto",
         "create-calendar",
         "create-calendar.set-displayname",
+        "create-calendar.set-displayname.stable-url",
         "delete-calendar",
         "delete-calendar.free-namespace",
     }
@@ -99,6 +100,13 @@ class CheckMakeDeleteCalendar(Check):
         """
         Does some attempts on creating and deleting calendars, and sets some
         flags - while others should be set by the caller.
+
+        Note: this probe deliberately does NOT set a display name.  The
+        display-name behaviour (and its coupling to the calendar URL on some
+        servers) is checked separately and deterministically in
+        _check_set_displayname(), so that a display-name-triggered calendar
+        relocation cannot pollute the create/delete/free-namespace detection
+        here.
         """
         calmade = False
 
@@ -117,21 +125,6 @@ class CheckMakeDeleteCalendar(Check):
             calmade = True
             self.checker.principal.calendar(cal_id=cal_id).events()
             self.set_feature("create-calendar")
-            if kwargs.get("name"):
-                ## Verify the calendar we just created (looked up by cal_id) got
-                ## the requested display name.  We deliberately do NOT look the
-                ## calendar up by display name: display names are not unique, so a
-                ## leftover calendar with the same name (e.g. from a previous test
-                ## run on a server that doesn't free the namespace) would shadow our
-                ## calendar and make us wrongly report the feature as unsupported.
-                try:
-                    cal2 = self.checker.principal.calendar(cal_id=cal.id)
-                    if cal2.get_display_name() == kwargs["name"]:
-                        self.set_feature("create-calendar.set-displayname")
-                    else:
-                        self.set_feature("create-calendar.set-displayname", False)
-                except Exception:
-                    self.set_feature("create-calendar.set-displayname", False)
 
         except DAVError:
             ## calendar creation created an exception.  Maybe the calendar exists?
@@ -194,6 +187,13 @@ class CheckMakeDeleteCalendar(Check):
             return calmade
 
     def _run_check(self):
+        self._probe_make_delete()
+        ## The display-name behaviour is probed separately and deterministically,
+        ## but only if we were actually able to create calendars at all.
+        if self.checker.features_checked.is_supported("create-calendar"):
+            self._check_set_displayname()
+
+    def _probe_make_delete(self):
         try:
             cal = self.checker.principal.calendar(cal_id="this_should_not_exist")
             cal.events()
@@ -216,38 +216,23 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("get-current-user-principal.has-calendar", False)
 
         _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
-        makeret = self._try_make_calendar(name="Yep", cal_id="caldav-server-checker-mkdel-test")
+        ## First attempt: a fixed cal_id.  If it succeeds, a previous run's
+        ## calendar with the same id was successfully removed (or never existed),
+        ## i.e. the namespace is free after deletion.
+        ## TODO: this is a lie on the very first run - we haven't really verified
+        ## this until a second script run.
+        makeret = self._try_make_calendar(cal_id="caldav-server-checker-mkdel-test")
         if makeret:
-            ## calendar created
-            ## TODO: this is a lie - we haven't really verified this, only on second script run we will be sure
             if self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", True)
             else:
                 self.set_feature("delete-calendar.free-namespace", _unknown_del)
             return
-        makeret = self._try_make_calendar(name=str(uuid.uuid4()), cal_id="pythoncaldav-test")
-        if makeret:
-            self.set_feature("create-calendar.set-displayname", True)
-            self.set_feature("delete-calendar.free-namespace", False)
-            return
-        makeret = self._try_make_calendar(cal_id="pythoncaldav-test")
-        if makeret:
-            self.set_feature("create-calendar.set-displayname", False)
-            if self.checker.features_checked.is_supported("delete-calendar"):
-                self.set_feature("delete-calendar.free-namespace", True)
-            else:
-                self.set_feature("delete-calendar.free-namespace", _unknown_del)
-            return
-        unique_id1 = "testcalendar-" + str(uuid.uuid4())
-        makeret = self._try_make_calendar(cal_id=unique_id1, name=str(uuid.uuid4()))
-        if makeret:
-            self.set_feature("delete-calendar.free-namespace", False)
-            self.set_feature("create-calendar.set-displayname", True)
-            return
+        ## The fixed cal_id is stuck (a previous calendar was not freed); a fresh
+        ## unique cal_id should still work -> namespace is not freed on delete.
         unique_id = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id)
         if makeret:
-            self.set_feature("create-calendar.set-displayname", False)
             self.set_feature("delete-calendar.free-namespace", False)
             return
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
@@ -266,6 +251,90 @@ class CheckMakeDeleteCalendar(Check):
                 "delete-calendar.free-namespace",
                 {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"},
             )
+
+    def _check_set_displayname(self):
+        """Deterministically probe display-name support and URL stability.
+
+        Two distinct server behaviours are checked:
+
+        * ``create-calendar.set-displayname`` - does a display name given at
+          creation time stick?
+        * ``create-calendar.set-displayname.stable-url`` - does setting it leave
+          the calendar URL unchanged?  Some servers (Zimbra) apply the display
+          name via a rename that *moves* the collection, relocating its canonical
+          URL to a display-name-derived path - while others (OX) keep the URL at
+          the requested cal_id and store the name as an ordinary property.
+
+        We create a calendar with a UNIQUE display name (exercising the same
+        create path the library uses) and then look up where the calendar with
+        that name ended up: still at the cal_id (stable) or under a
+        display-name-derived URL (relocated).  A unique name avoids the
+        namespace-collision fallback that makes a "create with name, read back by
+        cal_id" probe flap between runs.  We deliberately do NOT probe via a
+        rename/PROPPATCH after creation: that is a different operation (e.g. OX
+        accepts a name at creation but rejects later renames).
+        """
+        cal_id = "caldav-server-checker-displayname-test"
+        unique_name = "csc-displayname-" + str(uuid.uuid4())
+
+        def _segment(cal):
+            return str(cal.url).rstrip("/").rsplit("/", 1)[-1]
+
+        def _find_by_displayname(name):
+            try:
+                cals = self.checker.principal.calendars()
+            except Exception:
+                return None
+            for c in cals:
+                try:
+                    if c.get_display_name() == name:
+                        return c
+                except Exception:
+                    pass
+            return None
+
+        def _cleanup():
+            try:
+                self.checker.principal.calendar(cal_id=cal_id).delete()
+            except Exception:
+                pass
+            leftover = _find_by_displayname(unique_name)
+            if leftover is not None:
+                try:
+                    leftover.delete()
+                except Exception:
+                    pass
+
+        ## clean slate
+        _cleanup()
+
+        try:
+            self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
+        except DAVError:
+            ## Couldn't create the probe calendar.  Leave the feature unset; the
+            ## parent create-calendar status already records the issue.
+            return
+
+        try:
+            located = _find_by_displayname(unique_name)
+            if located is None:
+                ## the name did not stick anywhere
+                self.set_feature("create-calendar.set-displayname", False)
+                return
+
+            self.set_feature("create-calendar.set-displayname", True)
+            if _segment(located) == cal_id:
+                self.set_feature("create-calendar.set-displayname.stable-url", True)
+            else:
+                self.set_feature(
+                    "create-calendar.set-displayname.stable-url",
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"setting the display name relocated the calendar URL to {_segment(located)!r}",
+                    },
+                )
+        finally:
+            _cleanup()
 
 
 class PrepareCalendar(Check):
