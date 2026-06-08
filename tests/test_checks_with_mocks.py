@@ -440,7 +440,7 @@ class TestPrepareCalendar:
         checker, client, principal = self.create_checker_with_calendar()
 
         # Mock existing calendar with all necessary methods.
-        # events() is called 4 times: (1) existence check l.287, (2) _filter_2000 fallback l.316,
+        # events() is called 4 times: (1) existence check l.287, (2) _filter_fixture_window fallback,
         # (3) recurrences check l.646, (4) final sanity assert l.673 — must return truthy.
         mock_calendar = Mock()
         mock_calendar.events.side_effect = [[], [], [], [Mock()]]
@@ -472,7 +472,7 @@ class TestPrepareCalendar:
 
         # Mock calendar not found on first call, then return created calendar.
         # events() is called 3 times here: existence-check call (l.287) is never reached because
-        # principal.calendar() raises first; then (1) _filter_2000 fallback l.316,
+        # principal.calendar() raises first; then (1) _filter_fixture_window fallback,
         # (2) recurrences check l.646, (3) final sanity assert l.673 — must return truthy.
         call_count = [0]
         mock_calendar = Mock()
@@ -511,7 +511,7 @@ class TestPrepareCalendar:
         checker, client, principal = self.create_checker_with_calendar()
 
         # Mock calendar with all necessary behavior.
-        # events() is called 4 times: (1) existence check l.287, (2) _filter_2000 fallback l.316,
+        # events() is called 4 times: (1) existence check l.287, (2) _filter_fixture_window fallback,
         # (3) recurrences check l.646, (4) final sanity assert l.673 — must return truthy.
         mock_calendar = Mock()
         mock_calendar.events.side_effect = [[], [], [], [Mock()]]
@@ -553,6 +553,7 @@ class TestCheckSearch:
         mock_calendar._request_report_build_resultlist.return_value = (None, [])
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
+        checker.fixture_base_year = 2027
 
         # Mark dependencies as run
         checker._checks_run.add(CheckGetCurrentUserPrincipal)

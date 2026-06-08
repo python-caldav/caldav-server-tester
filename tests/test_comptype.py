@@ -20,7 +20,7 @@ from caldav_server_tester.checks import CheckSearch
 
 
 class _Comp(dict):
-    """Minimal stand-in for an icalendar component (name + year-2000 start)."""
+    """Minimal stand-in for an icalendar component (name + start date in the test base year)."""
 
     def __init__(self, name: str, day: int = 1) -> None:
         super().__init__()
@@ -63,6 +63,9 @@ def _make_check(calendar, tasklist=None, journallist=None) -> CheckSearch:
     checker.calendar = calendar
     checker.tasklist = tasklist if tasklist is not None else calendar
     checker.journallist = journallist
+    ## The probes filter results to the fixture year; the mock objects above use
+    ## year-2000 dates, so pin the base year to 2000 for these unit tests.
+    checker.fixture_base_year = 2000
     return CheckSearch(checker)
 
 

@@ -273,13 +273,24 @@ deleted from the server after use.  It's best to provide the check
 script with a dedicated calendar for the checking, but running the
 checks towards your personal calendar should be safe.
 
-Test data is deliberately placed in the year 2000, minimising the chance of
-collisions with real calendar entries.  UIDs are all prefixed with `csc_`.
+Test data is placed in the **next calendar year**, keeping it in the near
+future so that servers which restrict their search window (e.g. OX App Suite
+hides anything outside roughly `[now - 1 month, now + 18 months]`) can still
+see the fixtures.  The base year is stable within a calendar year, so the
+`--no-cleanup` reuse feature keeps working all year.  A couple of probe objects
+are deliberately kept in the year 2000 to detect such sliding windows.  All
+UIDs are prefixed with `csc_`.
 
 By default the tool **cleans up** all test data after each run (deletes the
 test calendar if calendar creation/deletion is supported, or deletes
 individual objects by UID otherwise).  Pass `--no-cleanup` to leave the test
-data in place for inspection.
+data in place for inspection (and to speed up the next run, which reuses it).
+
+Because the fixtures move forward each calendar year, leftover fixtures from
+previous years can accumulate when `--no-cleanup` is used.  Run
+`caldav-server-tester --cleanup-only` to remove all `csc_*` test data (including
+the year-2000 probes that a sliding window hides from listings) without running
+any checks.
 
 
 ## Running individual checks

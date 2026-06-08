@@ -44,6 +44,7 @@ class TestCheckSyncTokenAPI:
         checker._client_obj.features = FeatureSet()
         checker.expected_features = FeatureSet()
         checker.calendar = self.create_mock_calendar()
+        checker.fixture_base_year = 2027
         return checker
 
     def test_uses_save_object_not_save_event(self) -> None:
@@ -60,6 +61,7 @@ class TestCheckSyncTokenAPI:
         # Verify it was called with Event as first parameter
         call_args = checker.calendar.save_object.call_args
         from caldav.calendarobjectresource import Event
+
         assert call_args[0][0] == Event
 
     def test_sync_token_unsupported_exits_early(self) -> None:
@@ -87,6 +89,7 @@ class TestCheckSyncTokenAPI:
 
         # Mock exception on objects()
         from caldav.lib.error import ReportError
+
         checker.calendar.objects.side_effect = ReportError()
 
         check = CheckSyncToken(checker)

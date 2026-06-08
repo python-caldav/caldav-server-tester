@@ -22,7 +22,7 @@ from caldav_server_tester.checks import CheckSearch
 
 
 class _Comp(dict):
-    """Minimal stand-in for an icalendar component as seen by _filter_2000."""
+    """Minimal stand-in for an icalendar component as seen by _filter_fixture_window."""
 
     def __init__(self, start: date) -> None:
         super().__init__()
@@ -35,7 +35,7 @@ class _Comp(dict):
 
 
 def _obj(url: str, day: int = 1) -> Mock:
-    """A calendar object in year 2000 (so it survives _filter_2000)."""
+    """A calendar object in the test base year (so it survives _filter_fixture_window)."""
     o = Mock()
     o.url = url
     o.component = _Comp(date(2000, 1, day))
@@ -66,6 +66,9 @@ def _make_check(calendar, tasklist=None, journallist=None) -> CheckSearch:
     checker.calendar = calendar
     checker.tasklist = tasklist if tasklist is not None else calendar
     checker.journallist = journallist
+    ## The probes filter results to the fixture year; the mock objects above use
+    ## year-2000 dates, so pin the base year to 2000 for these unit tests.
+    checker.fixture_base_year = 2000
     return CheckSearch(checker)
 
 

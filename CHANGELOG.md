@@ -10,7 +10,12 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## [Unreleased]
 
+### Changed
+- Reusable test fixtures are now placed in the **next calendar year** instead of year 2000.  Servers that restrict their search window (verified: OX App Suite only exposes objects within roughly `[now - 1 month, now + 18 months]`; Stalwart had no such restriction in testing) silently hid the year-2000 fixtures, so every fixture-dependent check misfired — on OX the run aborted entirely before producing a report.  All fixture date arithmetic is unchanged; only the year shifts.  The base year is stable within a calendar year, so the `--no-cleanup` reuse feature still works.  A pair of probe objects (`csc_olddate_event`, `csc_olddate_task`) are intentionally kept in year 2000 to detect the sliding-window behaviour.
+
 ### Added
+- New `--cleanup-only` flag: removes all `csc_*` test data (including the year-2000 probes that a sliding window hides from listings) and exits without running checks.  Useful for purging fixtures that have aged out of the search window after repeated `--no-cleanup` runs.
+- `search.unlimited-time-range` now distinguishes "far-past objects (year 2000) are outside the search window" (classic sliding window) from the more severe "even next-year objects are outside the search window" (which makes fixture-dependent checks unreliable, and is logged loudly), recording the distinction in the `behaviour` field.
 - New `search.comp-type` probe: verifies the server returns only objects of the requested component type for a comp-type-*specific* calendar-query (a query for events returns only events, a query for tasks returns only tasks, …).  A server that misclassifies (e.g. returns VTODOs for a VEVENT query) or ignores the comp-filter entirely is reported `broken`.  `search.comp-type` was already defined (default `full`) in the CalDAV library but had no check until now.
 
 ### Fixed

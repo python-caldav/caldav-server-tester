@@ -72,6 +72,51 @@ class ServerQuirkChecker:
     def features_checked(self):
         return self._features_checked
 
+    ## Probe objects PrepareCalendar deliberately PUT far in the past (year 2000).
+    ## Sliding-window servers (e.g. OX) hide these from listings/REPORT, so they
+    ## must be removed by direct URL rather than discovered via objects().
+    HIDDEN_PROBE_UIDS = ("csc_olddate_event", "csc_olddate_task")
+
+    def _purge_csc_objects(self, calendars):
+        """Delete every ``csc_*`` object from the given calendars.
+
+        Visible objects are found via ``objects()`` listing; the year-2000
+        probes that a sliding window hides are additionally deleted by direct
+        URL.  Returns the number of objects deleted.
+        """
+        import caldav
+
+        removed = 0
+        seen = set()
+        for cal in calendars:
+            if cal is None or id(cal) in seen:
+                continue
+            seen.add(id(cal))
+            ## listing-based: catches all visible csc_* objects
+            try:
+                for obj in cal.objects():
+                    try:
+                        uid = str(obj.icalendar_component.get("UID", ""))
+                        if uid.startswith("csc_"):
+                            obj.delete()
+                            removed += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            ## direct-URL: catches probes hidden from listing by a sliding window.
+            ## load() first so we only count (and DELETE) probes that actually
+            ## exist - a DELETE to an absent URL succeeds silently on some servers.
+            for uid in self.HIDDEN_PROBE_UIDS:
+                try:
+                    obj = caldav.Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+                    obj.load()
+                    obj.delete()
+                    removed += 1
+                except Exception:
+                    pass
+        return removed
+
     def cleanup(self, force=True):
         """
         Remove anything added by the PrepareCalendar check.
@@ -95,54 +140,45 @@ class ServerQuirkChecker:
             if self.journallist != self.calendar:
                 self.journallist.delete()
         else:
-            for uid in (
-                "csc_simple_task1",
-                "csc_simple_event1",
-                "csc_simple_event2",
-                "csc_simple_event3",
-                "csc_simple_event4",
-                "csc_event_with_categories",
-                "csc_event_with_class",
-                "csc_event_with_duration",
-                "csc_event_with_alarm",
-                "csc_simple_task2",
-                "csc_simple_task3",
-                "csc_simple_journal1",
-                "csc_monthly_recurring_event",
-                "csc_yearly_recurring_allday_event",
-                "weeklymeeting",
-                "csc_monthly_recurring_task",
-                "csc_monthly_recurring_with_exception",
-                "csc_recurring_count_task",
-                "csc_url_check",
-            ):
-                try:
-                    self.calendar.object_by_uid(uid).delete()
-                except Exception:
-                    try:
-                        self.tasklist.object_by_uid(uid).delete()
-                    except Exception:
-                        try:
-                            self.journallist.object_by_uid(uid).delete()
-                        except Exception:
-                            pass
+            self._purge_csc_objects((self.calendar, self.tasklist, self.journallist))
 
-            ## Fallback: clean up any remaining csc_* objects not in the above list
-            seen = set()
-            for calendar_to_check in (self.calendar, self.tasklist, self.journallist):
-                if id(calendar_to_check) in seen:
-                    continue
-                seen.add(id(calendar_to_check))
+    def cleanup_test_data(self, calendar_name=None):
+        """Purge caldav-server-tester fixtures without running any checks.
+
+        Used by the CLI ``--cleanup-only`` flag to remove fixtures that have aged
+        out of a sliding window (the near-future fixtures shift forward each
+        calendar year, so leftovers from previous years accumulate when the
+        ``--no-cleanup`` reuse feature is used).  Locates the test calendar and
+        its task/journal siblings by id and display name and deletes every
+        ``csc_*`` object found, including the hidden year-2000 probes.
+
+        Returns the number of objects deleted.
+        """
+        cal_id = "caldav-server-checker-calendar"
+        candidates = []
+
+        ## by calendar id (and the dedicated task/journal siblings)
+        for cid in (cal_id, f"{cal_id}_tasks", f"{cal_id}_journals"):
+            try:
+                c = self.principal.calendar(cal_id=cid)
+                c.get_display_name()  ## force a request so non-existent calendars raise
+                candidates.append(c)
+            except Exception:
+                pass
+
+        ## by display name
+        wanted_names = {n for n in (calendar_name, "Calendar for checking server feature support") if n}
+        try:
+            for c in self.principal.calendars():
                 try:
-                    for obj in calendar_to_check.objects():
-                        try:
-                            uid = obj.icalendar_component.get("UID", "")
-                            if str(uid).startswith("csc_"):
-                                obj.delete()
-                        except Exception:
-                            pass
+                    if c.get_display_name() in wanted_names:
+                        candidates.append(c)
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        return self._purge_csc_objects(candidates)
 
     def _get_deviating_features(self) -> dict:
         """Return observed features where support differs from the spec default.

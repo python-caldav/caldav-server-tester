@@ -16,16 +16,37 @@ from .checks_base import Check
 utc = timezone.utc
 
 
-def _filter_2000(objects):
-    """Sometimes the only chance we have to run checks towards some cloud
-    service is to run the checks towards some existing important
-    calendar.  To reduce the probability of clashes with real calendar
-    content we let (almost) all test objects be in year 2000.  The
-    work on the checker was initiated in 2025.  It's pretty rare that
-    people have calendars with 25 years old data in it, but it could
-    happen.  TODO: perhaps we rather should filter by the uid?  TODO:
-    RFC2445 is from 1998, we would be even safer if using 1997 rather
-    than 2000?
+def _base_year(now=None):
+    """The calendar year the reusable test fixtures live in: *next* year.
+
+    Historically all fixtures were placed in year 2000 to avoid clashing with
+    real calendar content when the only available calendar is a production one.
+    That backfires on servers that restrict the search window: OX App Suite, for
+    instance, only exposes objects within roughly ``[now - 1 month, now + 18
+    months]`` and silently hides everything outside it (verified empirically) -
+    so the year-2000 fixtures are invisible to search/REPORT there and every
+    fixture-dependent check misfires.
+
+    Placing the fixtures in the *next calendar year* keeps them in the
+    near future: at most ~14 months ahead (a January run), comfortably inside
+    OX's window, and always in the future so OX's past-edge never hides a fresh
+    fixture.  The base year is stable within a calendar year (it only changes on
+    Jan 1), which keeps the ``--no-cleanup`` reuse feature effective.
+
+    A few checks deliberately keep year-2000 *probe* objects to detect exactly
+    this sliding-window behaviour (see ``csc_olddate_*`` and
+    ``search.unlimited-time-range`` / ``search.time-range.*.old-dates``).
+    """
+    now = now or datetime.now(tz=utc)
+    return now.year + 1
+
+
+def _filter_fixture_window(objects, base_year):
+    """Keep only objects whose (start/due/end) date falls in the fixture year.
+
+    The fixtures all live within ``base_year`` (see :func:`_base_year`); this
+    filters a calendar listing down to the reusable test set, excluding both
+    unrelated real content and the year-2000 old-date probes.
     """
 
     def asdate(foo):
@@ -44,7 +65,7 @@ def _filter_2000(objects):
     def d(obj):
         return asdate(dt(obj))
 
-    return (x for x in objects if date(2000, 1, 1) <= d(x) <= date(2001, 1, 1))
+    return (x for x in objects if date(base_year, 1, 1) <= d(x) <= date(base_year + 1, 1, 1))
 
 
 class CheckGetCurrentUserPrincipal(Check):
@@ -382,12 +403,13 @@ class PrepareCalendar(Check):
 
     def _prepare_task_calendar(self, cal_id, name, add_if_not_existing):
         """Handle task calendar setup and save-load.todo / save-load.todo.mixed-calendar features."""
+        base = self.checker.fixture_base_year
         try:
             task_with_dtstart = add_if_not_existing(
                 Todo,
                 summary="task with a dtstart",
                 uid="csc_simple_task1",
-                dtstart=date(2000, 1, 7),
+                dtstart=date(base, 1, 7),
             )
             task_with_dtstart.load()
             self.set_feature("save-load.todo")
@@ -408,7 +430,7 @@ class PrepareCalendar(Check):
                     Todo,
                     summary="task with a dtstart",
                     uid="csc_simple_task1",
-                    dtstart=date(2000, 1, 7),
+                    dtstart=date(base, 1, 7),
                 )
             except DAVError as e:  ## exception e for debugging purposes
                 self.set_feature("save-load.todo", "ungraceful")
@@ -421,12 +443,13 @@ class PrepareCalendar(Check):
 
     def _prepare_journal_calendar(self, cal_id, name, add_if_not_existing):
         """Handle journal calendar setup and save-load.journal / save-load.journal.mixed-calendar features."""
+        base = self.checker.fixture_base_year
         try:
             simple_journal = add_if_not_existing(
                 Journal,
                 summary="simple journal entry",
                 uid="csc_simple_journal1",
-                dtstart=date(2000, 1, 11),
+                dtstart=date(base, 1, 11),
             )
             simple_journal.load()
             self.set_feature("save-load.journal")
@@ -454,7 +477,7 @@ class PrepareCalendar(Check):
                         Journal,
                         summary="simple journal entry",
                         uid="csc_simple_journal1",
-                        dtstart=date(2000, 1, 11),
+                        dtstart=date(base, 1, 11),
                     )
                     simple_journal.load()
                     self.set_feature("save-load.journal")
@@ -464,7 +487,15 @@ class PrepareCalendar(Check):
                     self.checker.cnt -= 1
 
     def _create_test_events(self, calendar, cal_id, name, add_if_not_existing):
-        """Create all the test event/task/journal objects in the calendar."""
+        """Create all the test event/task/journal objects in the calendar.
+
+        All fixtures live in ``base`` (next calendar year, see :func:`_base_year`)
+        so they stay inside the search window of sliding-window servers.  The
+        relative month/day offsets are unchanged from when the fixtures lived in
+        year 2000, so every fixture-dependent check keeps the same arithmetic -
+        only the year differs.
+        """
+        base = self.checker.fixture_base_year
         todo_ok = self._prepare_task_calendar(cal_id, name, add_if_not_existing)
         if not todo_ok:
             return False
@@ -475,8 +506,8 @@ class PrepareCalendar(Check):
             Event,
             summary="simple event with a start time and an end time",
             uid="csc_simple_event1",
-            dtstart=datetime(2000, 1, 1, 12, 0, 0, tzinfo=utc),
-            dtend=datetime(2000, 1, 1, 13, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 1, 12, 0, 0, tzinfo=utc),
+            dtend=datetime(base, 1, 1, 13, 0, 0, tzinfo=utc),
         )
         simple_event.load()
         self.set_feature("save-load.event")
@@ -485,22 +516,22 @@ class PrepareCalendar(Check):
             Event,
             summary="event with a start time but no end time",
             uid="csc_simple_event2",
-            dtstart=datetime(2000, 1, 2, 12, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 2, 12, 0, 0, tzinfo=utc),
         )
 
         one_day_event = add_if_not_existing(
             Event,
             summary="event with a start date but no end date",
             uid="csc_simple_event3",
-            dtstart=date(2000, 1, 3),
+            dtstart=date(base, 1, 3),
         )
 
         two_days_event = add_if_not_existing(
             Event,
             summary="event with a start date and end date",
             uid="csc_simple_event4",
-            dtstart=date(2000, 1, 4),
-            dtend=date(2000, 1, 6),
+            dtstart=date(base, 1, 4),
+            dtend=date(base, 1, 6),
         )
 
         event_with_categories = add_if_not_existing(
@@ -508,16 +539,16 @@ class PrepareCalendar(Check):
             summary="event with categories",
             uid="csc_event_with_categories",
             categories="hands,feet,head",
-            dtstart=datetime(2000, 1, 7, 12, 0, 0),
-            dtend=datetime(2000, 1, 7, 13, 0, 0),
+            dtstart=datetime(base, 1, 7, 12, 0, 0),
+            dtend=datetime(base, 1, 7, 13, 0, 0),
         )
 
         event_with_class = add_if_not_existing(
             Event,
             summary="event with confidential class",
             uid="csc_event_with_class",
-            dtstart=datetime(2000, 1, 16, 12, 0, 0, tzinfo=utc),
-            dtend=datetime(2000, 1, 16, 13, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 16, 12, 0, 0, tzinfo=utc),
+            dtend=datetime(base, 1, 16, 13, 0, 0, tzinfo=utc),
             class_="CONFIDENTIAL",
         )
 
@@ -525,7 +556,7 @@ class PrepareCalendar(Check):
             Event,
             summary="event with duration instead of dtend",
             uid="csc_event_with_duration",
-            dtstart=datetime(2000, 1, 17, 12, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 17, 12, 0, 0, tzinfo=utc),
             duration=timedelta(hours=1),
         )
 
@@ -533,29 +564,29 @@ class PrepareCalendar(Check):
             Todo,
             summary="task with a due date",
             uid="csc_simple_task2",
-            due=date(2000, 1, 8),
+            due=date(base, 1, 8),
         )
 
         task_with_dtstart_and_due = add_if_not_existing(
             Todo,
             summary="task with a dtstart time and due time",
             uid="csc_simple_task3",
-            dtstart=datetime(2000, 1, 9, 12, 0, 0, tzinfo=utc),
-            due=datetime(2000, 1, 9, 13, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 9, 12, 0, 0, tzinfo=utc),
+            due=datetime(base, 1, 9, 13, 0, 0, tzinfo=utc),
         )
 
         ## Task with DTSTART + DURATION (no DUE): used by CheckOpenTimeRangeSearch
         ## for two tests:
-        ## 1. Duration overlap: DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
+        ## 1. Duration overlap: DTSTART=<base>-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
         ##    Searches overlapping the interval [12:00, 14:00] should return this task.
         ##    RFC4791 section 9.9: VTODO overlaps [start, end] if DTSTART+DURATION > start.
-        ## 2. Open-start filtering: DTSTART=2000-01-18 is after end=2000-01-15, so this
-        ##    task must NOT be returned by an end-only search with end=2000-01-15.
+        ## 2. Open-start filtering: DTSTART=<base>-01-18 is after end=<base>-01-15, so this
+        ##    task must NOT be returned by an end-only search with end=<base>-01-15.
         add_if_not_existing(
             Todo,
             summary="task with dtstart and duration (no due)",
             uid="csc_task_with_duration",
-            dtstart=datetime(2000, 1, 18, 12, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 18, 12, 0, 0, tzinfo=utc),
             duration=timedelta(hours=2),
         )
 
@@ -567,8 +598,8 @@ class PrepareCalendar(Check):
                 Event,
                 summary="event with alarm",
                 uid="csc_event_with_alarm",
-                dtstart=datetime(2000, 1, 10, 8, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 1, 10, 9, 0, 0, tzinfo=utc),
+                dtstart=datetime(base, 1, 10, 8, 0, 0, tzinfo=utc),
+                dtend=datetime(base, 1, 10, 9, 0, 0, tzinfo=utc),
                 alarm_trigger=timedelta(minutes=-15),
                 alarm_action="DISPLAY",
             )
@@ -582,33 +613,33 @@ class PrepareCalendar(Check):
             summary="monthly recurring event",
             uid="csc_monthly_recurring_event",
             rrule={"FREQ": "MONTHLY"},
-            dtstart=datetime(2000, 1, 12, 12, 0, 0, tzinfo=utc),
-            dtend=datetime(2000, 1, 12, 13, 0, 0, tzinfo=utc),
+            dtstart=datetime(base, 1, 12, 12, 0, 0, tzinfo=utc),
+            dtend=datetime(base, 1, 12, 13, 0, 0, tzinfo=utc),
         )
         recurring_event.load()
         self.set_feature("save-load.event.recurrences")
 
         ## All-day (VALUE=DATE) yearly recurring event, used to test
         ## whether the server handles implicit recurrence for all-day events.
-        ## DTSTART is 2000-02-01; the second occurrence is 2001-02-01.
+        ## DTSTART is <base>-02-01; the second occurrence is <base+1>-02-01.
         add_if_not_existing(
             Event,
             summary="yearly recurring all-day event",
             uid="csc_yearly_recurring_allday_event",
             rrule={"FREQ": "YEARLY"},
-            dtstart=date(2000, 2, 1),
+            dtstart=date(base, 2, 1),
         )
 
         event_with_rrule_and_count = add_if_not_existing(
             Event,
-            """BEGIN:VCALENDAR
+            f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VEVENT
 UID:weeklymeeting
-DTSTAMP:20001013T151313Z
-DTSTART:20001018T140000Z
-DTEND:20001018T150000Z
+DTSTAMP:{base}1013T151313Z
+DTSTART:{base}1018T140000Z
+DTEND:{base}1018T150000Z
 SUMMARY:Weekly meeting for three weeks
 RRULE:FREQ=WEEKLY;COUNT=3
 END:VEVENT
@@ -626,8 +657,8 @@ END:VCALENDAR""",
                 summary="monthly recurring task",
                 uid="csc_monthly_recurring_task",
                 rrule={"FREQ": "MONTHLY"},
-                dtstart=datetime(2000, 1, 12, 12, 0, 0, tzinfo=utc),
-                due=datetime(2000, 1, 12, 13, 0, 0, tzinfo=utc),
+                dtstart=datetime(base, 1, 12, 12, 0, 0, tzinfo=utc),
+                due=datetime(base, 1, 12, 13, 0, 0, tzinfo=utc),
             )
             recurring_task.load()
             self.set_feature("save-load.todo.recurrences")
@@ -637,13 +668,13 @@ END:VCALENDAR""",
         try:
             task_with_rrule_and_count = add_if_not_existing(
                 Todo,
-                """BEGIN:VCALENDAR
+                f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VTODO
 UID:csc_recurring_count_task
-DTSTAMP:20001013T151313Z
-DTSTART:20001016T065500Z
+DTSTAMP:{base}1013T151313Z
+DTSTART:{base}1016T065500Z
 STATUS:NEEDS-ACTION
 DURATION:PT10M
 SUMMARY:Weekly task to be done three times
@@ -664,22 +695,22 @@ END:VCALENDAR""",
         try:
             recurring_event_with_exception = add_if_not_existing(
                 Event,
-                """BEGIN:VCALENDAR
+                f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//tobixen//Caldav-Server-Tester//en_DK
 BEGIN:VEVENT
 UID:csc_monthly_recurring_with_exception
-DTSTART:20000113T120000Z
-DTEND:20000113T130000Z
+DTSTART:{base}0113T120000Z
+DTEND:{base}0113T130000Z
 DTSTAMP:20240429T181103Z
 RRULE:FREQ=MONTHLY
 SUMMARY:Monthly recurring with exception
 END:VEVENT
 BEGIN:VEVENT
 UID:csc_monthly_recurring_with_exception
-RECURRENCE-ID:20000213T120000Z
-DTSTART:20000213T120000Z
-DTEND:20000213T130000Z
+RECURRENCE-ID:{base}0213T120000Z
+DTSTART:{base}0213T120000Z
+DTEND:{base}0213T130000Z
 DTSTAMP:20240429T181103Z
 SUMMARY:February recurrence with different summary
 END:VEVENT
@@ -712,7 +743,49 @@ END:VCALENDAR""",
         except DAVError:
             self.set_feature("save-load.event.recurrences.exception", "ungraceful")
 
+        self._create_olddate_probes()
+
         return True
+
+    def _create_olddate_probes(self):
+        """Create the persistent year-2000 probe objects.
+
+        The reusable fixtures live in the near future (next year) so that
+        sliding-window servers can see them, but a couple of checks still need
+        an object that is *intentionally* far in the past, to detect whether the
+        server hides far-past objects from search:
+
+        * ``csc_olddate_event`` (2000-01-01) - used by
+          ``search.time-range.event.old-dates`` and ``search.unlimited-time-range``.
+        * ``csc_olddate_task`` (2000-01-09) - used by
+          ``search.time-range.todo.old-dates``.
+
+        These are PUT unconditionally (idempotent overwrite by UID) rather than
+        via the near-future reuse machinery, since they fall outside the fixture
+        window and would never be matched there.  They are NOT counted in
+        ``checker.cnt`` and are excluded from the comp-type reference sets by
+        :func:`_filter_fixture_window`.
+        """
+        try:
+            self.checker.calendar.save_object(
+                Event,
+                summary="old-date probe event (year 2000)",
+                uid="csc_olddate_event",
+                dtstart=datetime(2000, 1, 1, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(2000, 1, 1, 13, 0, 0, tzinfo=utc),
+            )
+        except Exception:
+            logging.warning("Server rejected the year-2000 old-date probe event")
+        try:
+            self.checker.tasklist.save_object(
+                Todo,
+                summary="old-date probe task (year 2000)",
+                uid="csc_olddate_task",
+                dtstart=datetime(2000, 1, 9, 12, 0, 0, tzinfo=utc),
+                due=datetime(2000, 1, 9, 13, 0, 0, tzinfo=utc),
+            )
+        except Exception:
+            logging.warning("Server rejected the year-2000 old-date probe task")
 
     def _check_get_by_url(self, calendar):
         """Check if GET requests to server-reported calendar object URLs work."""
@@ -748,6 +821,12 @@ END:VCALENDAR""",
         ## support calendar deletion, the whole calendar is deleted instead.
         ## If you add new objects here, make sure their UIDs start with "csc_".
 
+        ## The reusable fixtures live in next calendar year (see _base_year): near
+        ## enough to stay inside sliding-window servers' search windows, stable
+        ## enough that the --no-cleanup reuse feature works for a whole year.
+        base = _base_year()
+        self.checker.fixture_base_year = base
+
         cal_id = "caldav-server-checker-calendar"
         test_cal_info = self.checker.expected_features.is_supported(
             "test-calendar.compatibility-tests", return_type=dict
@@ -758,39 +837,42 @@ END:VCALENDAR""",
         calendar = self.checker.calendar
 
         ## TODO: replace this with one search if possible(?)
-        ## Some servers (e.g. CCS) reject time-range queries for old dates
+        ## Some servers (e.g. CCS) reject time-range queries for some dates
         ## (min-date-time restriction), so fall back to empty lists.
+        ## The range only needs to span the fixtures (Jan 1 - Feb 13); we stop at
+        ## March 1 rather than year-end so the *end* bound also stays inside a
+        ## sliding window (OX rejects a query whose end is >~18 months ahead).
         try:
-            events_from_2000 = calendar.search(event=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
+            events_in_window = calendar.search(event=True, start=datetime(base, 1, 1), end=datetime(base, 3, 1))
         except (AuthorizationError, DAVError):
-            events_from_2000 = []
+            events_in_window = []
         try:
-            tasks_from_2000 = calendar.search(todo=True, start=datetime(2000, 1, 1), end=datetime(2001, 1, 1))
+            tasks_in_window = calendar.search(todo=True, start=datetime(base, 1, 1), end=datetime(base, 3, 1))
         except (AuthorizationError, DAVError):
-            tasks_from_2000 = []
-        ## Some servers (e.g. OX) silently return empty for old-date time-range
-        ## queries.  Fall back to listing all objects and filtering by date so
-        ## existing year-2000 test objects are detected and not re-PUT.
-        if not events_from_2000 and not tasks_from_2000:
+            tasks_in_window = []
+        ## Some servers silently return empty for time-range queries.  Fall back
+        ## to listing all objects and filtering by date so existing fixtures from
+        ## a previous run are detected and not re-PUT.
+        if not events_in_window and not tasks_in_window:
             try:
-                events_from_2000 = calendar.events()
+                events_in_window = calendar.events()
             except (AuthorizationError, DAVError):
                 pass
             try:
-                tasks_from_2000 = self.checker.tasklist.todos()
+                tasks_in_window = self.checker.tasklist.todos()
             except (AuthorizationError, DAVError):
                 pass
         try:
-            journals_from_2000 = calendar.journals()
+            journals_in_window = calendar.journals()
         except (AuthorizationError, DAVError):
-            journals_from_2000 = []
+            journals_in_window = []
 
         object_by_uid = {}
         self.checker.cnt = 0
 
-        for obj in _filter_2000(events_from_2000 + tasks_from_2000):
+        for obj in _filter_fixture_window(events_in_window + tasks_in_window, base):
             object_by_uid[obj.component["uid"]] = obj
-        for obj in journals_from_2000:
+        for obj in journals_in_window:
             try:
                 object_by_uid[obj.component["uid"]] = obj
             except Exception:
@@ -824,10 +906,12 @@ END:VCALENDAR""",
         if not self._create_test_events(calendar, cal_id, name, add_if_not_existing):
             return
 
-        ## Delete any stale objects from year 2000 that aren't part of
-        ## the current test set (e.g. leftovers from previous test runs)
+        ## Delete any stale fixtures from the current fixture window that aren't
+        ## part of the current test set (e.g. leftovers from previous test runs).
+        ## The year-2000 old-date probes fall outside the window and are excluded
+        ## by _filter_fixture_window, so they are not touched here.
         for uid, obj in object_by_uid.items():
-            logging.warning("Deleting stale year-2000 object with UID %s", uid)
+            logging.warning("Deleting stale fixture object with UID %s", uid)
             obj.delete()
         if not self.checker.calendar.events():
             logging.error("Calendar appears empty after PrepareCalendar; subsequent checks may be unreliable")
@@ -855,9 +939,11 @@ class CheckMutable(Check):
         cal = self.checker.calendar
         uid = "csc_simple_event1"
 
+        ## OX answers a UID calendar-query with 403 Forbidden rather than a 404,
+        ## so fall back to a direct-URL GET on any lookup failure.
         try:
             event = cal.event_by_uid(uid)
-        except NotFoundError:
+        except (NotFoundError, AuthorizationError, DAVError):
             event = Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
             event.load()
 
@@ -1106,6 +1192,7 @@ class CheckSearch(Check):
             "VTODO": {"todo": True, "include_completed": True},
             "VJOURNAL": {"journal": True},
         }
+        base = self.checker.fixture_base_year
         try:
             seen_any = False
             mismatches = set()
@@ -1113,7 +1200,9 @@ class CheckSearch(Check):
                 for comp_name, kwargs in wanted.items():
                     try:
                         results = list(
-                            _filter_2000(c.search(post_filter=False, compatibility_workarounds=False, **kwargs))
+                            _filter_fixture_window(
+                                c.search(post_filter=False, compatibility_workarounds=False, **kwargs), base
+                            )
                         )
                     except Exception:
                         ## The server may refuse to search for a component type
@@ -1159,12 +1248,13 @@ class CheckSearch(Check):
         ``compatibility_workarounds=False`` makes the library send the bare
         comp-type-less query verbatim instead of splitting it per component type.
         """
+        base = self.checker.fixture_base_year
         try:
             bare_urls = set()
             typed_urls = set()
             typed_todo_urls = set()
             for c in self._comptype_search_calendars():
-                for obj in _filter_2000(c.search(post_filter=False, compatibility_workarounds=False)):
+                for obj in _filter_fixture_window(c.search(post_filter=False, compatibility_workarounds=False), base):
                     bare_urls.add(str(obj.url))
                 for kwargs in (
                     {"event": True},
@@ -1172,7 +1262,7 @@ class CheckSearch(Check):
                     {"journal": True},
                 ):
                     try:
-                        for obj in _filter_2000(c.search(post_filter=False, **kwargs)):
+                        for obj in _filter_fixture_window(c.search(post_filter=False, **kwargs), base):
                             url = str(obj.url)
                             typed_urls.add(url)
                             if "todo" in kwargs:
@@ -1216,13 +1306,16 @@ class CheckSearch(Check):
     def _run_check(self):
         cal = self.checker.calendar
         tasklist = self.checker.tasklist
+        base = self.checker.fixture_base_year
 
         ## First, test time-range with recent dates (near-future).
         ## This determines the base search.time-range.event/todo support.
         self._check_time_range_with_recent_data(cal, tasklist)
 
-        ## Then test with old dates (year 2000) for the .old-dates sub-feature.
-        ## Some servers (e.g. CCS) enforce min-date-time and reject old dates.
+        ## Then test with old dates (year 2000) for the .old-dates sub-feature,
+        ## using the dedicated csc_olddate_* probes that PrepareCalendar PUT far
+        ## in the past.  Servers with a sliding window (e.g. OX) hide those, so
+        ## this distinguishes "old-date search works" from "window-restricted".
         try:
             events = cal.search(
                 start=datetime(2000, 1, 1, tzinfo=utc),
@@ -1252,30 +1345,28 @@ class CheckSearch(Check):
             self.set_feature("search.text.category", len(events) == 1)
         except (ReportError, AuthorizationError, DAVError):
             self.set_feature("search.text.category", "ungraceful")
-        ## search.combined - uses year-2000 dates, so requires old-dates support
-        if self.feature_checked("search.text.category") and self.feature_checked("search.time-range.event.old-dates"):
+        ## search.combined - category "hands" AND a time-range.  Uses the
+        ## in-window "hands" fixture (csc_event_with_categories, <base>-01-07), so
+        ## it works regardless of old-date support; only category search is needed.
+        if self.feature_checked("search.text.category"):
             try:
                 events1 = cal.search(
                     category="hands",
                     event=True,
-                    start=datetime(2000, 1, 1, 11, 0, 0),
-                    end=datetime(2000, 1, 13, 14, 0, 0),
+                    start=datetime(base, 1, 1, 11, 0, 0),
+                    end=datetime(base, 1, 13, 14, 0, 0),
                     post_filter=False,
                 )
                 events2 = cal.search(
                     category="hands",
                     event=True,
-                    start=datetime(2000, 1, 1, 9, 0, 0),
-                    end=datetime(2000, 1, 6, 14, 0, 0),
+                    start=datetime(base, 1, 1, 9, 0, 0),
+                    end=datetime(base, 1, 6, 14, 0, 0),
                     post_filter=False,
                 )
                 self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
             except (AuthorizationError, DAVError):
                 self.set_feature("search.combined-is-logical-and", "ungraceful")
-        elif self.feature_checked("search.text.category"):
-            ## Can't test combined search without old-dates support
-            ## (test data is in year 2000)
-            self.set_feature("search.combined-is-logical-and", None)
         else:
             ## Can't test combined search without category search support
             self.set_feature("search.combined-is-logical-and", None)
@@ -1402,23 +1493,59 @@ class CheckSearch(Check):
                 },
             )
 
-        ## search.unlimited-time-range: does a REPORT without a time range return all objects
-        ## regardless of date?  Uses the year-2000 non-recurring event csc_simple_event1
-        ## already placed by PrepareCalendar (so indexing delays don't affect the result)
-        ## to detect sliding-window servers (e.g. OX) that hide old non-recurring events.
-        ## Uses _request_report_build_resultlist directly to bypass the search.unlimited-time-range
-        ## workaround in search.py, so the actual server behaviour is observed.
+        ## search.unlimited-time-range: does a REPORT without a time range return all
+        ## objects regardless of date?  We look for two probes PrepareCalendar placed:
+        ##   * csc_olddate_event - a non-recurring event far in the past (year 2000)
+        ##   * csc_simple_event1 - a non-recurring fixture in the near future (next year)
+        ## A truly unlimited server returns both.  A sliding-window server (e.g. OX)
+        ## returns the near-future fixture but hides the far-past probe -> broken.  A
+        ## server with a window so tight it even hides next-year objects is recorded
+        ## with that more severe behaviour (and a loud warning), since that makes the
+        ## near-future fixtures - and therefore most fixture-dependent checks - unreliable.
+        ## Uses _request_report_build_resultlist directly to bypass the
+        ## search.unlimited-time-range workaround in search.py, so the actual server
+        ## behaviour is observed.
         try:
             searcher = CalDAVSearcher(comp_class=Event)
             xml, comp_class = searcher.build_search_xml_query()
             _, objects = cal._request_report_build_resultlist(xml, comp_class)
-            found = any(o.id == "csc_simple_event1" for o in objects)
-            if found:
+            ## Match on the iCalendar UID, not o.id: on URL-canonicalizing servers
+            ## (e.g. OX) o.id is the server's internal URL id, not the UID.
+            uids = set()
+            for o in objects:
+                try:
+                    uids.add(str(o.icalendar_component.get("UID", "")))
+                except Exception:
+                    pass
+            found_old = "csc_olddate_event" in uids
+            found_next = "csc_simple_event1" in uids
+            if found_old and found_next:
                 self.set_feature("search.unlimited-time-range")
+            elif found_next:
+                ## Returned the near-future fixture but not the far-past probe:
+                ## classic sliding time window (broken, not unsupported).
+                self.set_feature(
+                    "search.unlimited-time-range",
+                    {
+                        "support": "broken",
+                        "behaviour": "far-past objects (year 2000) are outside the search window",
+                    },
+                )
             elif objects:
-                ## Server returned some events but missed the old-date non-recurring event:
-                ## it uses a sliding time window (broken, not unsupported)
-                self.set_feature("search.unlimited-time-range", {"support": "broken"})
+                ## Did not even return the next-year fixture: the window is tighter
+                ## than ~14 months ahead, so the near-future fixtures are unreliable.
+                logging.error(
+                    "search.unlimited-time-range: even next-year fixtures are outside this "
+                    "server's search window - fixture-dependent check results are unreliable."
+                )
+                self.set_feature(
+                    "search.unlimited-time-range",
+                    {
+                        "support": "broken",
+                        "behaviour": "even next-year objects are outside the search window; "
+                        "fixture-dependent checks are unreliable on this server",
+                    },
+                )
             else:
                 ## Server returned nothing at all for a no-time-range search
                 self.set_feature("search.unlimited-time-range", "unsupported")
@@ -1555,6 +1682,7 @@ class CheckAlarmSearch(Check):
 
     def _run_check(self):
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         ## Check that the alarm event was created successfully
         try:
@@ -1563,15 +1691,15 @@ class CheckAlarmSearch(Check):
             self.set_feature("search.time-range.alarm", False)
             return
 
-        ## The alarm event has dtstart 2000-01-10 08:00 and a -15min alarm,
+        ## The alarm event has dtstart <base>-01-10 08:00 and a -15min alarm,
         ## so the alarm triggers at 07:45.
 
         ## Search that SHOULD find the alarm (07:40-07:55 covers 07:45)
         try:
             events = cal.search(
                 event=True,
-                alarm_start=datetime(2000, 1, 10, 7, 40, tzinfo=utc),
-                alarm_end=datetime(2000, 1, 10, 7, 55, tzinfo=utc),
+                alarm_start=datetime(base, 1, 10, 7, 40, tzinfo=utc),
+                alarm_end=datetime(base, 1, 10, 7, 55, tzinfo=utc),
                 post_filter=False,
             )
         except (AuthorizationError, DAVError):
@@ -1586,8 +1714,8 @@ class CheckAlarmSearch(Check):
         try:
             events = cal.search(
                 event=True,
-                alarm_start=datetime(2000, 1, 10, 8, 0, tzinfo=utc),
-                alarm_end=datetime(2000, 1, 10, 8, 15, tzinfo=utc),
+                alarm_start=datetime(base, 1, 10, 8, 0, tzinfo=utc),
+                alarm_end=datetime(base, 1, 10, 8, 15, tzinfo=utc),
                 post_filter=False,
             )
         except (AuthorizationError, DAVError):
@@ -1612,16 +1740,17 @@ class CheckRecurrenceSearch(Check):
     def _run_check(self):
         cal = self.checker.calendar
         tl = self.checker.tasklist
+        base = self.checker.fixture_base_year
 
         ## Precondition: basic event time-range search must return exactly the
-        ## one recurring event in Jan 2000.  On servers with broken comp-type
+        ## one recurring event in Jan <base>.  On servers with broken comp-type
         ## filtering (e.g. Bedework) this may return extra objects, making
         ## recurrence checks unreliable.  Some servers (e.g. CCS) reject
-        ## old date ranges entirely.  Either way, mark all features unsupported.
+        ## some date ranges entirely.  Either way, mark all features unsupported.
         try:
             events = cal.search(
-                start=datetime(2000, 1, 12, tzinfo=utc),
-                end=datetime(2000, 1, 13, tzinfo=utc),
+                start=datetime(base, 1, 12, tzinfo=utc),
+                end=datetime(base, 1, 13, tzinfo=utc),
                 event=True,
                 post_filter=False,
             )
@@ -1632,35 +1761,44 @@ class CheckRecurrenceSearch(Check):
                 self.set_feature(feat, False)
             return
 
-        if self.checker.features_checked.is_supported("search.time-range.todo.old-dates"):
-            todos = tl.search(
-                start=datetime(2000, 1, 12, tzinfo=utc),
-                end=datetime(2000, 1, 13, tzinfo=utc),
-                todo=True,
-                include_completed=True,
-                post_filter=False,
-            )
-            if len(todos) != 1:
-                logging.warning(
-                    "Expected 1 recurring todo in Jan 2000, got %d; skipping recurrence todo checks", len(todos)
+        ## Whether a VTODO time-range search reliably returns just the one recurring
+        ## todo.  Some servers (e.g. OX) ignore the time-range for VTODOs and return
+        ## every task, so the todo recurrence sub-features can't be measured there.
+        ## We mark those todo sub-features unsupported but STILL run the
+        ## event-recurrence checks below (event time-range may work fine).
+        todo_testable = False
+        if self.checker.features_checked.is_supported("search.time-range.todo"):
+            try:
+                todos = tl.search(
+                    start=datetime(base, 1, 12, tzinfo=utc),
+                    end=datetime(base, 1, 13, tzinfo=utc),
+                    todo=True,
+                    include_completed=True,
+                    post_filter=False,
                 )
-                for feat in self.features_to_be_checked:
-                    if not self.feature_checked(feat):
-                        self.set_feature(feat, False)
-                return
+                todo_testable = len(todos) == 1
+            except (AuthorizationError, DAVError):
+                todo_testable = False
+        if not todo_testable:
+            logging.warning(
+                "Recurring-todo precondition not met (VTODO time-range search unreliable in Jan %d); "
+                "todo recurrence sub-features reported unsupported",
+                base,
+            )
+
         events = cal.search(
-            start=datetime(2000, 2, 12, tzinfo=utc),
-            end=datetime(2000, 2, 13, tzinfo=utc),
+            start=datetime(base, 2, 12, tzinfo=utc),
+            end=datetime(base, 2, 13, tzinfo=utc),
             event=True,
             post_filter=False,
         )
         implicit_datetime = len(events) == 1
         ## Also check all-day (VALUE=DATE) recurring events: the yearly event
-        ## (DTSTART;VALUE=DATE:2000-02-01) should be found in 2001-02-01 range.
+        ## (DTSTART;VALUE=DATE:<base>-02-01) should be found in <base+1>-02-01 range.
         try:
             allday_events = cal.search(
-                start=datetime(2001, 2, 1, tzinfo=utc),
-                end=datetime(2001, 2, 2, tzinfo=utc),
+                start=datetime(base + 1, 2, 1, tzinfo=utc),
+                end=datetime(base + 1, 2, 2, tzinfo=utc),
                 event=True,
                 post_filter=False,
             )
@@ -1668,43 +1806,65 @@ class CheckRecurrenceSearch(Check):
         except (AuthorizationError, DAVError):
             implicit_allday = implicit_datetime
         if implicit_datetime and not implicit_allday:
-            ## Datetime recurring events work but all-day (VALUE=DATE) events do not
+            ## Datetime recurring events work but all-day (VALUE=DATE) events do not.
+            ## On a sliding-window server the all-day event's second occurrence (next
+            ## year + 1) may simply be out of window rather than truly broken, so this
+            ## verdict can be a false "fragile" on such servers - acceptable.
             self.set_feature(
                 "search.recurrences.includes-implicit.event",
                 {"support": "fragile", "behaviour": "broken for all-day (VALUE=DATE) events"},
             )
         else:
             self.set_feature("search.recurrences.includes-implicit.event", implicit_datetime)
-        todos1 = tl.search(
-            start=datetime(2000, 2, 12, tzinfo=utc),
-            end=datetime(2000, 2, 13, tzinfo=utc),
-            todo=True,
-            include_completed=True,
-            post_filter=False,
-        )
-        self.set_feature("search.recurrences.includes-implicit.todo", len(todos1) == 1)
 
-        if todos1:
-            todos2 = tl.search(
-                start=datetime(2000, 2, 12, tzinfo=utc),
-                end=datetime(2000, 2, 13, tzinfo=utc),
+        if todo_testable:
+            todos1 = tl.search(
+                start=datetime(base, 2, 12, tzinfo=utc),
+                end=datetime(base, 2, 13, tzinfo=utc),
                 todo=True,
+                include_completed=True,
                 post_filter=False,
             )
-            self.set_feature("search.recurrences.includes-implicit.todo.pending", len(todos2) == 1)
+            self.set_feature("search.recurrences.includes-implicit.todo", len(todos1) == 1)
+            if todos1:
+                todos2 = tl.search(
+                    start=datetime(base, 2, 12, tzinfo=utc),
+                    end=datetime(base, 2, 13, tzinfo=utc),
+                    todo=True,
+                    post_filter=False,
+                )
+                self.set_feature("search.recurrences.includes-implicit.todo.pending", len(todos2) == 1)
+            else:
+                self.set_feature("search.recurrences.includes-implicit.todo.pending", False)
+        else:
+            self.set_feature("search.recurrences.includes-implicit.todo", False)
+            self.set_feature("search.recurrences.includes-implicit.todo.pending", False)
 
         exception = cal.search(
-            start=datetime(2000, 2, 13, 11, tzinfo=utc),
-            end=datetime(2000, 2, 13, 13, tzinfo=utc),
+            start=datetime(base, 2, 13, 11, tzinfo=utc),
+            end=datetime(base, 2, 13, 13, tzinfo=utc),
             event=True,
             post_filter=False,
         )
         if len(exception) != 1:
-            ## Can't reliably check expansion/exception features
-            for feat in self.features_to_be_checked:
-                if not self.feature_checked(feat):
-                    self.set_feature(feat, False)
+            ## Can't reliably check expansion/exception features.  The
+            ## includes-implicit.{event,todo,todo.pending} features were already
+            ## set above; set the remaining (still-unmeasured) ones unsupported.
+            ## (A blanket "if not feature_checked" loop would wrongly skip features
+            ## whose spec default is "full", since is_supported() returns the
+            ## default for an as-yet-unset feature.)
+            for feat in (
+                "search.recurrences.includes-implicit.infinite-scope",
+                "search.recurrences.expanded.event",
+                "search.recurrences.expanded.todo",
+                "search.recurrences.expanded.exception",
+            ):
+                self.set_feature(feat, False)
             return
+        ## Far-future occurrence of the monthly recurring event, to test whether
+        ## implicit recurrence has an unlimited scope.  Deliberately decades out
+        ## (and well beyond any sliding window), so window-restricted servers will
+        ## correctly report this as unsupported.
         far_future_recurrence = cal.search(
             start=datetime(2045, 3, 12, tzinfo=utc),
             end=datetime(2045, 3, 13, tzinfo=utc),
@@ -1715,30 +1875,33 @@ class CheckRecurrenceSearch(Check):
 
         ## server-side expansion
         events = cal.search(
-            start=datetime(2000, 2, 12, tzinfo=utc),
-            end=datetime(2000, 2, 13, tzinfo=utc),
+            start=datetime(base, 2, 12, tzinfo=utc),
+            end=datetime(base, 2, 13, tzinfo=utc),
             event=True,
             server_expand=True,
             post_filter=False,
         )
         self.set_feature(
             "search.recurrences.expanded.event",
-            len(events) == 1 and events[0].component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
+            len(events) == 1 and events[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
         )
-        todos = cal.search(
-            start=datetime(2000, 2, 12, tzinfo=utc),
-            end=datetime(2000, 2, 13, tzinfo=utc),
-            todo=True,
-            server_expand=True,
-            post_filter=False,
-        )
-        self.set_feature(
-            "search.recurrences.expanded.todo",
-            len(todos) == 1 and todos[0].component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc),
-        )
+        if todo_testable:
+            todos = cal.search(
+                start=datetime(base, 2, 12, tzinfo=utc),
+                end=datetime(base, 2, 13, tzinfo=utc),
+                todo=True,
+                server_expand=True,
+                post_filter=False,
+            )
+            self.set_feature(
+                "search.recurrences.expanded.todo",
+                len(todos) == 1 and todos[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
+            )
+        else:
+            self.set_feature("search.recurrences.expanded.todo", False)
         exception = cal.search(
-            start=datetime(2000, 2, 13, 11, tzinfo=utc),
-            end=datetime(2000, 2, 13, 13, tzinfo=utc),
+            start=datetime(base, 2, 13, 11, tzinfo=utc),
+            end=datetime(base, 2, 13, 13, tzinfo=utc),
             event=True,
             server_expand=True,
             post_filter=False,
@@ -1746,10 +1909,10 @@ class CheckRecurrenceSearch(Check):
         self.set_feature(
             "search.recurrences.expanded.exception",
             len(exception) == 1
-            and exception[0].component["dtstart"] == datetime(2000, 2, 13, 12, 0, 0, tzinfo=utc)
+            and exception[0].component["dtstart"] == datetime(base, 2, 13, 12, 0, 0, tzinfo=utc)
             and exception[0].component["summary"] == "February recurrence with different summary"
             and getattr(exception[0].component.get("RECURRENCE-ID"), "dt", None)
-            == datetime(2000, 2, 13, 12, tzinfo=utc),
+            == datetime(base, 2, 13, 12, tzinfo=utc),
         )
 
         ## RFC 4791 §9.6.5: non-initial expanded instances MUST include RECURRENCE-ID;
@@ -1757,15 +1920,15 @@ class CheckRecurrenceSearch(Check):
         ## Feb 12 occurrence and the Feb 13 exception to detect servers that omit
         ## RECURRENCE-ID on the initial instance, and annotate the expanded.event feature.
         multi = cal.search(
-            start=datetime(2000, 2, 12, tzinfo=utc),
-            end=datetime(2000, 2, 14, tzinfo=utc),
+            start=datetime(base, 2, 12, tzinfo=utc),
+            end=datetime(base, 2, 14, tzinfo=utc),
             event=True,
             server_expand=True,
             post_filter=False,
         )
         if len(multi) == 2:
             initial = next(
-                (e for e in multi if e.component["dtstart"] == datetime(2000, 2, 12, 12, 0, 0, tzinfo=utc)),
+                (e for e in multi if e.component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc)),
                 None,
             )
             if initial is not None and getattr(initial.component.get("RECURRENCE-ID"), "dt", None) is None:
@@ -1980,6 +2143,7 @@ class CheckDuplicateUID(Check):
 
     def _run_check(self) -> None:
         cal1 = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         ## Reuse an event from PrepareCalendar instead of creating a new one
         test_uid = "csc_simple_event1"
@@ -1997,12 +2161,13 @@ class CheckDuplicateUID(Check):
         try:
             ## Get existing event from first calendar (created by PrepareCalendar).
             ## Fall back to direct URL lookup if the server's REPORT/search can't
-            ## find old events (e.g. OX's sliding window hides year-2000 objects).
+            ## find the event (indexing delay, canonicalized URL) or refuses the
+            ## query outright (OX answers a UID calendar-query with 403 Forbidden).
             try:
                 event1 = cal1.event_by_uid(test_uid)
-            except NotFoundError:
+            except (NotFoundError, AuthorizationError, DAVError):
                 event1 = Event(cal1.client, url=cal1.url.join(test_uid + ".ics"), parent=cal1)
-            event1.load()
+            event1.load()  ## csc_simple_event1 now lives in the near future (next year)
 
             ## Get the event data for reuse in cal2
             event_ical = event1.data
@@ -2022,7 +2187,7 @@ class CheckDuplicateUID(Check):
                 event2 = cal2.save_object(Event, event_ical)
 
                 ## Check if the event actually exists in cal2
-                events_in_cal2 = list(_filter_2000(cal2.events()))
+                events_in_cal2 = list(_filter_fixture_window(cal2.events(), base))
 
                 ## Check if event still exists in cal1 (Zimbra moves it instead of copying)
                 try:
@@ -2115,6 +2280,7 @@ class CheckSyncToken(Check):
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         ## Test 1: Check if sync tokens are supported at all
         ## Use disable_fallback=True to detect true server support
@@ -2148,8 +2314,8 @@ class CheckSyncToken(Check):
                 Event,
                 summary="Sync token test event",
                 uid=test_uid,
-                dtstart=datetime(2000, 4, 1, 12, 0, 0, tzinfo=utc),
-                dtend=datetime(2000, 4, 1, 13, 0, 0, tzinfo=utc),
+                dtstart=datetime(base, 4, 1, 12, 0, 0, tzinfo=utc),
+                dtend=datetime(base, 4, 1, 13, 0, 0, tzinfo=utc),
             )
 
             ## Get objects with new sync token
@@ -2244,12 +2410,14 @@ class CheckFreeBusyQuery(Check):
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         try:
             ## Try to perform a simple freebusy query
-            ## Use a time range in year 2000 to avoid conflicts with real calendar data
-            start = datetime(2000, 1, 1, 0, 0, 0, tzinfo=utc)
-            end = datetime(2000, 1, 31, 23, 59, 59, tzinfo=utc)
+            ## Use the fixture month (next year, Jan) which overlaps the fixtures
+            ## and stays inside sliding-window servers' search windows
+            start = datetime(base, 1, 1, 0, 0, 0, tzinfo=utc)
+            end = datetime(base, 1, 31, 23, 59, 59, tzinfo=utc)
 
             freebusy = cal.freebusy_request(start, end)
 
@@ -2390,8 +2558,11 @@ class CheckFreeBusyQueryRFC6638(Check):
             )
             return
 
-        dtstart = datetime(2000, 1, 9, 0, 0, 0, tzinfo=utc)
-        dtend = datetime(2000, 1, 10, 0, 0, 0, tzinfo=utc)
+        ## This check does not depend on PrepareCalendar, so derive the base year
+        ## directly; the near-future range avoids window restrictions on free-busy.
+        base = getattr(self.checker, "fixture_base_year", None) or _base_year()
+        dtstart = datetime(base, 1, 9, 0, 0, 0, tzinfo=utc)
+        dtend = datetime(base, 1, 10, 0, 0, 0, tzinfo=utc)
 
         try:
             principal.freebusy_request(dtstart, dtend, [attendee_address])
@@ -2867,6 +3038,7 @@ class CheckTimezone(Check):
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         try:
             ## Create an event with a non-UTC timezone (America/Los_Angeles)
@@ -2875,8 +3047,8 @@ class CheckTimezone(Check):
             tz = ZoneInfo("America/Los_Angeles")
             event = cal.save_event(
                 summary="Timezone test event",
-                dtstart=datetime(2000, 6, 15, 14, 0, 0, tzinfo=tz),
-                dtend=datetime(2000, 6, 15, 15, 0, 0, tzinfo=tz),
+                dtstart=datetime(base, 6, 15, 14, 0, 0, tzinfo=tz),
+                dtend=datetime(base, 6, 15, 15, 0, 0, tzinfo=tz),
                 uid=f"csc_timezone_test_event_{int(time.time() * 1000)}",
             )
 
@@ -2931,6 +3103,7 @@ class CheckRelatedTo(Check):
 
     def _run_check(self):
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
         uid = f"csc_related_to_{uuid.uuid4().hex[:8]}"
         test_obj = None
         try:
@@ -2941,9 +3114,9 @@ VERSION:2.0
 PRODID:-//tobixen//Caldav-Server-Tester//en_DK
 BEGIN:VEVENT
 UID:{uid}
-DTSTART:20000601T120000Z
-DTEND:20000601T130000Z
-DTSTAMP:20000101T000000Z
+DTSTART:{base}0601T120000Z
+DTEND:{base}0601T130000Z
+DTSTAMP:{base}0101T000000Z
 SUMMARY:event with related-to for feature detection
 RELATED-TO;RELTYPE=PARENT:some-parent-uid
 RELATED-TO;RELTYPE=SIBLING:some-sibling-uid
@@ -2991,12 +3164,12 @@ class CheckOpenTimeRangeSearch(Check):
 
     - search.time-range.open.start: when searching with only an end bound (open
       start, start assumed -infinity), tasks whose DTSTART is after the end bound
-      must NOT be returned.  Uses end=2000-01-01 (all year-2000 tasks start Jan 8+).
+      must NOT be returned.  Uses end=<base>-01-01 (all fixture tasks start Jan 8+).
 
     - search.time-range.open.end: when searching with only a start bound (open end,
       end assumed +infinity), tasks that overlap the start bound must be returned.
-      Uses start=2000-01-09 to find csc_simple_task3 (DTSTART=2000-01-09T12:00Z,
-      DUE=2000-01-09T13:00Z); per RFC4791 sec 9.9 condition for VTODO with DTSTART+DUE
+      Uses start=<base>-01-09 to find csc_simple_task3 (DTSTART=<base>-01-09T12:00Z,
+      DUE=<base>-01-09T13:00Z); per RFC4791 sec 9.9 condition for VTODO with DTSTART+DUE
       and absent end: (start < DUE) OR (start <= DTSTART) → TRUE.
     """
 
@@ -3015,6 +3188,7 @@ class CheckOpenTimeRangeSearch(Check):
 
         tasklist = self.checker.tasklist
         cal = self.checker.calendar
+        base = self.checker.fixture_base_year
 
         ## Test 1: Components with DTSTART+DURATION must be found by time-range
         ## searches that overlap their computed interval.
@@ -3022,7 +3196,7 @@ class CheckOpenTimeRangeSearch(Check):
         ##   VEVENT (duration > 0s): (start < DTSTART+DURATION) AND (end > DTSTART)
         ##   VTODO:  (start <= DTSTART+DURATION) AND ((end > DTSTART) OR (end >= DTSTART+DURATION))
 
-        ## Test 1a: VTODO — csc_task_with_duration (DTSTART=2000-01-18T12:00Z, DURATION=PT2H → ends 14:00Z).
+        ## Test 1a: VTODO — csc_task_with_duration (DTSTART=<base>-01-18T12:00Z, DURATION=PT2H → ends 14:00Z).
         ## Two overlap scenarios:
         ##   a) Search [13:00, 15:00]: start inside duration, end after → must match.
         ##   b) Search [11:00, 13:00]: start before DTSTART, end inside duration → must match.
@@ -3031,15 +3205,15 @@ class CheckOpenTimeRangeSearch(Check):
         dur_err = None
         try:
             results_a = tasklist.search(
-                start=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
-                end=datetime(2000, 1, 18, 15, 0, 0, tzinfo=utc),
+                start=datetime(base, 1, 18, 13, 0, 0, tzinfo=utc),
+                end=datetime(base, 1, 18, 15, 0, 0, tzinfo=utc),
                 todo=True,
                 include_completed=True,
                 post_filter=False,
             )
             results_b = tasklist.search(
-                start=datetime(2000, 1, 18, 11, 0, 0, tzinfo=utc),
-                end=datetime(2000, 1, 18, 13, 0, 0, tzinfo=utc),
+                start=datetime(base, 1, 18, 11, 0, 0, tzinfo=utc),
+                end=datetime(base, 1, 18, 13, 0, 0, tzinfo=utc),
                 todo=True,
                 include_completed=True,
                 post_filter=False,
@@ -3052,7 +3226,7 @@ class CheckOpenTimeRangeSearch(Check):
             todo_dur_ok = False
             dur_err = str(e)
 
-        ## Test 1b: VEVENT — csc_event_with_duration (DTSTART=2000-01-17T12:00Z, DURATION=PT1H → ends 13:00Z).
+        ## Test 1b: VEVENT — csc_event_with_duration (DTSTART=<base>-01-17T12:00Z, DURATION=PT1H → ends 13:00Z).
         ## Only run if event time-range search is known to work.
         ## Two overlap scenarios:
         ##   a) Search [12:30, 14:00]: start inside duration, end after → must match.
@@ -3062,14 +3236,14 @@ class CheckOpenTimeRangeSearch(Check):
         if self.feature_checked("search.time-range.event"):
             try:
                 ev_a = cal.search(
-                    start=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
-                    end=datetime(2000, 1, 17, 14, 0, 0, tzinfo=utc),
+                    start=datetime(base, 1, 17, 12, 30, 0, tzinfo=utc),
+                    end=datetime(base, 1, 17, 14, 0, 0, tzinfo=utc),
                     event=True,
                     post_filter=False,
                 )
                 ev_b = cal.search(
-                    start=datetime(2000, 1, 17, 11, 0, 0, tzinfo=utc),
-                    end=datetime(2000, 1, 17, 12, 30, 0, tzinfo=utc),
+                    start=datetime(base, 1, 17, 11, 0, 0, tzinfo=utc),
+                    end=datetime(base, 1, 17, 12, 30, 0, tzinfo=utc),
                     event=True,
                     post_filter=False,
                 )
@@ -3117,13 +3291,13 @@ class CheckOpenTimeRangeSearch(Check):
 
         ## Test 2: open-start search (only end bound, start assumed -infinity).
         ## Must not return tasks whose DTSTART is after the end bound.
-        ## All year-2000 tasks have DTSTART on Jan 8 or later, so a search ending
-        ## at 2000-01-01 should return none of them.
+        ## All fixture tasks have DTSTART on Jan 8 or later, so a search ending
+        ## at <base>-01-01 should return none of them.
         ## Uses csc_simple_task3 (DTSTART+DUE) and csc_task_with_duration (DTSTART+DURATION).
         known_future_uids = {"csc_simple_task3", "csc_task_with_duration"}
         try:
             results = tasklist.search(
-                end=datetime(2000, 1, 1, tzinfo=utc),
+                end=datetime(base, 1, 1, tzinfo=utc),
                 todo=True,
                 include_completed=True,
                 post_filter=False,
@@ -3146,11 +3320,11 @@ class CheckOpenTimeRangeSearch(Check):
         ## Test 3: open-end search (only start bound, end assumed +infinity).
         ## RFC4791 sec 9.9: for VTODO with DTSTART+DUE and absent end (+infinity),
         ## condition is (start < DUE) OR (start <= DTSTART).
-        ## csc_simple_task3 (DTSTART=2000-01-09T12:00Z, DUE=2000-01-09T13:00Z) with
-        ## start=2000-01-09T00:00Z: (Jan 9 < Jan 9T13:00) = TRUE → must be returned.
+        ## csc_simple_task3 (DTSTART=<base>-01-09T12:00Z, DUE=<base>-01-09T13:00Z) with
+        ## start=<base>-01-09T00:00Z: (Jan 9 < Jan 9T13:00) = TRUE → must be returned.
         try:
             results = tasklist.search(
-                start=datetime(2000, 1, 9, tzinfo=utc),
+                start=datetime(base, 1, 9, tzinfo=utc),
                 todo=True,
                 include_completed=True,
                 post_filter=False,
@@ -3169,10 +3343,10 @@ class CheckTodoTimeRangeStrict(Check):
     DTSTART+DUE were entirely outside the searched range.
 
     Two probes:
-    1. A freshly created VTODO with DTSTART+DUE in March 2000 must NOT appear in a
+    1. A freshly created VTODO with DTSTART+DUE in March (next year) must NOT appear in a
        [Jan 9, Jan 10] search.  This exercises the same code path as the xandikos bug
        (index-based filtering of a task with both DTSTART and DUE in the index).
-    2. csc_task_with_duration (DTSTART=2000-01-18, DURATION=PT2H) must NOT appear in the
+    2. csc_task_with_duration (DTSTART=<base>-01-18, DURATION=PT2H) must NOT appear in the
        same search.  This exercises the DURATION fallback path (no DUE means the server
        must fall back from index-based filtering to a full file check).
     """
@@ -3181,15 +3355,16 @@ class CheckTodoTimeRangeStrict(Check):
     features_to_be_checked = {"search.time-range.todo.strict"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("search.time-range.todo.old-dates"):
+        if not self.feature_checked("search.time-range.todo"):
             self.set_feature("search.time-range.todo.strict", None)
             return
 
         tasklist = self.checker.tasklist
+        base = self.checker.fixture_base_year
         temp_todo = None
         try:
             ## Create a task clearly outside the Jan 9-10 search window.
-            ## DTSTART=2000-03-15 is two months after the range end (Jan 10), so a
+            ## DTSTART=<base>-03-15 is two months after the range end (Jan 10), so a
             ## correct server must not return it.  Unlike csc_task_future (which was
             ## removed because xandikos returned it erroneously), this task is created
             ## fresh so it is present exactly during this check and then cleaned up.
@@ -3197,13 +3372,13 @@ class CheckTodoTimeRangeStrict(Check):
                 Todo,
                 uid="csc_temp_outside_range",
                 summary="temporary task outside search range (should not appear in Jan search)",
-                dtstart=datetime(2000, 3, 15, 12, 0, 0, tzinfo=utc),
-                due=datetime(2000, 3, 15, 13, 0, 0, tzinfo=utc),
+                dtstart=datetime(base, 3, 15, 12, 0, 0, tzinfo=utc),
+                due=datetime(base, 3, 15, 13, 0, 0, tzinfo=utc),
             )
 
             results = tasklist.search(
-                start=datetime(2000, 1, 9, tzinfo=utc),
-                end=datetime(2000, 1, 10, tzinfo=utc),
+                start=datetime(base, 1, 9, tzinfo=utc),
+                end=datetime(base, 1, 10, tzinfo=utc),
                 todo=True,
                 include_completed=True,
                 post_filter=False,

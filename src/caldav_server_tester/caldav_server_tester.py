@@ -138,13 +138,26 @@ def _emit_report(obj, verbose, output_format, show_diff):
     click.echo(obj.report(verbose=verbose, show_diff=show_diff, return_what=return_what))
 
 
-def _check_server(server, run_checks, run_features, verbose, output_format, show_diff, no_cleanup, calendar=None):
+def _do_cleanup_only(conn, calendar_name):
+    """Purge leftover test fixtures (incl. aged-out probes) and report the count."""
+    obj = ServerQuirkChecker(conn)
+    removed = obj.cleanup_test_data(calendar_name=calendar_name)
+    click.echo(f"Removed {removed} caldav-server-tester object(s).")
+
+
+def _check_server(
+    server, run_checks, run_features, verbose, output_format, show_diff, no_cleanup, calendar=None, cleanup_only=False
+):
     """Start a TestServer (if needed), run checks, stop it, and print the report."""
     from caldav.davclient import DAVClient
 
     server.start()
     try:
         main_client = server.get_sync_client()
+        if cleanup_only:
+            with main_client:
+                _do_cleanup_only(main_client, calendar)
+            return
         ## Create extra clients from scheduling_users (skipping index 0 which may be the primary user)
         scheduling_users = server.config.get("scheduling_users", [])
         extra_clients = []
@@ -194,6 +207,12 @@ def _check_server(server, run_checks, run_features, verbose, output_format, show
 )
 @click.option("--no-cleanup", is_flag=True, default=False, help="Do not remove test data after run")
 @click.option(
+    "--cleanup-only",
+    is_flag=True,
+    default=False,
+    help="Only remove leftover test data (incl. fixtures aged out of a sliding window), then exit without running checks",
+)
+@click.option(
     "--config-section",
     multiple=True,
     default=(),
@@ -231,6 +250,7 @@ def check_server_compatibility(
     output_format,
     show_diff,
     no_cleanup,
+    cleanup_only,
     name,
     config_section,
     list_checks,
@@ -253,6 +273,9 @@ def check_server_compatibility(
         if conn is None:
             raise click.UsageError(f"Could not connect to {conn_keys['url']}")
         with conn:
+            if cleanup_only:
+                _do_cleanup_only(conn, caldav_calendar)
+                return
             obj = _run_checks_against(conn, run_checks, run_features=run_features, calendar=caldav_calendar)
             if not no_cleanup:
                 obj.cleanup(force=True)
@@ -282,6 +305,7 @@ def check_server_compatibility(
                     show_diff,
                     no_cleanup,
                     calendar=caldav_calendar,
+                    cleanup_only=cleanup_only,
                 )
                 return
 
@@ -307,6 +331,9 @@ def check_server_compatibility(
 
     try:
         with conn:
+            if cleanup_only:
+                _do_cleanup_only(conn, caldav_calendar)
+                return
             obj = _run_checks_against(
                 conn,
                 run_checks,
