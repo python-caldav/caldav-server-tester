@@ -1356,13 +1356,16 @@ class CheckSearch(Check):
 
         ## Then test with old dates (year 2000) for the .old-dates sub-feature,
         ## using the dedicated csc_olddate_* probes that PrepareCalendar PUT far
-        ## in the past.  Servers with a sliding window (e.g. OX) hide those, so
-        ## this distinguishes "old-date search works" from "window-restricted".
-        ## We check the probe is PRESENT in the result rather than asserting an
-        ## exact count of 1: a next-year DUE-only task is interpreted by some
-        ## servers (e.g. Zimbra) as open-start (-inf..DUE) and so legitimately
-        ## overlaps a year-2000 range - that's a strict-filtering concern, not an
-        ## old-date-support one.
+        ## in the past.  Servers with a sliding window (e.g. OX) hide those.
+        ##
+        ## "Works" means BOTH: the old-date probe is returned, AND a definite
+        ## near-future object is correctly EXCLUDED.  Checking only presence is
+        ## fooled two ways: a next-year DUE-only task is open-start (-inf..DUE) on
+        ## some servers (Zimbra) and legitimately overlaps a year-2000 range, while
+        ## a server with broken VTODO time-range (OX) ignores the range and returns
+        ## every task - so the probe is trivially "present".  Requiring a
+        ## definite-future fixture (csc_simple_event1 / csc_simple_task3, both with
+        ## an explicit next-year DTSTART) to be absent rules both out.
         def _found(objs, uid):
             for o in objs:
                 try:
@@ -1379,7 +1382,8 @@ class CheckSearch(Check):
                 event=True,
                 post_filter=False,
             )
-            self.set_feature("search.time-range.event.old-dates", _found(events, "csc_olddate_event"))
+            old_event_ok = _found(events, "csc_olddate_event") and not _found(events, "csc_simple_event1")
+            self.set_feature("search.time-range.event.old-dates", old_event_ok)
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.event.old-dates", "ungraceful")
 
@@ -1391,7 +1395,8 @@ class CheckSearch(Check):
                 include_completed=True,
                 post_filter=False,
             )
-            self.set_feature("search.time-range.todo.old-dates", _found(tasks, "csc_olddate_task"))
+            old_todo_ok = _found(tasks, "csc_olddate_task") and not _found(tasks, "csc_simple_task3")
+            self.set_feature("search.time-range.todo.old-dates", old_todo_ok)
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.todo.old-dates", "ungraceful")
 
