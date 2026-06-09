@@ -1225,9 +1225,22 @@ class CheckSearch(Check):
 
         Supported (``full``) means every comp-type-specific query returned
         only objects of the requested type, across every distinct calendar the
-        checker populated.  A query that returns an object of a different type
-        is ``broken``.  If no typed query returns anything (nothing to judge
-        from) the result is left ``unknown``.
+        checker populated.  When a typed query returns wrong-typed objects we
+        use the comp-type-LESS listing of the same calendar as ground truth to
+        tell two very different behaviours apart:
+
+        * ``unsupported`` - the server silently ignores the comp-filter and
+          returns the whole calendar regardless of the requested type.  The
+          right-typed objects are all still there, so the library recovers the
+          correct result by post-filtering; the server-side feature is simply
+          absent.  (Open-Xchange behaves this way.)
+        * ``broken`` - a typed query *drops* correctly-typed objects that the
+          calendar demonstrably contains (e.g. Bedework returns nothing for a
+          VTODO query), so the filter actively produces wrong results that the
+          client cannot recover from.
+
+        If no typed query returns anything (nothing to judge from) the result
+        is left ``unknown``.
         """
         wanted = {
             "VEVENT": {"event": True},
@@ -1238,7 +1251,25 @@ class CheckSearch(Check):
         try:
             seen_any = False
             mismatches = set()
+            ## a typed query dropped correctly-typed objects that the calendar
+            ## demonstrably contains -> the filter actively breaks results
+            data_loss = set()
+            ## a typed query returned wrong-typed objects but still all the
+            ## right-typed ones -> the filter is silently ignored (unsupported)
+            filter_ignored = False
             for c in self._comptype_search_calendars():
+                ## The comp-type-LESS listing is the ground truth for what this
+                ## calendar holds, and for each object's real component type.
+                try:
+                    bare = list(
+                        _filter_fixture_window(c.search(post_filter=False, compatibility_workarounds=False), base)
+                    )
+                except Exception:
+                    bare = None
+                present: dict[str, set[str]] = {}
+                for obj in bare or []:
+                    present.setdefault(obj.component.name, set()).add(str(obj.url))
+                have_truth = bool(present)
                 for comp_name, kwargs in wanted.items():
                     try:
                         results = list(
@@ -1252,17 +1283,44 @@ class CheckSearch(Check):
                         ## cannot misclassify what it won't search for, so skip
                         ## it as a reference.
                         continue
-                    for obj in results:
-                        got = obj.component.name
+                    typed_urls = {str(obj.url) for obj in results}
+                    wrong = {str(obj.url) for obj in results if obj.component.name != comp_name}
+                    if results:
                         seen_any = True
-                        if got != comp_name:
-                            mismatches.add(f"a {comp_name} query returned a {got}")
+                    for obj in results:
+                        if obj.component.name != comp_name:
+                            mismatches.add(f"a {comp_name} query returned a {obj.component.name}")
+                    if have_truth:
+                        seen_any = True
+                        missing = present.get(comp_name, set()) - typed_urls
+                        if missing:
+                            data_loss.add(
+                                f"a {comp_name} query dropped {len(missing)} object(s) of that "
+                                "type present in the calendar"
+                            )
+                        if wrong:
+                            filter_ignored = True
+                    elif wrong:
+                        ## No comp-type-less reference to judge from; fall back to
+                        ## the old, conservative reading (any wrong type = broken).
+                        data_loss.add(
+                            f"a {comp_name} query returned a wrong-typed object (no comp-type-less reference)"
+                        )
             if not seen_any:
                 self.set_feature("search.comp-type", None)
-            elif mismatches:
+            elif data_loss:
                 self.set_feature(
                     "search.comp-type",
-                    {"support": "broken", "behaviour": "; ".join(sorted(mismatches))},
+                    {"support": "broken", "behaviour": "; ".join(sorted(mismatches | data_loss))},
+                )
+            elif filter_ignored:
+                self.set_feature(
+                    "search.comp-type",
+                    {
+                        "support": "unsupported",
+                        "behaviour": "comp-filter silently ignored - server returns the whole "
+                        "calendar regardless of the requested component type: " + "; ".join(sorted(mismatches)),
+                    },
                 )
             else:
                 self.set_feature("search.comp-type")
@@ -2087,8 +2145,11 @@ class CheckCaseSensitiveSearch(Check):
             ## events).  In that case, case-insensitive tests are meaningless.
             if len(results_sensitive) > 1:
                 text_search_filters = False
-        except (ReportError, DAVError):
-            self.set_feature("search.text.case-sensitive", "ungraceful")
+        except (ReportError, DAVError) as e:
+            self.set_feature(
+                "search.text.case-sensitive",
+                {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
+            )
             text_search_filters = False
 
         ## Case-insensitive search (i;ascii-casemap collation):
@@ -2106,8 +2167,11 @@ class CheckCaseSensitiveSearch(Check):
             results_insensitive = searcher3.search(cal, post_filter=False)
 
             self.set_feature("search.text.case-insensitive", len(results_insensitive) >= 1)
-        except (ReportError, DAVError):
-            self.set_feature("search.text.case-insensitive", "ungraceful")
+        except (ReportError, DAVError) as e:
+            self.set_feature(
+                "search.text.case-insensitive",
+                {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
+            )
 
 
 class CheckSubstringSearch(Check):
@@ -2146,8 +2210,11 @@ class CheckSubstringSearch(Check):
             results_sub = searcher_sub.search(cal, post_filter=False)
 
             self.set_feature("search.text.substring", len(results_sub) == 1)
-        except (ReportError, DAVError):
-            self.set_feature("search.text.substring", "ungraceful")
+        except (ReportError, DAVError) as e:
+            self.set_feature(
+                "search.text.substring",
+                {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
+            )
 
 
 class CheckPrincipalSearch(Check):
@@ -3320,7 +3387,19 @@ class CheckOpenTimeRangeSearch(Check):
             found_a = any(r.component.get("UID") == "csc_task_with_duration" for r in results_a)
             found_b = any(r.component.get("UID") == "csc_task_with_duration" for r in results_b)
             not_spurious = not any(r.component.get("UID") == "csc_simple_task3" for r in results_a)
-            todo_dur_ok = found_a and found_b and not_spurious
+            if not not_spurious:
+                ## The server returned csc_simple_task3, whose DTSTART (Jan 9) is
+                ## outside the Jan-18 search window: it does not honour the VTODO
+                ## time-range at all (tracked separately as
+                ## search.time-range.todo.strict).  With the range ignored we
+                ## cannot tell whether DTSTART+DURATION is interpreted correctly,
+                ## so the VTODO duration result is inconclusive (None), not a
+                ## failure - otherwise this feature spuriously reports "broken"
+                ## (asymmetric) on every server with a non-strict VTODO time-range
+                ## (e.g. Open-Xchange).
+                todo_dur_ok = None
+            else:
+                todo_dur_ok = found_a and found_b
         except (AuthorizationError, DAVError) as e:
             todo_dur_ok = False
             dur_err = str(e)
@@ -3355,29 +3434,31 @@ class CheckOpenTimeRangeSearch(Check):
                 if not dur_err:
                     dur_err = str(e)
 
-        ## Combine VTODO and VEVENT duration results.
-        if event_dur_ok is None:
-            ## Event search not tested; report based on VTODO result only.
-            if todo_dur_ok:
-                self.set_feature("search.time-range.open.start.duration")
-            elif dur_err:
+        ## Combine VTODO and VEVENT duration results, considering only the
+        ## component types that gave a conclusive answer (None = not tested or
+        ## inconclusive, e.g. VTODO when the server ignores the time-range).
+        conclusive = [r for r in (todo_dur_ok, event_dur_ok) if r is not None]
+        if not conclusive:
+            ## Nothing conclusive to judge from.
+            if dur_err:
                 self.set_feature(
                     "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
                 )
             else:
-                self.set_feature("search.time-range.open.start.duration", False)
-        elif todo_dur_ok == event_dur_ok:
-            ## Both results agree.
-            if todo_dur_ok:
-                self.set_feature("search.time-range.open.start.duration")
-            elif dur_err:
+                self.set_feature("search.time-range.open.start.duration", None)
+        elif all(conclusive):
+            self.set_feature("search.time-range.open.start.duration")
+        elif not any(conclusive):
+            if dur_err:
                 self.set_feature(
                     "search.time-range.open.start.duration", {"support": "ungraceful", "behaviour": dur_err}
                 )
             else:
                 self.set_feature("search.time-range.open.start.duration", False)
         else:
-            ## Asymmetric: one component type works, the other does not.
+            ## Genuinely asymmetric: both component types gave a conclusive answer
+            ## and they disagree (one finds its DTSTART+DURATION component, the
+            ## other does not).
             todo_status = "supported" if todo_dur_ok else "unsupported"
             event_status = "supported" if event_dur_ok else "unsupported"
             self.set_feature(

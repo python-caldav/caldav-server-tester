@@ -3,11 +3,16 @@
 These exercise the ``search.comp-type`` decision logic in isolation, with
 mocked calendars, so they are fast (not marked slow).
 
-``search.comp-type`` is supported when a calendar-query that specifies a
-component type returns ONLY objects of that type: a query for events gives
-only events, a query for tasks gives only tasks, and so on.  A server that
-misclassifies (e.g. Bedework returning VTODOs for a VEVENT query) or that
-ignores the component filter and returns everything is 'broken'.
+``search.comp-type`` is supported (``full``) when a calendar-query that
+specifies a component type returns ONLY objects of that type.  When a typed
+query returns wrong-typed objects, the comp-type-less listing of the same
+calendar is the ground truth that tells two cases apart:
+
+* a server that silently ignores the filter and returns the whole calendar -
+  but drops nothing - is ``unsupported`` (the library post-filters and gets
+  the right answer); Open-Xchange behaves this way;
+* a server that *drops* correctly-typed objects that the calendar contains
+  (e.g. Bedework returning nothing for a VTODO query) is ``broken``.
 """
 
 from datetime import date
@@ -93,24 +98,29 @@ def test_full_with_separate_task_calendar() -> None:
     assert _support(check) == "full"
 
 
-def test_broken_when_event_query_returns_todo() -> None:
-    """The Bedework case: a VEVENT query also returns a VTODO."""
+def test_broken_when_typed_query_drops_objects() -> None:
+    """The Bedework case: a VEVENT query returns everything, but a VTODO query
+    returns nothing even though the calendar holds a VTODO - the todo is dropped
+    (data loss the client cannot recover from)."""
     e1, t1 = _obj("VEVENT"), _obj("VTODO")
-    cal = _calendar(events=[e1, t1], todos=[t1])
+    ## event query returns both (filter ignored); todo query returns nothing;
+    ## the comp-type-less listing still reveals the VTODO exists.
+    cal = _calendar(events=[e1, t1], todos=[])
     check = _make_check(cal)
     check._probe_comptype()
     assert _support(check) == "broken"
 
 
-def test_broken_when_filter_ignored() -> None:
-    """Server ignores the comp-filter and returns everything for every type."""
+def test_unsupported_when_filter_ignored() -> None:
+    """Server ignores the comp-filter and returns everything for every type, but
+    drops nothing - the library recovers by post-filtering (the OX case)."""
     e1, t1 = _obj("VEVENT"), _obj("VTODO")
     everything = [e1, t1]
     cal = Mock()
     cal.search.side_effect = lambda **kwargs: list(everything)
     check = _make_check(cal)
     check._probe_comptype()
-    assert _support(check) == "broken"
+    assert _support(check) == "unsupported"
 
 
 def test_unknown_when_nothing_returned() -> None:
