@@ -10,6 +10,7 @@ from caldav.collection import Principal
 from caldav.davobject import DAVObject
 from caldav.elements import ical
 from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
+from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
 
 from .checks_base import Check
@@ -87,6 +88,62 @@ class CheckGetCurrentUserPrincipal(Check):
             self.checker.principal = None
             self.set_feature("get-current-user-principal", False)
         return self.checker.principal
+
+
+class CheckPropfindAllprop(Check):
+    """
+    Checks the PROPFIND method on three independent levels:
+      * propfind                       - a PROPFIND for a named property returns
+                                         a multistatus response
+      * propfind.allprop               - an <D:allprop/> PROPFIND returns a
+                                         multistatus response
+      * propfind.allprop.resourcetype  - that allprop response includes the
+                                         DAV:resourcetype live property
+
+    RFC4918 section 9.1 lists resourcetype among the live properties an allprop
+    request should return; a few servers (e.g. Bedework) omit it.  The three are
+    probed separately so that a server which merely omits resourcetype is not
+    mistaken for one that does not support PROPFIND at all.  Replaces the old
+    'propfind_allprop_failure' flag.
+    """
+
+    depends_on = {CheckGetCurrentUserPrincipal}
+    features_to_be_checked = {"propfind", "propfind.allprop", "propfind.allprop.resourcetype"}
+
+    XML_HEAD = '<?xml version="1.0" encoding="UTF-8"?>'
+
+    def _run_check(self) -> None:
+        principal = getattr(self.checker, "principal", None)
+        if principal is None:
+            return
+
+        ## propfind: a PROPFIND for a named property returns a multistatus
+        named = self._propfind(
+            principal.url,
+            f'{self.XML_HEAD}<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>',
+        )
+        self.set_feature("propfind", named is not None and "multistatus" in named)
+
+        ## propfind.allprop: an <D:allprop/> PROPFIND returns a multistatus
+        allprop = self._propfind(
+            principal.url,
+            f'{self.XML_HEAD}<D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>',
+        )
+        if allprop is None:
+            self.set_feature("propfind.allprop", False)
+            self.set_feature("propfind.allprop.resourcetype", False)
+            return
+        self.set_feature("propfind.allprop", "multistatus" in allprop)
+        ## propfind.allprop.resourcetype: that allprop response includes resourcetype
+        self.set_feature("propfind.allprop.resourcetype", "resourcetype" in allprop)
+
+    def _propfind(self, url, body):
+        """Return the decoded raw response of a PROPFIND, or None on error."""
+        try:
+            response = self.client.propfind(url, props=body)
+        except (DAVError, AuthorizationError):
+            return None
+        return to_local(response.raw)
 
 
 class CheckMakeDeleteCalendar(Check):
