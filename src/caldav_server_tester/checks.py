@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from caldav.calendarobjectresource import Event, Journal, Todo
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
+from caldav.elements import ical
 from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
 from caldav.search import CalDAVSearcher
 
@@ -1017,6 +1018,98 @@ class CheckMutable(Check):
                 event.save()
             except Exception:
                 pass
+
+
+class CheckCalendarProperties(Check):
+    """
+    Checks support for the nonstandard Apple/Mozilla calendar collection
+    properties calendar-color and calendar-order.
+
+    These are not described by RFC4791/RFC5545 but are supported by quite some
+    server implementations.  Replaces the old 'calendar_color' / 'calendar_order'
+    compatibility flags.
+
+    Each property is probed by setting two distinct values in turn and reading
+    them back, which tells the four cases apart:
+      * the stored value tracks the input verbatim -> full
+      * the stored value tracks the input but the server transformed it (e.g. a
+        colour name normalised to its hex form) -> full, with a behaviour note
+      * the same value comes back regardless of what was set (the property is
+        effectively read-only) -> broken, with a behaviour note
+      * nothing is stored, or the server rejects the property with an error ->
+        unsupported (rejecting a nonstandard extension is not an RFC breach)
+
+    calendar-color is probed both with a colour name ("blue") and with a hex
+    value (calendar-color.hex); some servers accept one form but not the other.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"calendar-color", "calendar-color.hex", "calendar-order"}
+
+    def _run_check(self) -> None:
+        cal = self.checker.calendar
+        self._probe("calendar-color", ical.CalendarColor, "blue", "green", cal)
+        self._probe("calendar-color.hex", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
+        self._probe("calendar-order", ical.CalendarOrder, "12", "34", cal)
+
+    def _probe(self, feature, element, v1, v2, cal) -> None:
+        ## The probe works by *writing* the property, so whatever was there
+        ## first has to go back.  --caldav-calendar may well point at the
+        ## user's real calendar (it is the documented mode for servers without
+        ## MKCALENDAR), and silently repainting it would be exactly the kind of
+        ## damage the rest of this tool takes care to avoid.
+        try:
+            original = cal.get_properties([element()]).get(element.tag)
+        except (DAVError, AuthorizationError):
+            original = None
+        try:
+            got1 = self._set_get(element, v1, cal)
+            got2 = self._set_get(element, v2, cal)
+        except (DAVError, AuthorizationError):
+            ## The server declined the nonstandard property with an error.
+            self.set_feature(feature, False)
+            return
+        finally:
+            self._restore(element, original, cal)
+        if not got1 and not got2:
+            ## The property was silently dropped.
+            self.set_feature(feature, False)
+        elif got1 == v1 and got2 == v2:
+            ## Round-trips verbatim.
+            self.set_feature(feature, True)
+        elif got1 != got2:
+            ## The stored value tracks the input but was transformed by the
+            ## server (e.g. the colour name "blue" normalised to a hex value).
+            self.set_feature(
+                feature,
+                {"support": "full", "behaviour": f"value normalised ({v1!r} stored as {got1!r})"},
+            )
+        else:
+            ## The same value comes back no matter what we set: read-only.
+            self.set_feature(
+                feature,
+                {"support": "broken", "behaviour": f"read-only (set {v1!r}/{v2!r}, both return {got1!r})"},
+            )
+
+    def _set_get(self, element, value, cal):
+        cal.set_properties([element(value)])
+        return cal.get_properties([element()]).get(element.tag)
+
+    def _restore(self, element, original, cal) -> None:
+        """Put the property back the way the probe found it.
+
+        A calendar that had no such property keeps none: the empty value is
+        what a client sends to clear it, and a server that refuses either way
+        leaves us no better option than the warning.
+        """
+        try:
+            cal.set_properties([element(original if original is not None else "")])
+        except (DAVError, AuthorizationError):
+            logging.warning(
+                "Could not restore %s on %s after probing it; it may be left at the probe value",
+                element.tag,
+                getattr(cal, "url", "the calendar"),
+            )
 
 
 class CheckIfMatchOptional(Check):
