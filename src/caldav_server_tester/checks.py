@@ -1023,6 +1023,43 @@ END:VCALENDAR""",
         self._check_stable_url(calendar)
 
 
+class CheckNonExistingResource(Check):
+    """
+    Checks what happens when a non-existing calendar object resource is looked
+    up.  The expected behaviour is a 404 (NotFoundError); some servers answer
+    403 instead (e.g. Robur, probably to avoid leaking whether a resource
+    exists).  Replaces the old 'non_existing_raises_other' flag.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"non-existing-raises-not-found"}
+
+    def _run_check(self) -> None:
+        feature = "non-existing-raises-not-found"
+        cal = self.checker.calendar
+        missing = Event(cal.client, url=cal.url.join("csc_does_not_exist_probe.ics"), parent=cal)
+        try:
+            missing.load()
+        except NotFoundError:
+            self.set_feature(feature, True)
+        except AuthorizationError as e:
+            self.set_feature(
+                feature,
+                {"support": "unsupported", "behaviour": f"raises {type(e).__name__} instead of NotFoundError"},
+            )
+        except DAVError as e:
+            self.set_feature(
+                feature,
+                {"support": "unsupported", "behaviour": f"raises {type(e).__name__} instead of NotFoundError"},
+            )
+        else:
+            ## No error at all for a non-existing resource.
+            self.set_feature(
+                feature,
+                {"support": "broken", "behaviour": "no error raised for a non-existing resource"},
+            )
+
+
 class CheckMutable(Check):
     """
     Checks whether the server allows modification of existing calendar objects.
