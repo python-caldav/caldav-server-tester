@@ -1023,6 +1023,40 @@ END:VCALENDAR""",
         self._check_stable_url(calendar)
 
 
+class CheckTodoNoDtstartSearch(Check):
+    """
+    Checks whether a VTODO without DTSTART (but with DUE) is returned by a
+    closed date-range search.  RFC5545 / RFC4791 section 9.9 say such a task
+    should be found (it has a defined end), but some servers (Davical, Stalwart,
+    Synology) skip any task lacking DTSTART.  Replaces the old
+    'vtodo_datesearch_nodtstart_task_is_skipped' flag.
+
+    Uses the PrepareCalendar fixture csc_simple_task2 (DUE=<base>-01-08, no
+    DTSTART) and a closed window around it.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"search.time-range.todo.no-dtstart"}
+
+    def _run_check(self) -> None:
+        feature = "search.time-range.todo.no-dtstart"
+        tasklist = getattr(self.checker, "tasklist", None)
+        if tasklist is None:
+            return
+        base = _base_year()
+        try:
+            results = tasklist.search(
+                todo=True,
+                start=datetime(base, 1, 1, tzinfo=utc),
+                end=datetime(base, 1, 31, tzinfo=utc),
+                include_completed=True,
+            )
+        except (DAVError, AuthorizationError):
+            return  ## cannot probe; leave unset so the default ("full") applies
+        found = any("csc_simple_task2" in (getattr(o, "data", "") or "") for o in results)
+        self.set_feature(feature, found)
+
+
 class CheckNonExistingResource(Check):
     """
     Checks what happens when a non-existing calendar object resource is looked
