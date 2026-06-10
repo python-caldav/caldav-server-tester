@@ -2442,6 +2442,61 @@ class CheckPrincipalSearch(Check):
             self.set_feature("principal-search", False)
 
 
+class CheckDuplicateEvent(Check):
+    """
+    Checks whether two events with identical content but different UIDs can
+    coexist in the same calendar.  A few servers (Bedework) reject or
+    de-duplicate such an event ("duplicates not allowed even with a different
+    UID").  Replaces the old 'duplicates_not_allowed' flag.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save.duplicate-event"}
+
+    def _run_check(self) -> None:
+        feature = "save.duplicate-event"
+        cal = self.checker.calendar
+        src_uid = "csc_simple_event1"
+        dup_uid = "csc_duplicate_event_probe"
+
+        ## Reuse the PrepareCalendar fixture; fall back to a direct-URL load.
+        try:
+            event1 = cal.event_by_uid(src_uid)
+        except (NotFoundError, AuthorizationError, DAVError):
+            event1 = Event(cal.client, url=cal.url.join(src_uid + ".ics"), parent=cal)
+        try:
+            event1.load()
+        except (NotFoundError, AuthorizationError, DAVError):
+            return  ## cannot probe without the source fixture
+
+        ## Same content, different UID.
+        dup_data = event1.data.replace(src_uid, dup_uid)
+        if dup_uid not in dup_data:
+            return
+
+        saved = None
+        try:
+            try:
+                saved = cal.save_event(dup_data)
+            except (DAVError, AuthorizationError):
+                ## The server rejected the duplicate with an error.
+                self.set_feature(feature, {"support": "ungraceful"})
+                return
+            ## Did the duplicate persist as a separate object?
+            try:
+                saved.load()
+                persisted = dup_uid in saved.data
+            except (NotFoundError, AuthorizationError, DAVError):
+                persisted = False
+            self.set_feature(feature, persisted)
+        finally:
+            if saved is not None:
+                try:
+                    saved.delete()
+                except Exception:
+                    pass
+
+
 class CheckDuplicateUID(Check):
     """
     Checks how server handles events with duplicate UIDs across calendars.
