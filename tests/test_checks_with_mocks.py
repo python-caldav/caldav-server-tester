@@ -239,7 +239,7 @@ class TestCheckMakeDeleteCalendar:
         # Note: The actual result depends on complex flow, but calendar creation should succeed
         assert checker.features_checked.is_supported("create-calendar")
 
-    def _run_displayname_probe(self, checker, principal, *, relocate, name_sticks=True):
+    def _run_displayname_probe(self, checker, principal, *, relocate, name_sticks=True, get_displayname_raises=False):
         """Drive CheckMakeDeleteCalendar._check_set_displayname() with a mocked
         principal.
 
@@ -247,6 +247,8 @@ class TestCheckMakeDeleteCalendar:
                   under a display-name-derived URL (Zimbra-style rename/move).
                   If False the URL stays at the cal_id (normal / OX-style).
         name_sticks: if False, the display name given at creation is not applied.
+        get_displayname_raises: if True, the direct get_display_name() call on the
+                  calendar object raises an exception (simulating no PROPFIND support).
         """
         probe_cal_id = "caldav-server-checker-displayname-test"
         base = "https://example.com/dav/me/"
@@ -262,7 +264,15 @@ class TestCheckMakeDeleteCalendar:
             return cal
 
         principal.make_calendar.side_effect = make_calendar
-        principal.calendar.return_value = Mock()  # for the cleanup delete()
+
+        # calendar(cal_id=...) is used both for direct get_display_name() probe
+        # and for cleanup delete() — configure get_display_name accordingly.
+        direct_cal_mock = Mock()
+        if get_displayname_raises:
+            direct_cal_mock.get_display_name.side_effect = Exception("not supported")
+        else:
+            direct_cal_mock.get_display_name.return_value = "some-name"
+        principal.calendar.return_value = direct_cal_mock
 
         def calendars():
             if created["name"] is None:
@@ -299,6 +309,18 @@ class TestCheckMakeDeleteCalendar:
         checker, client, principal = self.create_checker_with_principal()
         self._run_displayname_probe(checker, principal, relocate=False, name_sticks=False)
         assert not checker.features_checked.is_supported("create-calendar.set-displayname")
+
+    def test_get_displayname_supported(self) -> None:
+        """Server returns DAV:displayname via PROPFIND — propfind.displayname is full."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=False)
+        assert checker.features_checked.is_supported("propfind.displayname")
+
+    def test_get_displayname_unsupported(self) -> None:
+        """Server raises on get_display_name() — propfind.displayname is unsupported."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=False, get_displayname_raises=True)
+        assert not checker.features_checked.is_supported("propfind.displayname")
 
     @pytest.mark.skip(
         reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"

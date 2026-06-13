@@ -189,6 +189,7 @@ class CheckMakeDeleteCalendar(Check):
         "create-calendar",
         "create-calendar.set-displayname",
         "create-calendar.set-displayname.stable-url",
+        "propfind.displayname",
         "delete-calendar",
         "delete-calendar.free-namespace",
     }
@@ -425,6 +426,19 @@ class CheckMakeDeleteCalendar(Check):
             ## Couldn't create the probe calendar.  Leave the feature unset; the
             ## parent create-calendar status already records the issue.
             return
+
+        ## Probe propfind.displayname: can we PROPFIND the DAV:displayname property
+        ## directly from the calendar collection we just created?
+        try:
+            fetched = self.checker.principal.calendar(cal_id=cal_id).get_display_name()
+            if fetched is not None:
+                self.set_feature("propfind.displayname", True)
+            else:
+                self.set_feature(
+                    "propfind.displayname", {"support": "broken", "behaviour": "PROPFIND returns no displayname value"}
+                )
+        except Exception:
+            self.set_feature("propfind.displayname", False)
 
         try:
             located = _find_by_displayname(unique_name)
