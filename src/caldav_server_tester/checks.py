@@ -81,12 +81,42 @@ class CheckGetCurrentUserPrincipal(Check):
     def _run_check(self):
         try:
             self.checker.principal = self.client.principal()
-            self.set_feature("get-current-user-principal")
         except AssertionError:
             raise
         except Exception:
             self.checker.principal = None
             self.set_feature("get-current-user-principal", False)
+            return self.checker.principal
+
+        ## Verify the URL the server returned is actually reachable.
+        ## Some servers (observed on Infomaniak/kSuite sabre/dav 4.3.1) advertise
+        ## a principal URL via current-user-principal but that URL itself 404s,
+        ## making the feature useless.
+        principal_url_broken = False
+        try:
+            response = self.client.propfind(
+                self.checker.principal.url,
+                props='<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>',
+            )
+            if response.status == 404:
+                principal_url_broken = True
+        except NotFoundError:
+            principal_url_broken = True
+        if principal_url_broken:
+            logging.warning(
+                "Server returned current-user-principal URL %s but PROPFIND on it returns 404. "
+                "This is a server bug that violates RFC5397 — the advertised principal URL does not exist. "
+                "All checks that require a working principal will be skipped.",
+                self.checker.principal.url,
+            )
+            self.set_feature(
+                "get-current-user-principal",
+                {"support": "broken", "behaviour": "server returns an inaccessible principal URL"},
+            )
+            self.checker.principal = None
+            return self.checker.principal
+
+        self.set_feature("get-current-user-principal")
         return self.checker.principal
 
 
@@ -114,19 +144,21 @@ class CheckPropfindAllprop(Check):
 
     def _run_check(self) -> None:
         principal = getattr(self.checker, "principal", None)
-        if principal is None:
-            return
+        ## Fall back to the root URL when the principal URL is broken/unavailable.
+        ## We know root supports PROPFIND because that is where current-user-principal
+        ## was fetched from (or the auth check happened).
+        url = principal.url if principal is not None else self.client.url
 
         ## propfind: a PROPFIND for a named property returns a multistatus
         named = self._propfind(
-            principal.url,
+            url,
             f'{self.XML_HEAD}<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>',
         )
         self.set_feature("propfind", named is not None and "multistatus" in named)
 
         ## propfind.allprop: an <D:allprop/> PROPFIND returns a multistatus
         allprop = self._propfind(
-            principal.url,
+            url,
             f'{self.XML_HEAD}<D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>',
         )
         if allprop is None:

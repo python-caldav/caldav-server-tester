@@ -95,6 +95,24 @@ class Check:
             ## code, and we'll check nothing
             self.checker._client_obj.features = self.checker._features_checked
             self._run_check()
+        except (AssertionError, NotImplementedError, RuntimeError):
+            ## RuntimeError is how a check reports a *configuration* problem the
+            ## user has to act on - PrepareCalendar raises it when no test
+            ## calendar exists and the server will not create one, telling the
+            ## user to pass --caldav-calendar.  Swallowing it leaves
+            ## checker.calendar unset, so every dependent check fails too and
+            ## the actionable message is buried under a report of "unknown".
+            raise
+        except Exception as exc:
+            logging.warning(
+                "%s raised an unexpected exception — marking unprobed features as unknown. Error: %s",
+                self.__class__.__name__,
+                exc,
+            )
+            ## Ensure the post-check assert below passes by filling in missing features
+            keys_so_far = set(self.checker._features_checked.dotted_feature_set_list().keys())
+            for feature in self.features_to_be_checked - (keys_so_far - keys_before):
+                self.set_feature(feature, {"support": "unknown"})
         finally:
             self.checker._client_obj.features = self.expected_features
 
