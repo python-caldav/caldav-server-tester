@@ -49,6 +49,22 @@ def url_object(cal, uid, obj_class=None):
     return obj_class(cal.client, url=cal.url.join(_quote_uid(uid) + ".ics"), parent=cal)
 
 
+def resolve_cu_address(principal):
+    """Resolve a principal's calendar-user address for the scheduling probes.
+
+    Prefers the calendar-user-address-set value (``get_vcal_address``); falls
+    back to a ``mailto:`` built from the account username when that looks like an
+    email address.  Returns ``None`` when neither yields a usable address.  The
+    three RFC6638 scheduling checks all need this same resolution for the
+    attendee principal.
+    """
+    try:
+        return principal.get_vcal_address()
+    except Exception:
+        username = getattr(principal.client, "username", None)
+        return "mailto:" + username if username and "@" in str(username) else None
+
+
 def _base_year(now=None):
     """The calendar year the reusable test fixtures live in: *next* year.
 
@@ -3150,13 +3166,7 @@ class CheckFreeBusyQueryRFC6638(Check):
         extra_principals = self.checker.extra_principals
         if extra_principals:
             attendee_principal = extra_principals[0]
-            try:
-                attendee_address = attendee_principal.get_vcal_address()
-            except Exception:
-                attendee_username = getattr(attendee_principal.client, "username", None)
-                attendee_address = (
-                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
-                )
+            attendee_address = resolve_cu_address(attendee_principal)
             if not attendee_address:
                 self.set_feature("scheduling.freebusy-query", {"support": "unknown"})
                 return
@@ -3347,15 +3357,7 @@ class CheckSchedulingInboxDelivery(Check):
         extra_principals = self.checker.extra_principals
         if extra_principals:
             attendee_principal = extra_principals[0]
-            try:
-                attendee_address = attendee_principal.get_vcal_address()
-            except Exception:
-                ## Fall back to attendee's username when calendar-user-address-set
-                ## is unavailable on that account too.
-                attendee_username = getattr(attendee_principal.client, "username", None)
-                attendee_address = (
-                    "mailto:" + attendee_username if attendee_username and "@" in str(attendee_username) else None
-                )
+            attendee_address = resolve_cu_address(attendee_principal)
             attendees = [attendee_address] if attendee_address else [attendee_principal]
         else:
             ## No second principal — cannot perform a meaningful cross-user probe.
@@ -3538,14 +3540,11 @@ class CheckScheduleTagStablePartstat(Check):
             self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
             return
 
-        try:
-            attendee_address = str(attendee_principal.get_vcal_address())
-        except Exception:
-            attendee_username = getattr(attendee_principal.client, "username", None)
-            if not attendee_username or "@" not in str(attendee_username):
-                self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
-                return
-            attendee_address = "mailto:" + attendee_username
+        attendee_address = resolve_cu_address(attendee_principal)
+        if not attendee_address:
+            self.set_feature("scheduling.schedule-tag.stable-partstat", {"support": "unknown"})
+            return
+        attendee_address = str(attendee_address)
 
         probe_uid = f"csc_tag_partstat_probe_{uuid.uuid4().hex}"
         probe_ical = (
