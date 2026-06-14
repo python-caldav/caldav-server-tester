@@ -120,6 +120,58 @@ class CheckGetCurrentUserPrincipal(Check):
         return self.checker.principal
 
 
+class CheckWellKnown(Check):
+    """Check that /.well-known/caldav discovery works per RFC 6764 section 5.
+
+    Makes a GET to https://host/.well-known/caldav (without following redirects)
+    and verifies the server responds with a 3xx redirect or 200 OK.
+
+    Marked unknown for localhost/test servers where well-known is not applicable.
+    """
+
+    features_to_be_checked = {"well-known"}
+    depends_on = set()
+
+    def _run_check(self) -> None:
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(str(self.client.url))
+        host = parsed.hostname or ""
+
+        if host in ("localhost", "127.0.0.1", "::1") or not host:
+            self.set_feature("well-known", {"support": "unknown", "behaviour": "localhost — well-known not applicable"})
+            return
+
+        scheme = parsed.scheme or "https"
+        port = parsed.port
+        if port and ((scheme == "https" and port != 443) or (scheme == "http" and port != 80)):
+            base = f"{scheme}://{host}:{port}"
+        else:
+            base = f"{scheme}://{host}"
+        well_known_url = f"{base}/.well-known/caldav"
+
+        try:
+            response = self.client.session.get(well_known_url, allow_redirects=False, timeout=10)
+        except Exception as e:
+            self.set_feature("well-known", {"support": "unknown", "behaviour": f"request failed: {e}"})
+            return
+
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location", "")
+            self.set_feature("well-known", {"support": "full", "behaviour": f"redirects to {location}"})
+        elif response.status_code == 200:
+            self.set_feature(
+                "well-known", {"support": "full", "behaviour": "returns 200 OK directly at /.well-known/caldav"}
+            )
+        elif response.status_code == 404:
+            self.set_feature("well-known", False)
+        else:
+            self.set_feature(
+                "well-known",
+                {"support": "unknown", "behaviour": f"unexpected status {response.status_code}"},
+            )
+
+
 class CheckPropfindAllprop(Check):
     """
     Checks the PROPFIND method on three independent levels:

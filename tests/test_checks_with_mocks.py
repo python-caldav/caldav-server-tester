@@ -27,6 +27,7 @@ from caldav_server_tester.checks import (
     CheckIsNotDefined,
     CheckMakeDeleteCalendar,
     CheckSearch,
+    CheckWellKnown,
     PrepareCalendar,
 )
 
@@ -874,3 +875,76 @@ class TestCheckIsNotDefined:
         assert result == "ungraceful"
         assert checker.features_checked.is_supported("search.is-not-defined.category", str) == "ungraceful"
         assert checker.features_checked.is_supported("search.is-not-defined.dtend", str) == "ungraceful"
+
+
+class TestCheckWellKnown:
+    """Test CheckWellKnown with mocked HTTP responses"""
+
+    def create_checker_with_mock_client(self, url: str = "https://caldav.example.com/dav/") -> tuple:
+        client = Mock()
+        client.features = FeatureSet()
+        client.url = url
+        checker = ServerQuirkChecker(client, debug_mode=None)
+        return checker, client
+
+    def test_redirect_sets_feature_full(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        mock_response = Mock()
+        mock_response.status_code = 301
+        mock_response.headers = {"Location": "/remote.php/dav/"}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        result = checker.features_checked.is_supported("well-known", str)
+        assert result == "full"
+
+    def test_200_sets_feature_full(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "full"
+
+    def test_404_sets_feature_unsupported(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.headers = {}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        assert not checker.features_checked.is_supported("well-known")
+
+    def test_request_failure_sets_unknown(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        client.session.get.side_effect = Exception("Connection refused")
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unknown"
+
+    def test_localhost_sets_unknown(self) -> None:
+        checker, client = self.create_checker_with_mock_client(url="http://localhost:5232/")
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unknown"
+        client.session.get.assert_not_called()
+
+    def test_well_known_url_constructed_correctly(self) -> None:
+        checker, client = self.create_checker_with_mock_client(url="https://caldav.example.com/dav/calendars/")
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.headers = {}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        call_url = client.session.get.call_args[0][0]
+        assert call_url == "https://caldav.example.com/.well-known/caldav"
