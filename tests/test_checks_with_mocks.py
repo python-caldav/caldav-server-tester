@@ -60,19 +60,24 @@ class TestCheckGetCurrentUserPrincipal:
         assert checker.features_checked.is_supported("get-current-user-principal")
         assert checker.principal == mock_principal
 
-    def test_principal_failure_sets_feature_to_false(self) -> None:
-        """When principal() fails, feature should be set to False"""
+    def test_transient_principal_failure_marks_unknown_and_keeps_principal(self) -> None:
+        """Finding #9: a later principal() failure is transient (init already proved
+        it works), so it is retried and reported 'unknown' — not 'unsupported' — and
+        the principal obtained during init is preserved for downstream checks."""
         checker, client = self.create_checker_with_mock_client()
+        init_principal = checker.principal  # the working principal from __init__
 
-        # Mock failed principal response
-        client.principal.side_effect = Exception("Connection error")
+        # principal() now fails on every call (simulating a transient outage)
+        client.principal.side_effect = Exception("503 Service Unavailable")
 
         check = CheckGetCurrentUserPrincipal(checker)
         check.run_check()
 
-        # Should set feature to unsupported
-        assert not checker.features_checked.is_supported("get-current-user-principal")
-        assert checker.principal is None
+        assert checker.features_checked.is_supported("get-current-user-principal", str) == "unknown"
+        # principal from __init__ is kept, not nulled out
+        assert checker.principal is init_principal
+        # the failure was retried (>1 call inside the check)
+        assert client.principal.call_count >= 2
 
     def test_principal_assertion_error_reraises(self) -> None:
         """AssertionError should be re-raised, not caught"""

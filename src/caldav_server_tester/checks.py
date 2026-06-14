@@ -79,13 +79,33 @@ class CheckGetCurrentUserPrincipal(Check):
     depends_on = set()
 
     def _run_check(self):
-        try:
-            self.checker.principal = self.client.principal()
-        except AssertionError:
-            raise
-        except Exception:
-            self.checker.principal = None
-            self.set_feature("get-current-user-principal", False)
+        ## ServerQuirkChecker.__init__ already fetched a working principal, so a
+        ## failure when we re-fetch here is almost certainly transient (503, TLS,
+        ## ConnectionError), not "unsupported".  Retry once; if it still fails,
+        ## keep the principal we already have (so downstream checks aren't
+        ## crippled by a momentary blip), mark the feature "unknown" with a note,
+        ## and warn on STDERR.
+        last_exc = None
+        for _attempt in range(2):
+            try:
+                self.checker.principal = self.client.principal()
+                last_exc = None
+                break
+            except AssertionError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+        if last_exc is not None:
+            logging.warning(
+                "current-user-principal lookup failed (%s); the initial connection succeeded, "
+                "so this is most likely a transient error — marking get-current-user-principal "
+                "as unknown rather than unsupported.",
+                last_exc,
+            )
+            self.set_feature(
+                "get-current-user-principal",
+                {"support": "unknown", "behaviour": f"lookup failed, possibly a transient error: {last_exc}"},
+            )
             return self.checker.principal
 
         ## Verify the URL the server returned is actually reachable.
