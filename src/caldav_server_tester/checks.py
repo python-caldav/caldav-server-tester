@@ -1172,7 +1172,10 @@ class CheckTodoNoDtstartSearch(Check):
         ## Leave the feature unset so the parent status propagates.
         if not self.checker.features_checked.is_supported("search.time-range.todo"):
             return
-        base = _base_year()
+        ## Use the same base year PrepareCalendar placed the fixtures in, not a
+        ## fresh _base_year(), so a run that crosses New Year's midnight still
+        ## searches the window the fixtures actually live in.
+        base = self.checker.fixture_base_year
         try:
             results = tasklist.search(
                 todo=True,

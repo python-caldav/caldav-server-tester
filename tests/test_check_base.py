@@ -13,7 +13,7 @@ from caldav_server_tester.checks_base import Check
 class TestCheckSetFeature:
     """Test the Check.set_feature method"""
 
-    def create_mock_checker(self, debug_mode='logging') -> Mock:
+    def create_mock_checker(self, debug_mode="logging") -> Mock:
         """Helper to create a mock checker object"""
         checker = Mock()
         checker._features_checked = FeatureSet()
@@ -22,7 +22,7 @@ class TestCheckSetFeature:
         checker._client_obj.features = FeatureSet()
         return checker
 
-    def create_check_instance(self, debug_mode='logging') -> Check:
+    def create_check_instance(self, debug_mode="logging") -> Check:
         """Helper to create a Check instance with mocked dependencies"""
         checker = self.create_mock_checker(debug_mode=debug_mode)
         check = Check(checker)
@@ -92,9 +92,7 @@ class TestCheckSetFeature:
         check = self.create_check_instance(debug_mode=None)
         check.set_feature("create-calendar.auto", True)
 
-        result = check.checker._features_checked.is_supported(
-            "create-calendar.auto", dict
-        )
+        result = check.checker._features_checked.is_supported("create-calendar.auto", dict)
         assert result == {"support": "full"}
 
 
@@ -111,9 +109,7 @@ class TestCheckFeatureChecked:
     def test_feature_checked_delegates_to_featureset(self) -> None:
         """feature_checked should delegate to the FeatureSet.is_supported method"""
         check = self.create_check_instance()
-        check.checker._features_checked.copyFeatureSet(
-            {"create-calendar": {"support": "full"}}, collapse=False
-        )
+        check.checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = check.feature_checked("create-calendar", bool)
         assert result is True
@@ -121,9 +117,7 @@ class TestCheckFeatureChecked:
     def test_feature_checked_returns_bool_by_default(self) -> None:
         """feature_checked without return_type should return bool"""
         check = self.create_check_instance()
-        check.checker._features_checked.copyFeatureSet(
-            {"create-calendar": {"support": "full"}}, collapse=False
-        )
+        check.checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = check.feature_checked("create-calendar")
         assert isinstance(result, bool)
@@ -146,6 +140,7 @@ class TestCheckRunCheck:
 
     def test_run_check_executes_dependencies_first(self) -> None:
         """run_check should execute all dependencies before running main check"""
+
         # Create a dependency check
         class DependencyCheck(Check):
             executed = False
@@ -288,6 +283,33 @@ class TestCheckRunCheck:
         # Should raise AssertionError for missing feature2
         with pytest.raises(AssertionError):
             check.run_check()
+
+    def test_run_check_unset_subfeature_derives_from_parent(self) -> None:
+        """When a declared sub-feature is left unprobed but its parent IS set, the
+        assert must not fire and is_supported() derives the sub-feature from the
+        parent (code review #4 — derivation handles this, no explicit value needed).
+        """
+
+        class TestCheck(Check):
+            features_to_be_checked = {"search.time-range.todo.no-dtstart"}
+
+            def _run_check(self) -> None:
+                ## parent says VTODO time-range search is unsupported, so the
+                ## no-dtstart sub-feature can't be probed and is deliberately left
+                ## unset; it must derive to "unsupported" via the caldav library.
+                self.set_feature("search.time-range.todo", {"support": "unsupported"})
+
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker._checks_run = set()
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.debug_mode = None
+
+        check = TestCheck(checker)
+        check.run_check()  # must NOT raise — parent-collapse covers the sub-feature
+
+        assert checker._features_checked.is_supported("search.time-range.todo.no-dtstart", str) == "unsupported"
 
     def test_run_check_base_class_raises_not_implemented(self) -> None:
         """Calling run_check on base Check class should raise NotImplementedError"""
