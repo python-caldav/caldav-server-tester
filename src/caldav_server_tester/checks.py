@@ -487,6 +487,48 @@ class CheckMakeDeleteCalendar(Check):
                 {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"},
             )
 
+    def _probe_propfind_displayname(self, cal):
+        """Probe ``propfind.displayname`` against an existing calendar collection.
+
+        Reading the ``DAV:displayname`` property is an ordinary PROPFIND on any
+        collection - it does not require us to have created the calendar - so we
+        can determine this even on servers that refuse calendar creation.
+        """
+        try:
+            fetched = cal.get_display_name()
+        except Exception:
+            self.set_feature("propfind.displayname", False)
+            return
+        if fetched is not None:
+            self.set_feature("propfind.displayname", True)
+        else:
+            self.set_feature(
+                "propfind.displayname",
+                {"support": "broken", "behaviour": "PROPFIND returns no displayname value"},
+            )
+
+    def _find_existing_calendar(self):
+        """Return some existing calendar to probe read-only properties against.
+
+        Prefer a user-configured test calendar (``--caldav-calendar``, exposed as
+        the ``test-calendar.compatibility-tests`` name); otherwise fall back to
+        the first calendar the principal exposes.  Returns None if none is found.
+        """
+        cal_info = self.checker.expected_features.is_supported("test-calendar.compatibility-tests", dict)
+        name = cal_info.get("name") if isinstance(cal_info, dict) else None
+        if name:
+            try:
+                cal = self.checker.principal.calendar(name=name)
+                cal.get_display_name()  ## force a request so a missing calendar raises
+                return cal
+            except Exception:
+                pass
+        try:
+            cals = self.checker.principal.calendars()
+        except Exception:
+            return None
+        return cals[0] if cals else None
+
     def _check_set_displayname(self):
         """Deterministically probe display-name support and URL stability.
 
@@ -546,22 +588,27 @@ class CheckMakeDeleteCalendar(Check):
         try:
             self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
         except DAVError:
-            ## Couldn't create the probe calendar.  Leave the feature unset; the
-            ## parent create-calendar status already records the issue.
+            ## Couldn't create the probe calendar (e.g. a server that needs mkcol
+            ## or refuses a name= at creation).  We can't probe the
+            ## set-displayname behaviour (which requires creating a calendar with
+            ## a name) - those two features collapse under the parent
+            ## create-calendar status.  But reading DAV:displayname is an
+            ## ordinary PROPFIND, so we can still probe propfind.displayname
+            ## against an existing calendar.  (propfind.displayname has no
+            ## checked parent, so it must be set explicitly either way, or the
+            ## post-check assertion in run_check() trips on it.)
+            unknown = {"support": "unknown", "behaviour": "could not create probe calendar"}
+            self.set_feature("create-calendar.set-displayname", unknown)
+            self.set_feature("create-calendar.set-displayname.stable-url", unknown)
+            existing = self._find_existing_calendar()
+            if existing is not None:
+                self._probe_propfind_displayname(existing)
+            else:
+                self.set_feature("propfind.displayname", unknown)
             return
 
-        ## Probe propfind.displayname: can we PROPFIND the DAV:displayname property
-        ## directly from the calendar collection we just created?
-        try:
-            fetched = self.checker.principal.calendar(cal_id=cal_id).get_display_name()
-            if fetched is not None:
-                self.set_feature("propfind.displayname", True)
-            else:
-                self.set_feature(
-                    "propfind.displayname", {"support": "broken", "behaviour": "PROPFIND returns no displayname value"}
-                )
-        except Exception:
-            self.set_feature("propfind.displayname", False)
+        ## Probe propfind.displayname directly from the calendar we just created.
+        self._probe_propfind_displayname(self.checker.principal.calendar(cal_id=cal_id))
 
         try:
             located = _find_by_displayname(unique_name)

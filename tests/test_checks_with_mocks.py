@@ -292,7 +292,17 @@ class TestCheckMakeDeleteCalendar:
         # of aborting at the auto probe.
         principal.make_calendar.assert_called()
 
-    def _run_displayname_probe(self, checker, principal, *, relocate, name_sticks=True, get_displayname_raises=False):
+    def _run_displayname_probe(
+        self,
+        checker,
+        principal,
+        *,
+        relocate,
+        name_sticks=True,
+        get_displayname_raises=False,
+        make_calendar_raises=False,
+        existing_displayname=None,
+    ):
         """Drive CheckMakeDeleteCalendar._check_set_displayname() with a mocked
         principal.
 
@@ -302,6 +312,11 @@ class TestCheckMakeDeleteCalendar:
         name_sticks: if False, the display name given at creation is not applied.
         get_displayname_raises: if True, the direct get_display_name() call on the
                   calendar object raises an exception (simulating no PROPFIND support).
+        make_calendar_raises: if True, creating the probe calendar raises a DAVError
+                  (e.g. a server that needs mkcol, or refuses a name= at creation).
+        existing_displayname: if set, the principal already exposes one calendar
+                  with this display name (used as the propfind.displayname fallback
+                  target when probe-calendar creation fails).
         """
         probe_cal_id = "caldav-server-checker-displayname-test"
         base = "https://example.com/dav/me/"
@@ -309,6 +324,8 @@ class TestCheckMakeDeleteCalendar:
         created = {"name": None, "url": None}
 
         def make_calendar(cal_id=None, name=None, **kwargs):
+            if make_calendar_raises:
+                raise DAVError("cannot create probe calendar")
             cal = Mock()
             cal.url = base + cal_id + "/"
             if name_sticks and name:
@@ -328,12 +345,18 @@ class TestCheckMakeDeleteCalendar:
         principal.calendar.return_value = direct_cal_mock
 
         def calendars():
-            if created["name"] is None:
-                return []
-            c = Mock()
-            c.url = created["url"]
-            c.get_display_name.return_value = created["name"]
-            return [c]
+            cals = []
+            if existing_displayname is not None:
+                existing = Mock()
+                existing.url = base + "existing/"
+                existing.get_display_name.return_value = existing_displayname
+                cals.append(existing)
+            if created["name"] is not None:
+                c = Mock()
+                c.url = created["url"]
+                c.get_display_name.return_value = created["name"]
+                cals.append(c)
+            return cals
 
         principal.calendars.side_effect = calendars
 
@@ -374,6 +397,38 @@ class TestCheckMakeDeleteCalendar:
         checker, client, principal = self.create_checker_with_principal()
         self._run_displayname_probe(checker, principal, relocate=False, get_displayname_raises=True)
         assert not checker.features_checked.is_supported("propfind.displayname")
+
+    def test_set_displayname_probe_calendar_creation_fails(self) -> None:
+        """If the probe calendar can't be created (e.g. Infomaniak), the probe
+        must still leave every feature it declares set — otherwise the
+        post-check assertion in run_check() trips on the un-collapsible
+        ``propfind.displayname`` (its parent ``propfind`` is never set).
+
+        Regression for: ``CheckMakeDeleteCalendar failed to check declared
+        features: {'propfind.displayname'}``.
+        """
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(checker, principal, relocate=False, make_calendar_raises=True)
+        for feature in (
+            "propfind.displayname",
+            "create-calendar.set-displayname",
+            "create-calendar.set-displayname.stable-url",
+        ):
+            assert feature in checker.features_checked.dotted_feature_set_list(), (
+                f"{feature} left unchecked after a failed probe calendar creation"
+            )
+
+    def test_propfind_displayname_probed_on_existing_calendar(self) -> None:
+        """Even when we can't create a probe calendar, reading DAV:displayname is
+        an ordinary PROPFIND, so propfind.displayname is still determined against
+        an existing calendar rather than left as 'unknown'."""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(
+            checker, principal, relocate=False, make_calendar_raises=True, existing_displayname="My Calendar"
+        )
+        assert checker.features_checked.is_supported("propfind.displayname")
+        ## set-displayname behaviour is genuinely untestable here -> unknown
+        assert checker.features_checked.is_supported("create-calendar.set-displayname", str) == "unknown"
 
     @pytest.mark.skip(
         reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"
