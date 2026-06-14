@@ -26,7 +26,7 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | C-3 | Process-global monkey-patch of Calendar.search | ✅ | per-checker reset of the class-level delay (true per-instance wrap impossible — library owns Calendars); validated against Bedework |
 | C-4 | Duplicated UIDs/calendar-id literals | ✅ | `TEST_CALENDAR_CAL_ID`, `OLDDATE_EVENT_UID`, `OLDDATE_TASK_UID` constants in checks.py, referenced from checker.py. (`.ics` fallback handled under C-5) |
 | C-5 | Repeated idioms worth a helper | ✅ | lifecycle (#3); `url_object()` for `<uid>.ics`; `resolve_cu_address()` for the triplicated scheduling address resolution. Deferred: delete-suppress sweep and except-classify-tuple unification (low value / high churn / heterogeneous per-site risk) |
-| C-6 | Wasted round-trips | ⬜ | cleanup |
+| C-6 | Wasted round-trips | ✅ | delete-wait now polls (≤10s, early-exit) instead of a flat `sleep(10)`. Inbox-delivery poll already early-exits and its 30s budget is intentional (confirming a negative on async servers); the two `events()` listings are genuine diagnostics / needed for duplicate-UID detection — left as-is |
 
 Scope: the full codebase (not a diff review), ~7,300 lines of Python, with the
 bulk in `src/caldav_server_tester/checks.py` (3,839 lines).

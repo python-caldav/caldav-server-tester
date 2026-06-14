@@ -383,10 +383,16 @@ class CheckMakeDeleteCalendar(Check):
                 ## some events to the calendar, delete the calendar and make
                 ## sure no events are found on a new calendar with same ID)
             else:
-                ## Calendar not deleted.
-                ## Perhaps the server needs some time to delete the calendar
-                time.sleep(10)
+                ## Calendar not deleted yet.  The server may delete it
+                ## asynchronously, so poll for up to ~10s rather than flatly
+                ## sleeping the whole time — most async deletes finish well under
+                ## that, and the final verdict is the same either way.
                 cal = self.checker.principal.calendar(cal_id=cal_id)
+                waited = 0
+                while self._calendar_is_accessible(cal) and waited < 10:
+                    time.sleep(1)
+                    waited += 1
+                    cal = self.checker.principal.calendar(cal_id=cal_id)
                 if self._calendar_is_accessible(cal):
                     ## Calendar not deleted, but no exception thrown.
                     ## Perhaps it's a "move to thrashbin"-regime on the server
