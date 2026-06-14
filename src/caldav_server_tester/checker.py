@@ -97,8 +97,6 @@ class ServerQuirkChecker:
         Failures of the direct-URL probe load are NOT counted: an absent probe
         (the common case) legitimately fails to load.
         """
-        import caldav
-
         removed = 0
         errors = 0
         seen = set()
@@ -125,7 +123,7 @@ class ServerQuirkChecker:
             ## exist - a DELETE to an absent URL succeeds silently on some servers.
             for uid in self.HIDDEN_PROBE_UIDS:
                 try:
-                    obj = caldav.Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+                    obj = checks.url_object(cal, uid)
                     obj.load()
                     obj.delete()
                     removed += 1

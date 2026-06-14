@@ -25,7 +25,7 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | C-2 | Write-only state (`checker.cnt`, dead class attrs) | ✅ | removed write-only `checker.cnt` bookkeeping and the dead `Check.features_checked = set()` class attr |
 | C-3 | Process-global monkey-patch of Calendar.search | ✅ | per-checker reset of the class-level delay (true per-instance wrap impossible — library owns Calendars); validated against Bedework |
 | C-4 | Duplicated UIDs/calendar-id literals | ✅ | `TEST_CALENDAR_CAL_ID`, `OLDDATE_EVENT_UID`, `OLDDATE_TASK_UID` constants in checks.py, referenced from checker.py. (`.ics` fallback handled under C-5) |
-| C-5 | Repeated idioms worth a helper | ⬜ | cleanup |
+| C-5 | Repeated idioms worth a helper | 🚧 | lifecycle done (#3); `url_object()` helper for the `<uid>.ics` construction (~8 sites). Scheduling-address dedup next; delete-suppress sweep + except-classify unification deferred (low value / high churn / per-site risk) |
 | C-6 | Wasted round-trips | ⬜ | cleanup |
 
 Scope: the full codebase (not a diff review), ~7,300 lines of Python, with the

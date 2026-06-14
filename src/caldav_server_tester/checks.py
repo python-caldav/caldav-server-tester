@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from caldav.calendarobjectresource import Event, Journal, Todo
+from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
 from caldav.elements import ical
@@ -29,6 +29,24 @@ TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
 ## checker.py (ServerQuirkChecker.HIDDEN_PROBE_UIDS).
 OLDDATE_EVENT_UID = "csc_olddate_event"
 OLDDATE_TASK_UID = "csc_olddate_task"
+
+
+def url_object(cal, uid, obj_class=None):
+    """Construct a calendar object bound to its direct ``<uid>.ics`` URL.
+
+    Several checks reach an object by the URL the client PUT it at
+    (``cal.url`` joined with ``uid`` + ``.ics``) instead of via search/REPORT —
+    e.g. to load objects a sliding window hides from listings, or to probe a
+    non-existent resource.  This centralises that construction so the ``.ics``
+    URL convention lives in exactly one place.  ``obj_class`` defaults to
+    ``Event``, resolved at call time so tests can patch ``checks.Event``.
+    """
+    if obj_class is None:
+        obj_class = Event
+    ## Quote the UID exactly as the library does when it PUTs an object
+    ## (_generate_url -> _quote_uid), or this "direct URL" addresses a resource
+    ## that is not there for any UID containing a character needing escaping.
+    return obj_class(cal.client, url=cal.url.join(_quote_uid(uid) + ".ics"), parent=cal)
 
 
 def _base_year(now=None):
@@ -1153,7 +1171,7 @@ END:VCALENDAR""",
                 ## (e.g. OX's sliding window hides old objects from REPORT/PROPFIND).
                 ## Try to load the existing object by constructing its URL directly.
                 obj_class = largs[0]
-                existing = obj_class(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+                existing = url_object(cal, uid, obj_class)
                 existing.load()
                 return existing
 
@@ -1228,7 +1246,7 @@ class CheckNonExistingResource(Check):
     def _run_check(self) -> None:
         feature = "non-existing-raises-not-found"
         cal = self.checker.calendar
-        missing = Event(cal.client, url=cal.url.join("csc_does_not_exist_probe.ics"), parent=cal)
+        missing = url_object(cal, "csc_does_not_exist_probe")
         try:
             missing.load()
         except NotFoundError:
@@ -1272,7 +1290,7 @@ class CheckMutable(Check):
         try:
             event = cal.event_by_uid(uid)
         except (NotFoundError, AuthorizationError, DAVError):
-            event = Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal)
+            event = url_object(cal, uid)
             event.load()
 
         vevent = event.icalendar_instance.walk("VEVENT")[0]
@@ -1439,7 +1457,7 @@ class CheckIfMatchOptional(Check):
             self.set_feature("save-load.mutable.if-match-optional", False)
         finally:
             try:
-                Event(cal.client, url=cal.url.join(uid + ".ics"), parent=cal).delete()
+                url_object(cal, uid).delete()
             except Exception:
                 pass
 
@@ -2690,7 +2708,7 @@ class CheckDuplicateEvent(Check):
         try:
             event1 = cal.event_by_uid(src_uid)
         except (NotFoundError, AuthorizationError, DAVError):
-            event1 = Event(cal.client, url=cal.url.join(src_uid + ".ics"), parent=cal)
+            event1 = url_object(cal, src_uid)
         try:
             event1.load()
         except (NotFoundError, AuthorizationError, DAVError):
@@ -2764,7 +2782,7 @@ class CheckDuplicateUID(Check):
             try:
                 event1 = cal1.event_by_uid(test_uid)
             except (NotFoundError, AuthorizationError, DAVError):
-                event1 = Event(cal1.client, url=cal1.url.join(test_uid + ".ics"), parent=cal1)
+                event1 = url_object(cal1, test_uid)
             event1.load()  ## csc_simple_event1 now lives in the near future (next year)
 
             ## Get the event data for reuse in cal2
