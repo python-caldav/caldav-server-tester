@@ -65,6 +65,8 @@ year (next calendar year), survives the `add_if_not_existing` pops and is then
 `obj.delete()`'d at line 1017 as a "stale fixture". Silent permanent data loss
 with only a log warning.
 
+**Maintainers comments:** The original goal was to make the tester in such a way that it would be possible to run it on a "production calendar" (nothing in sharp production, but at least towards a personal calendar that has been backed up).  I'm not sure if this goal is achievable, but it's worth investigating - and if it is too difficult, then at least the documentation should be very clear on it.
+
 ### 2. cleanup() deletes a pre-existing user calendar
 
 `src/caldav_server_tester/checker.py:137`
@@ -80,6 +82,8 @@ MKCALENDAR/DELETE: `_find_or_create_calendar` (checks.py:443-448) binds
 of run `cleanup(force=True)` executes `self.calendar.delete()`, destroying the
 user's entire calendar — contradicting the docstring "Remove anything added by
 the PrepareCalendar check".
+
+**Maintainers comments:** Same as for #1 above
 
 ### 3. CLI run lifecycle has no try/finally
 
@@ -113,6 +117,8 @@ nothing sets `search.time-range.todo.no-dtstart` or any parent key ("search"
 is never set when only PrepareCalendar deps ran), `missing_keys` is non-empty,
 AssertionError crashes the CLI — no report, no cleanup (see finding 3).
 
+**Maintainers note:** "Cannot probe" should cause things to go in "unknown".  If all `search` is unknown, then `search.time-range.todo.no-dtstart` will also be set to "unknown" by the derivation logic in the caldav library.  I haven't seen assert errors - I believe this "issue" is a misunderstanding rather than a real issue.
+
 ### 5. CheckRecurrenceSearch: unwrapped searches abort the run
 
 `src/caldav_server_tester/checks.py:2198`
@@ -126,6 +132,8 @@ reject even when plain calendar-queries work.
 REPORTs with 400/500: DAVError escapes `_run_check`, propagates through
 `check_all`, aborts the whole run with a traceback instead of recording
 `search.recurrences.expanded.*` as ungraceful/unsupported.
+
+**Maintainers note:** I haven't seen assert errors - this "issue" may be a misunderstanding rather than a real issue, but it should be investigated.
 
 ### 6. UID `weeklymeeting` violates the csc_ cleanup invariant
 
@@ -184,6 +192,8 @@ to None (silently disabling CheckPropfindAllprop, which then trips the
 checks_base assert if "propfind" was never set), the report claims the feature
 is unsupported, and the CLI exits 0.
 
+**Maintainers note:** It could be that certain features consistently throw what seems like transient failures ... but the correct behaviour here is to possibly retry, and then mark the feature as "unknown" with a note in the behaviour that we may have been hitting a transient problem, and a warning to STDERR about it.
+
 ### 10. report() collapses feature data before the lossless branches read it
 
 `src/caldav_server_tester/checker.py:219`
@@ -199,6 +209,8 @@ data.
 collapses them into the parent first, then the `compact=False` listing for
 hints returns only the collapsed parent — per-child behaviour annotations
 promised by the "include all observed features" comment are gone.
+
+**Maintainers note:** Check my comments on number 4.  It may be that this is intentional.
 
 ### Confirmed but below the cut
 
