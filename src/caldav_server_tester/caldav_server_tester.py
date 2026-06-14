@@ -166,6 +166,26 @@ def _emit_report(obj, verbose, output_format, show_diff):
     click.echo(obj.report(verbose=verbose, show_diff=show_diff, return_what=return_what))
 
 
+def _build_extra_clients(sections):
+    """Open a DAV client for each extra --config-section (for multi-user checks)."""
+    extra_clients = []
+    for section in sections:
+        ec = get_davclient(config_section=section)
+        if ec is None:
+            raise click.UsageError(f"No configuration found for extra config-section {section!r}.")
+        ec.__enter__()
+        extra_clients.append(ec)
+    return extra_clients
+
+
+def _close_extra_clients(extra_clients):
+    for ec in extra_clients:
+        try:
+            ec.__exit__(None, None, None)
+        except Exception:
+            pass
+
+
 def _do_cleanup_only(conn, calendar_name):
     """Purge leftover test fixtures (incl. aged-out probes) and report the count.
 
@@ -310,20 +330,27 @@ def check_server_compatibility(
         conn = get_davclient(**conn_keys)
         if conn is None:
             raise click.UsageError(f"Could not connect to {conn_keys['url']}")
-        with conn:
-            if cleanup_only:
-                _do_cleanup_only(conn, caldav_calendar)
-                return
-            _run_lifecycle(
-                conn,
-                run_checks,
-                run_features,
-                verbose,
-                output_format,
-                show_diff,
-                no_cleanup,
-                calendar=caldav_calendar,
-            )
+        ## The URL is the primary account, so every --config-section is an extra
+        ## account for the multi-user scheduling checks.
+        extra_clients = _build_extra_clients(config_section)
+        try:
+            with conn:
+                if cleanup_only:
+                    _do_cleanup_only(conn, caldav_calendar)
+                    return
+                _run_lifecycle(
+                    conn,
+                    run_checks,
+                    run_features,
+                    verbose,
+                    output_format,
+                    show_diff,
+                    no_cleanup,
+                    calendar=caldav_calendar,
+                    extra_clients=extra_clients,
+                )
+        finally:
+            _close_extra_clients(extra_clients)
         return
 
     ## If `--name` is used, we should try to look up the name in the
@@ -365,13 +392,7 @@ def check_server_compatibility(
         )
 
     ## Build extra clients from additional --config-section values
-    extra_clients = []
-    for section in config_section[1:]:
-        ec = get_davclient(config_section=section)
-        if ec is None:
-            raise click.UsageError(f"No configuration found for extra config-section {section!r}.")
-        ec.__enter__()
-        extra_clients.append(ec)
+    extra_clients = _build_extra_clients(config_section[1:])
 
     try:
         with conn:
@@ -390,11 +411,7 @@ def check_server_compatibility(
                 extra_clients=extra_clients,
             )
     finally:
-        for ec in extra_clients:
-            try:
-                ec.__exit__(None, None, None)
-            except Exception:
-                pass
+        _close_extra_clients(extra_clients)
 
 
 if __name__ == "__main__":

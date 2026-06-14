@@ -16,7 +16,7 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | 5 | CheckRecurrenceSearch: unwrapped searches abort the run | ❌ | **Already mitigated — no code change.** The generic `except Exception` handler in `run_check` (added in `4a79913`, *after* the review base `61eda96`) catches a DAVError from any unwrapped search, marks the remaining declared features `unknown`, and lets the run continue. "unknown" is the maintainer-preferred outcome for error cases (cf. #9). Per-search `ungraceful` precision is a possible enhancement, not a correctness fix. |
 | 6 | UID `weeklymeeting` violates the csc_ cleanup invariant | ✅ | renamed `csc_weeklymeeting`; moved both Oct fixtures into Jan window |
 | 7 | --cleanup-only reports success on failure | ✅ | `_purge_csc_objects` now returns `(removed, errors)`, logs warnings; `--cleanup-only` exits non-zero on errors |
-| 8 | Explicit --caldav-url path drops extra --config-section accounts | ⬜ | |
+| 8 | Explicit --caldav-url path drops extra --config-section accounts | ✅ | shared `_build_extra_clients`/`_close_extra_clients`; URL path treats every `--config-section` as an extra account |
 | 9 | Transient errors misclassified as "unsupported" | ⬜ | |
 | 10 | report() collapses feature data before lossless branches read it | ⬜ | |
 | BTC-a | CheckTodoNoDtstartSearch recomputes `_base_year()` | 🚧 | fixed in CheckTodoNoDtstartSearch; the `getattr(...) or _base_year()` variant still todo |

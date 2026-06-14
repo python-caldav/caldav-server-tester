@@ -275,3 +275,33 @@ class TestCleanupOnlyReporting:
         mock_obj.cleanup_test_data.return_value = (3, 0)
         with patch.object(cst, "ServerQuirkChecker", return_value=mock_obj):
             cst._do_cleanup_only(Mock(), None)  # must not raise
+
+
+class TestExplicitUrlExtraClients:
+    """Finding #8: --caldav-url must still honour extra --config-section accounts."""
+
+    def test_extra_config_sections_become_extra_clients(self) -> None:
+        runner = CliRunner()
+        main_conn = MagicMock()
+        extra_conn = MagicMock()
+
+        def fake_get_davclient(**kwargs):
+            if kwargs.get("url"):
+                return main_conn
+            if kwargs.get("config_section"):
+                return extra_conn
+            return None
+
+        with (
+            patch.object(cst, "get_davclient", side_effect=fake_get_davclient),
+            patch.object(cst, "_run_lifecycle") as mock_lifecycle,
+        ):
+            result = runner.invoke(
+                check_server_compatibility,
+                ["--caldav-url", "https://example.com/dav/", "--config-section", "user2"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_lifecycle.call_count == 1
+        _, kwargs = mock_lifecycle.call_args
+        assert kwargs.get("extra_clients") == [extra_conn]
