@@ -167,10 +167,19 @@ def _emit_report(obj, verbose, output_format, show_diff):
 
 
 def _do_cleanup_only(conn, calendar_name):
-    """Purge leftover test fixtures (incl. aged-out probes) and report the count."""
+    """Purge leftover test fixtures (incl. aged-out probes) and report the count.
+
+    Fails loudly (non-zero exit) when the purge hit errors, so the user is never
+    told the server is clean while listing or deletion actually failed.
+    """
     obj = ServerQuirkChecker(conn)
-    removed = obj.cleanup_test_data(calendar_name=calendar_name)
+    removed, errors = obj.cleanup_test_data(calendar_name=calendar_name)
     click.echo(f"Removed {removed} caldav-server-tester object(s).")
+    if errors:
+        raise click.ClickException(
+            f"{errors} error(s) occurred during cleanup; some test data may remain on the server. "
+            "See the warnings above for details."
+        )
 
 
 def _check_server(

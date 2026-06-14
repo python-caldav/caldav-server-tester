@@ -15,7 +15,7 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | 4 | "Cannot probe" becomes AssertionError | ❌ | **Not a real issue — no code change.** Maintainer was right. Empirically: when the parent (e.g. `search.time-range.todo`) is explicitly set, `run_check`'s parent-collapse drops the unset sub-feature from `missing_keys` so the assert never fires, and `is_supported()` derives the sub-feature to **unsupported** (not unknown). Reverted an earlier "set to unknown" attempt — it was wrong twice (fired a path normal runs don't need, and overrode the correct derived `unsupported`). Added `test_run_check_unset_subfeature_derives_from_parent` to lock the behavior in. |
 | 5 | CheckRecurrenceSearch: unwrapped searches abort the run | ❌ | **Already mitigated — no code change.** The generic `except Exception` handler in `run_check` (added in `4a79913`, *after* the review base `61eda96`) catches a DAVError from any unwrapped search, marks the remaining declared features `unknown`, and lets the run continue. "unknown" is the maintainer-preferred outcome for error cases (cf. #9). Per-search `ungraceful` precision is a possible enhancement, not a correctness fix. |
 | 6 | UID `weeklymeeting` violates the csc_ cleanup invariant | ✅ | renamed `csc_weeklymeeting`; moved both Oct fixtures into Jan window |
-| 7 | --cleanup-only reports success on failure | ⬜ | |
+| 7 | --cleanup-only reports success on failure | ✅ | `_purge_csc_objects` now returns `(removed, errors)`, logs warnings; `--cleanup-only` exits non-zero on errors |
 | 8 | Explicit --caldav-url path drops extra --config-section accounts | ⬜ | |
 | 9 | Transient errors misclassified as "unsupported" | ⬜ | |
 | 10 | report() collapses feature data before lossless branches read it | ⬜ | |

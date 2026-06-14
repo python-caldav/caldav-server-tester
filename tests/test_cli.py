@@ -256,3 +256,22 @@ class TestRunLifecycle:
 
         mock_obj.cleanup.assert_not_called()
         mock_emit.assert_called_once()
+
+
+class TestCleanupOnlyReporting:
+    """Finding #7: --cleanup-only must not report success when the purge failed."""
+
+    def test_reports_errors_and_fails(self) -> None:
+        import click
+
+        mock_obj = Mock()
+        mock_obj.cleanup_test_data.return_value = (0, 2)
+        with patch.object(cst, "ServerQuirkChecker", return_value=mock_obj):
+            with pytest.raises(click.ClickException):
+                cst._do_cleanup_only(Mock(), None)
+
+    def test_clean_run_does_not_fail(self) -> None:
+        mock_obj = Mock()
+        mock_obj.cleanup_test_data.return_value = (3, 0)
+        with patch.object(cst, "ServerQuirkChecker", return_value=mock_obj):
+            cst._do_cleanup_only(Mock(), None)  # must not raise

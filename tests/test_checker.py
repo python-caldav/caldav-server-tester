@@ -507,3 +507,47 @@ class TestServerQuirkCheckerCleanup:
 
         # Should only be called once since they're the same
         assert mock_calendar.delete.call_count == 1
+
+
+class TestPurgeErrorReporting:
+    """Finding #7: cleanup must not report success when listing/deletion failed."""
+
+    def _checker(self) -> ServerQuirkChecker:
+        client = Mock()
+        client.features = FeatureSet()
+        return ServerQuirkChecker(client, debug_mode=None)
+
+    def test_listing_failure_is_counted(self) -> None:
+        checker = self._checker()
+        cal = Mock()
+        cal.objects.side_effect = Exception("403 Forbidden")
+        with patch("caldav.Event") as mock_event:
+            mock_event.return_value.load.side_effect = Exception("probe absent")
+            removed, errors = checker._purge_csc_objects([cal])
+        assert removed == 0
+        assert errors >= 1
+
+    def test_delete_failure_is_counted(self) -> None:
+        checker = self._checker()
+        cal = Mock()
+        obj = Mock()
+        obj.icalendar_component.get.return_value = "csc_simple_event1"
+        obj.delete.side_effect = Exception("500 Server Error")
+        cal.objects.return_value = [obj]
+        with patch("caldav.Event") as mock_event:
+            mock_event.return_value.load.side_effect = Exception("probe absent")
+            removed, errors = checker._purge_csc_objects([cal])
+        assert removed == 0
+        assert errors >= 1
+
+    def test_clean_purge_reports_no_errors(self) -> None:
+        checker = self._checker()
+        cal = Mock()
+        obj = Mock()
+        obj.icalendar_component.get.return_value = "csc_simple_event1"
+        cal.objects.return_value = [obj]
+        with patch("caldav.Event") as mock_event:
+            mock_event.return_value.load.side_effect = Exception("probe absent")
+            removed, errors = checker._purge_csc_objects([cal])
+        assert removed == 1
+        assert errors == 0

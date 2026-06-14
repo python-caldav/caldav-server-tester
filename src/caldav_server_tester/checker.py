@@ -1,4 +1,5 @@
 import inspect
+import logging
 import time
 
 import caldav
@@ -82,11 +83,18 @@ class ServerQuirkChecker:
 
         Visible objects are found via ``objects()`` listing; the year-2000
         probes that a sliding window hides are additionally deleted by direct
-        URL.  Returns the number of objects deleted.
+        URL.  Returns a ``(removed, errors)`` tuple: ``removed`` is the number of
+        objects deleted, ``errors`` is the number of listing/deletion failures
+        (each also logged as a warning).  Callers that report cleanup success to
+        the user must not claim success when ``errors`` is non-zero — otherwise a
+        server answering e.g. 403 to ``objects()`` looks like "nothing to clean".
+        Failures of the direct-URL probe load are NOT counted: an absent probe
+        (the common case) legitimately fails to load.
         """
         import caldav
 
         removed = 0
+        errors = 0
         seen = set()
         for cal in calendars:
             if cal is None or id(cal) in seen:
@@ -100,10 +108,12 @@ class ServerQuirkChecker:
                         if uid.startswith("csc_"):
                             obj.delete()
                             removed += 1
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as exc:
+                        errors += 1
+                        logging.warning("Failed to delete a csc_* object: %s", exc)
+            except Exception as exc:
+                errors += 1
+                logging.warning("Failed to list objects while purging test data: %s", exc)
             ## direct-URL: catches probes hidden from listing by a sliding window.
             ## load() first so we only count (and DELETE) probes that actually
             ## exist - a DELETE to an absent URL succeeds silently on some servers.
@@ -115,7 +125,7 @@ class ServerQuirkChecker:
                     removed += 1
                 except Exception:
                     pass
-        return removed
+        return removed, errors
 
     def cleanup(self, force=True):
         """
@@ -175,7 +185,7 @@ class ServerQuirkChecker:
         its task/journal siblings by id and display name and deletes every
         ``csc_*`` object found, including the hidden year-2000 probes.
 
-        Returns the number of objects deleted.
+        Returns a ``(removed, errors)`` tuple (see ``_purge_csc_objects``).
         """
         cal_id = "caldav-server-checker-calendar"
         candidates = []
