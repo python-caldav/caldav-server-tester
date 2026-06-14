@@ -8,6 +8,7 @@ TODO: make a new cli.py file with the bare-bones click logic.
 
 import importlib.metadata
 import inspect
+import logging
 import sys
 from pathlib import Path
 
@@ -109,12 +110,12 @@ def _feature_to_check_name(feature: str) -> str | None:
     return None
 
 
-def _run_checks_against(conn, run_checks, run_features=(), calendar=None, extra_clients=None):
-    """Run the configured checks against a connection and return the checker object."""
-    obj = ServerQuirkChecker(conn, extra_clients=extra_clients)
-    if calendar:
-        obj.expected_features.set_feature("test-calendar.compatibility-tests", {"name": calendar})
+def _resolve_check_list(run_checks, run_features):
+    """Resolve the explicit checks plus any checks covering --run-feature.
 
+    Raises click.UsageError for an unknown feature (before any server work), so
+    that error stays clean and never triggers cleanup/report.
+    """
     all_checks = list(run_checks)
     for feature in run_features:
         check_name = _feature_to_check_name(feature)
@@ -124,12 +125,39 @@ def _run_checks_against(conn, run_checks, run_features=(), calendar=None, extra_
             )
         if check_name not in all_checks:
             all_checks.append(check_name)
+    return all_checks
 
-    if not all_checks:
-        obj.check_all()
-    for check in all_checks:
-        obj.check_one(check)
-    return obj
+
+def _run_lifecycle(
+    conn, run_checks, run_features, verbose, output_format, show_diff, no_cleanup, calendar=None, extra_clients=None
+):
+    """Run the configured checks, then ALWAYS clean up and emit the report.
+
+    The run/cleanup/report sequence is wrapped in try/finally so that:
+      * a check raising (e.g. an AssertionError) does not skip cleanup or
+        discard the results gathered so far, and
+      * a cleanup that itself raises (e.g. a server answering the calendar
+        DELETE with 500) does not swallow the report.
+    The original exception, if any, still propagates after cleanup+report.
+    """
+    all_checks = _resolve_check_list(run_checks, run_features)
+
+    obj = ServerQuirkChecker(conn, extra_clients=extra_clients)
+    if calendar:
+        obj.expected_features.set_feature("test-calendar.compatibility-tests", {"name": calendar})
+
+    try:
+        if not all_checks:
+            obj.check_all()
+        for check in all_checks:
+            obj.check_one(check)
+    finally:
+        if not no_cleanup:
+            try:
+                obj.cleanup(force=True)
+            except Exception as exc:
+                logging.warning("Cleanup failed; test fixtures may remain on the server: %s", exc)
+        _emit_report(obj, verbose, output_format, show_diff)
 
 
 def _emit_report(obj, verbose, output_format, show_diff):
@@ -171,15 +199,17 @@ def _check_server(
                 pass
         try:
             with main_client:
-                obj = _run_checks_against(
+                _run_lifecycle(
                     main_client,
                     run_checks,
-                    run_features=run_features,
+                    run_features,
+                    verbose,
+                    output_format,
+                    show_diff,
+                    no_cleanup,
                     calendar=calendar,
                     extra_clients=extra_clients,
                 )
-                if not no_cleanup:
-                    obj.cleanup(force=True)
         finally:
             for ec in extra_clients:
                 try:
@@ -188,7 +218,6 @@ def _check_server(
                     pass
     finally:
         server.stop()
-    _emit_report(obj, verbose, output_format, show_diff)
 
 
 @click.command()
@@ -276,10 +305,16 @@ def check_server_compatibility(
             if cleanup_only:
                 _do_cleanup_only(conn, caldav_calendar)
                 return
-            obj = _run_checks_against(conn, run_checks, run_features=run_features, calendar=caldav_calendar)
-            if not no_cleanup:
-                obj.cleanup(force=True)
-        _emit_report(obj, verbose, output_format, show_diff)
+            _run_lifecycle(
+                conn,
+                run_checks,
+                run_features,
+                verbose,
+                output_format,
+                show_diff,
+                no_cleanup,
+                calendar=caldav_calendar,
+            )
         return
 
     ## If `--name` is used, we should try to look up the name in the
@@ -334,22 +369,23 @@ def check_server_compatibility(
             if cleanup_only:
                 _do_cleanup_only(conn, caldav_calendar)
                 return
-            obj = _run_checks_against(
+            _run_lifecycle(
                 conn,
                 run_checks,
-                run_features=run_features,
+                run_features,
+                verbose,
+                output_format,
+                show_diff,
+                no_cleanup,
                 calendar=caldav_calendar,
                 extra_clients=extra_clients,
             )
-            if not no_cleanup:
-                obj.cleanup(force=True)
     finally:
         for ec in extra_clients:
             try:
                 ec.__exit__(None, None, None)
             except Exception:
                 pass
-    _emit_report(obj, verbose, output_format, show_diff)
 
 
 if __name__ == "__main__":

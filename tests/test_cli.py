@@ -2,10 +2,12 @@
 
 import sys
 import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from click.testing import CliRunner
 
+from caldav_server_tester import caldav_server_tester as cst
 from caldav_server_tester.caldav_server_tester import (
     _find_caldav_test_registry,
     check_server_compatibility,
@@ -198,3 +200,59 @@ class TestCliNameFallback:
                 ["--name", "radicale"],
             )
             mock_check.assert_called_once()
+
+
+class TestRunLifecycle:
+    """Finding #3: the run lifecycle must always clean up and emit the report."""
+
+    def _kwargs(self, **overrides) -> dict:
+        kwargs = dict(
+            conn=Mock(),
+            run_checks=(),
+            run_features=(),
+            verbose=False,
+            output_format="text",
+            show_diff=False,
+            no_cleanup=False,
+            calendar=None,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_report_emitted_even_when_cleanup_raises(self) -> None:
+        """A server answering the calendar DELETE with 500 must not discard the report."""
+        mock_obj = Mock()
+        mock_obj.cleanup.side_effect = Exception("DELETE returned 500")
+        with (
+            patch.object(cst, "ServerQuirkChecker", return_value=mock_obj),
+            patch.object(cst, "_emit_report") as mock_emit,
+        ):
+            cst._run_lifecycle(**self._kwargs())
+
+        mock_obj.cleanup.assert_called_once()
+        mock_emit.assert_called_once()
+
+    def test_cleanup_and_report_run_when_a_check_raises(self) -> None:
+        """A check raising mid-run must still trigger cleanup and emit the report."""
+        mock_obj = Mock()
+        mock_obj.check_all.side_effect = AssertionError("a check blew up")
+        with (
+            patch.object(cst, "ServerQuirkChecker", return_value=mock_obj),
+            patch.object(cst, "_emit_report") as mock_emit,
+        ):
+            with pytest.raises(AssertionError):
+                cst._run_lifecycle(**self._kwargs())
+
+        mock_obj.cleanup.assert_called_once()
+        mock_emit.assert_called_once()
+
+    def test_no_cleanup_skips_cleanup_but_still_reports(self) -> None:
+        mock_obj = Mock()
+        with (
+            patch.object(cst, "ServerQuirkChecker", return_value=mock_obj),
+            patch.object(cst, "_emit_report") as mock_emit,
+        ):
+            cst._run_lifecycle(**self._kwargs(no_cleanup=True))
+
+        mock_obj.cleanup.assert_not_called()
+        mock_emit.assert_called_once()
