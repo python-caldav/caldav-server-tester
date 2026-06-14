@@ -536,15 +536,26 @@ class PrepareCalendar(Check):
     }
 
     def _find_or_create_calendar(self, cal_id, name, test_cal_info):
-        """Find or create the main test calendar; set up self.checker.calendar."""
+        """Find or create the main test calendar; set up self.checker.calendar.
+
+        Records ``checker.calendar_was_created`` so cleanup() knows whether it may
+        delete the whole calendar.  A calendar found by user-supplied display name
+        (``--caldav-calendar``) is a real user calendar we must never delete; a
+        calendar found under our own ``cal_id`` is a leftover from a previous run
+        that we own, and a freshly created calendar is ours too.
+        """
+        user_specified = "name" in test_cal_info
         try:
-            if "name" in test_cal_info:
+            if user_specified:
                 calendar = self.checker.principal.calendar(name=name)
             else:
                 calendar = self.checker.principal.calendar(cal_id=cal_id)
             ## At least one out of those two will raise NotFoundError if calendar doesn't exist
             calendar.get_display_name()
             calendar.events()
+            ## Found an existing calendar: we own it (safe to delete) only when it
+            ## lives under our cal_id, not when the user pointed us at it by name.
+            self.checker.calendar_was_created = not user_specified
         except Exception:
             if not self.checker.features_checked.is_supported("create-calendar"):
                 raise RuntimeError(
@@ -552,6 +563,7 @@ class PrepareCalendar(Check):
                     "Specify a calendar to use with --caldav-calendar <display-name>."
                 )
             calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
+            self.checker.calendar_was_created = True
 
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
@@ -795,10 +807,10 @@ class PrepareCalendar(Check):
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VEVENT
-UID:weeklymeeting
-DTSTAMP:{base}1013T151313Z
-DTSTART:{base}1018T140000Z
-DTEND:{base}1018T150000Z
+UID:csc_weeklymeeting
+DTSTAMP:{base}0113T151313Z
+DTSTART:{base}0120T140000Z
+DTEND:{base}0120T150000Z
 SUMMARY:Weekly meeting for three weeks
 RRULE:FREQ=WEEKLY;COUNT=3
 END:VEVENT
@@ -832,8 +844,8 @@ VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VTODO
 UID:csc_recurring_count_task
-DTSTAMP:{base}1013T151313Z
-DTSTART:{base}1016T065500Z
+DTSTAMP:{base}0113T151313Z
+DTSTART:{base}0119T065500Z
 STATUS:NEEDS-ACTION
 DURATION:PT10M
 SUMMARY:Weekly task to be done three times
@@ -1013,6 +1025,25 @@ END:VCALENDAR""",
         except Exception:
             self.set_feature("save-load.stable-url", None)
 
+    def _delete_stale_fixtures(self, object_by_uid):
+        """Delete leftover fixtures from previous runs that aren't in the current set.
+
+        Only objects whose UID starts with ``csc_`` are removed.  ``object_by_uid``
+        may legitimately contain real user data when ``--caldav-calendar`` points
+        the tool at a production calendar (a real VJOURNAL, or a real event/task
+        dated in the fixture base year that survived the ``add_if_not_existing``
+        pops); deleting those would be silent, permanent data loss.  All fixtures
+        the tool creates use the ``csc_`` prefix, so the prefix check is sufficient
+        to tell ours apart from the user's.  The year-2000 old-date probes fall
+        outside the fixture window and are excluded by ``_filter_fixture_window``,
+        so they are never in ``object_by_uid`` to begin with.
+        """
+        for uid, obj in object_by_uid.items():
+            if not str(uid).startswith("csc_"):
+                continue
+            logging.warning("Deleting stale fixture object with UID %s", uid)
+            obj.delete()
+
     def _run_check(self):
         ## NOTE: Any objects created here with a UID starting with "csc_" will be
         ## cleaned up by the csc_* fallback in checker.cleanup(). For servers that
@@ -1104,13 +1135,7 @@ END:VCALENDAR""",
         if not self._create_test_events(calendar, cal_id, name, add_if_not_existing):
             return
 
-        ## Delete any stale fixtures from the current fixture window that aren't
-        ## part of the current test set (e.g. leftovers from previous test runs).
-        ## The year-2000 old-date probes fall outside the window and are excluded
-        ## by _filter_fixture_window, so they are not touched here.
-        for uid, obj in object_by_uid.items():
-            logging.warning("Deleting stale fixture object with UID %s", uid)
-            obj.delete()
+        self._delete_stale_fixtures(object_by_uid)
         if not self.checker.calendar.events():
             logging.error("Calendar appears empty after PrepareCalendar; subsequent checks may be unreliable")
         ## Not asserting on tasklist.todos() here - on servers with broken

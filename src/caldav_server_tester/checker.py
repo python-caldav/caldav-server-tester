@@ -123,6 +123,13 @@ class ServerQuirkChecker:
 
         force=True (default): always clean up.
         force=False: only clean up if 'test-calendar.compatibility-tests' config has cleanup=True.
+
+        The main calendar is deleted wholesale ONLY when PrepareCalendar created
+        it (``calendar_was_created``).  When ``--caldav-calendar`` points the tool
+        at a pre-existing user calendar, that calendar is never deleted; only its
+        ``csc_*`` fixtures are purged.  The dedicated task/journal sibling
+        calendars are always ones the tool created, so they are deleted wholesale
+        when the server supports it.
         """
         if not hasattr(self, "calendar"):
             return  ## PrepareCalendar never ran; nothing to clean up
@@ -131,16 +138,32 @@ class ServerQuirkChecker:
             test_cal_info = self.expected_features.is_supported("test-calendar.compatibility-tests", return_type=dict)
             if not test_cal_info.get("cleanup", False):
                 return
-        if self.features_checked.is_supported("create-calendar") and self.features_checked.is_supported(
-            "delete-calendar"
-        ):
+
+        can_delete_calendars = self.features_checked.is_supported(
+            "create-calendar"
+        ) and self.features_checked.is_supported("delete-calendar")
+        ## Default to False (the safe choice) when PrepareCalendar didn't record
+        ## ownership: never delete a calendar we can't prove we created.
+        calendar_was_created = getattr(self, "calendar_was_created", False)
+
+        purge_targets = []
+        if can_delete_calendars and calendar_was_created:
             self.calendar.delete()
-            if self.tasklist != self.calendar:
-                self.tasklist.delete()
-            if self.journallist != self.calendar:
-                self.journallist.delete()
         else:
-            self._purge_csc_objects((self.calendar, self.tasklist, self.journallist))
+            purge_targets.append(self.calendar)
+
+        ## tasklist/journallist are separate calendars only when PrepareCalendar
+        ## created them itself, so deleting those wholesale is always safe.
+        for sibling in (self.tasklist, self.journallist):
+            if sibling is self.calendar:
+                continue
+            if can_delete_calendars:
+                sibling.delete()
+            else:
+                purge_targets.append(sibling)
+
+        if purge_targets:
+            self._purge_csc_objects(purge_targets)
 
     def cleanup_test_data(self, calendar_name=None):
         """Purge caldav-server-tester fixtures without running any checks.

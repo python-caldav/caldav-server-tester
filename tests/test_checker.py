@@ -441,6 +441,7 @@ class TestServerQuirkCheckerCleanup:
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
         checker.journallist = mock_calendar  # Same as calendar by default
+        checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
         # Set features to indicate calendar creation/deletion is supported
         checker._features_checked.copyFeatureSet(
@@ -467,6 +468,7 @@ class TestServerQuirkCheckerCleanup:
         checker.calendar = mock_calendar
         checker.tasklist = mock_tasklist
         checker.journallist = mock_calendar  # Same as calendar
+        checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
         checker._features_checked.copyFeatureSet(
             {
@@ -491,6 +493,7 @@ class TestServerQuirkCheckerCleanup:
         checker.calendar = mock_calendar
         checker.tasklist = mock_calendar  # Same object
         checker.journallist = mock_calendar  # Same object
+        checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
         checker._features_checked.copyFeatureSet(
             {

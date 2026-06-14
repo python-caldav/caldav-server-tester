@@ -2,6 +2,32 @@
 
 ⚠️ This review is AI-generated (Claude Fable 5 via Claude Code) on behalf of tobixen.
 
+## Fix progress tracker
+
+Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
+✅ done · 🚧 in progress · ⬜ todo · ❌ won't fix (see note).
+
+| # | Finding | Status | Notes |
+|---|---------|--------|-------|
+| 1 | Stale-fixture deletion can destroy real user data | ✅ | `_delete_stale_fixtures` only deletes `csc_*` UIDs |
+| 2 | cleanup() deletes a pre-existing user calendar | ✅ | `calendar_was_created` gates wholesale delete |
+| 3 | CLI run lifecycle has no try/finally | ⬜ | |
+| 4 | "Cannot probe" becomes AssertionError | ⬜ | |
+| 5 | CheckRecurrenceSearch: unwrapped searches abort the run | ⬜ | |
+| 6 | UID `weeklymeeting` violates the csc_ cleanup invariant | ✅ | renamed `csc_weeklymeeting`; moved both Oct fixtures into Jan window |
+| 7 | --cleanup-only reports success on failure | ⬜ | |
+| 8 | Explicit --caldav-url path drops extra --config-section accounts | ⬜ | |
+| 9 | Transient errors misclassified as "unsupported" | ⬜ | |
+| 10 | report() collapses feature data before lossless branches read it | ⬜ | |
+| BTC-a | CheckTodoNoDtstartSearch recomputes `_base_year()` | ⬜ | below-the-cut |
+| BTC-b | create-calendar.auto probe catches too few exceptions | ⬜ | below-the-cut |
+| C-1 | Emacs backup files tracked in git | ⬜ | cleanup |
+| C-2 | Write-only state (`checker.cnt`, dead class attrs) | ⬜ | cleanup |
+| C-3 | Process-global monkey-patch of Calendar.search | ⬜ | cleanup |
+| C-4 | Duplicated UIDs/calendar-id literals | ⬜ | cleanup |
+| C-5 | Repeated idioms worth a helper | ⬜ | cleanup |
+| C-6 | Wasted round-trips | ⬜ | cleanup |
+
 Scope: the full codebase (not a diff review), ~7,300 lines of Python, with the
 bulk in `src/caldav_server_tester/checks.py` (3,839 lines).
 

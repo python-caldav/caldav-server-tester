@@ -948,3 +948,87 @@ class TestCheckWellKnown:
 
         call_url = client.session.get.call_args[0][0]
         assert call_url == "https://caldav.example.com/.well-known/caldav"
+
+
+class TestCleanupDoesNotDeleteUserData:
+    """Regression tests for the data-loss findings (code review 2026-06-11, #1 and #2).
+
+    When --caldav-calendar points at a real, pre-existing user calendar, neither
+    cleanup() nor PrepareCalendar's stale-fixture sweep may delete data the tool
+    did not create.
+    """
+
+    def _checker(self) -> ServerQuirkChecker:
+        client = Mock()
+        client.features = FeatureSet()
+        return ServerQuirkChecker(client, debug_mode=None)
+
+    def _calendar_supporting_delete(self, checker: ServerQuirkChecker) -> None:
+        checker._features_checked.set_feature("create-calendar", {"support": "full"})
+        checker._features_checked.set_feature("delete-calendar", {"support": "full"})
+
+    def test_preexisting_user_calendar_not_deleted(self) -> None:
+        """#2: a calendar the tool merely found (not created) must survive cleanup."""
+        checker = self._checker()
+        cal = Mock()
+        cal.objects.return_value = []  # nothing to purge
+        checker.calendar = cal
+        checker.tasklist = cal
+        checker.journallist = cal
+        checker.calendar_was_created = False
+        self._calendar_supporting_delete(checker)
+
+        checker.cleanup(force=True)
+
+        cal.delete.assert_not_called()
+
+    def test_user_data_object_not_purged(self) -> None:
+        """#2: non-csc_ objects in a found calendar must not be deleted during purge."""
+        checker = self._checker()
+        cal = Mock()
+        user_obj = Mock()
+        user_obj.icalendar_component.get.return_value = "real-user-meeting"
+        cal.objects.return_value = [user_obj]
+        checker.calendar = cal
+        checker.tasklist = cal
+        checker.journallist = cal
+        checker.calendar_was_created = False
+        self._calendar_supporting_delete(checker)
+
+        checker.cleanup(force=True)
+
+        cal.delete.assert_not_called()
+        user_obj.delete.assert_not_called()
+
+    def test_tool_created_calendar_is_deleted(self) -> None:
+        """A calendar the tool created should still be deleted wholesale."""
+        checker = self._checker()
+        cal = Mock()
+        checker.calendar = cal
+        checker.tasklist = cal
+        checker.journallist = cal
+        checker.calendar_was_created = True
+        self._calendar_supporting_delete(checker)
+
+        checker.cleanup(force=True)
+
+        cal.delete.assert_called_once()
+
+    def test_delete_stale_fixtures_skips_non_csc(self) -> None:
+        """#1: the stale-fixture sweep only deletes csc_* objects, never real data."""
+        checker = self._checker()
+        check = PrepareCalendar(checker)
+        csc_obj = Mock()
+        real_event = Mock()
+        real_journal = Mock()
+        object_by_uid = {
+            "csc_simple_event1": csc_obj,
+            "real-meeting-2026": real_event,
+            "user-journal-uid": real_journal,
+        }
+
+        check._delete_stale_fixtures(object_by_uid)
+
+        csc_obj.delete.assert_called_once()
+        real_event.delete.assert_not_called()
+        real_journal.delete.assert_not_called()
