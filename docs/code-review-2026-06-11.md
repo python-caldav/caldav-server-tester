@@ -18,7 +18,7 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | 7 | --cleanup-only reports success on failure | ✅ | `_purge_csc_objects` now returns `(removed, errors)`, logs warnings; `--cleanup-only` exits non-zero on errors |
 | 8 | Explicit --caldav-url path drops extra --config-section accounts | ✅ | shared `_build_extra_clients`/`_close_extra_clients`; URL path treats every `--config-section` as an extra account |
 | 9 | Transient errors misclassified as "unsupported" | ✅ | retry once, keep init principal, mark `unknown` + behaviour note + STDERR warning (per maintainer note) |
-| 10 | report() collapses feature data before lossless branches read it | ⬜ | |
+| 10 | report() collapses feature data before lossless branches read it | ✅ | **Confirmed real** (verified `compact=True` permanently mutates). Compact now runs on a `copy.deepcopy`; hints/verbose keep per-child notes |
 | BTC-a | CheckTodoNoDtstartSearch recomputes `_base_year()` | 🚧 | fixed in CheckTodoNoDtstartSearch; the `getattr(...) or _base_year()` variant still todo |
 | BTC-b | create-calendar.auto probe catches too few exceptions | ⬜ | below-the-cut |
 | C-1 | Emacs backup files tracked in git | ⬜ | cleanup |

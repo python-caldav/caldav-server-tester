@@ -551,3 +551,39 @@ class TestPurgeErrorReporting:
             removed, errors = checker._purge_csc_objects([cal])
         assert removed == 1
         assert errors == 0
+
+
+class TestReportDoesNotCorruptFeatureData:
+    """Finding #10: compact rendering must not strip per-child data from the
+    lossless (hints / verbose) report branches."""
+
+    def _checker(self) -> ServerQuirkChecker:
+        client = Mock()
+        client.features = FeatureSet()
+        client.server_name = "X"
+        client.url = "https://x/dav/"
+        checker = ServerQuirkChecker(client)
+        # ALL sibling children present and equal-support -> they collapse to the
+        # parent, but carry differing behaviour notes that must not be lost.
+        checker._features_checked.set_feature(
+            "search.recurrences.expanded.event", {"support": "unsupported", "behaviour": "note-A"}
+        )
+        checker._features_checked.set_feature(
+            "search.recurrences.expanded.todo", {"support": "unsupported", "behaviour": "note-B"}
+        )
+        checker._features_checked.set_feature(
+            "search.recurrences.expanded.exception", {"support": "unsupported", "behaviour": "note-C"}
+        )
+        return checker
+
+    def test_hints_keeps_per_child_behaviour_notes(self) -> None:
+        checker = self._checker()
+        hints = checker.report(return_what="hints")
+        assert "note-A" in hints
+        assert "note-B" in hints
+
+    def test_verbose_text_keeps_per_child_behaviour_notes(self) -> None:
+        checker = self._checker()
+        text = checker.report(verbose=True, return_what=str)
+        assert "note-A" in text
+        assert "note-B" in text

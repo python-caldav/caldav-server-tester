@@ -1,3 +1,4 @@
+import copy
 import inspect
 import logging
 import time
@@ -247,9 +248,13 @@ class ServerQuirkChecker:
         return diff
 
     def report(self, verbose=False, show_diff=False, return_what=str):
-        ## Compute diff before compact because collapse() permanently mutates _server_features
         diff = self._compute_diff() if show_diff else None
-        features = self._features_checked.dotted_feature_set_list(compact=True)
+        ## compact=True collapses sibling sub-features into their parent and
+        ## PERMANENTLY mutates the feature set it runs on (dropping per-child
+        ## behaviour notes).  Run it on a throwaway copy so the lossless branches
+        ## below (hints, verbose text, _get_deviating_features) and any later
+        ## caller still see the full, un-collapsed data.
+        features = copy.deepcopy(self._features_checked).dotted_feature_set_list(compact=True)
         ret = {
             "caldav_version": caldav.__version__,
             "ts": time.time(),
