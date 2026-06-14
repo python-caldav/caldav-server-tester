@@ -654,7 +654,6 @@ class PrepareCalendar(Check):
                     )
                 except Exception:
                     self.set_feature("save-load.journal", False)
-                    self.checker.cnt -= 1
                     journallist = None
             if journallist is not None:
                 self.checker.journallist = journallist
@@ -670,7 +669,6 @@ class PrepareCalendar(Check):
                     self.set_feature("save-load.journal.mixed-calendar", False)
                 except Exception:
                     self.set_feature("save-load.journal", "ungraceful")
-                    self.checker.cnt -= 1
 
     def _create_test_events(self, calendar, cal_id, name, add_if_not_existing):
         """Create all the test event/task/journal objects in the calendar.
@@ -791,7 +789,6 @@ class PrepareCalendar(Check):
             )
         except Exception:
             ## Some servers reject events with alarms or old dates
-            self.checker.cnt -= 1
             logging.warning("Server rejected event with alarm")
 
         recurring_event = add_if_not_existing(
@@ -990,9 +987,8 @@ END:VCALENDAR""",
 
         These are PUT unconditionally (idempotent overwrite by UID) rather than
         via the near-future reuse machinery, since they fall outside the fixture
-        window and would never be matched there.  They are NOT counted in
-        ``checker.cnt`` and are excluded from the comp-type reference sets by
-        :func:`_filter_fixture_window`.
+        window and would never be matched there.  They are excluded from the
+        comp-type reference sets by :func:`_filter_fixture_window`.
         """
         try:
             self.checker.calendar.save_object(
@@ -1115,7 +1111,6 @@ END:VCALENDAR""",
             journals_in_window = []
 
         object_by_uid = {}
-        self.checker.cnt = 0
 
         for obj in _filter_fixture_window(events_in_window + tasks_in_window, base):
             object_by_uid[obj.component["uid"]] = obj
@@ -1126,7 +1121,6 @@ END:VCALENDAR""",
                 pass
 
         def add_if_not_existing(*largs, **kwargs):
-            self.checker.cnt += 1
             if largs[0] == Todo:
                 cal = self.checker.tasklist
             elif largs[0] == Journal:
@@ -1704,12 +1698,11 @@ class CheckSearch(Check):
 
         The reference set is what the comp-type-*specific* queries (events +
         todos + journals) return across every distinct calendar the checker
-        populated - NOT ``self.checker.cnt``.  ``cnt`` is a bookkeeping counter
-        that aggregates objects across the event/task/journal calendars and may
-        include objects that failed to save; comparing a single-calendar
-        comp-type-less search against it produced spurious "fragile"/"ungraceful"
-        verdicts on every server that stores journals or tasks in a separate
-        calendar (the comp-type-less search there can never reach ``cnt``).
+        populated.  An earlier version compared a single-calendar comp-type-less
+        search against a global object counter that aggregated objects across the
+        event/task/journal calendars (and could include objects that failed to
+        save), producing spurious "fragile"/"ungraceful" verdicts on every server
+        that stores journals or tasks in a separate calendar.
         See https://github.com/python-caldav/caldav/issues/681
 
         This must be tested WITHOUT a time-range: a comp-type-less query that

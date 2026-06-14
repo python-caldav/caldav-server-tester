@@ -12,7 +12,6 @@ class Check:
     Every check has it's own class.  This is the base class.
     """
 
-    features_checked = set()
     depends_on = set()
 
     def __init__(self, checker):
