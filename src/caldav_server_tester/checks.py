@@ -1532,6 +1532,96 @@ class CheckAttendeePartstat(Check):
                 pass
 
 
+class CheckRescheduleRecurrenceSeries(Check):
+    """
+    Checks whether the whole of a recurring event can be rescheduled - i.e. the
+    master VEVENT's DTSTART moved (re-anchoring the series) - while a detached
+    exception VEVENT (with RECURRENCE-ID) is attached.
+
+    The probe PUTs the rescheduled series back with a matching If-Match etag, so
+    it is independent of save-load.mutable.if-match-optional.  OX App Suite
+    rejects this re-anchoring with 409 Conflict even with the etag, although
+    rescheduling an exception-free recurring event works fine there.  Exercised
+    in the wild by ``save(all_recurrences=True)`` after a dtstart/dtend change.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.event.recurrences.exception.reschedule"}
+
+    def _run_check(self) -> None:
+        feature = "save-load.event.recurrences.exception.reschedule"
+
+        ## Only meaningful when the server keeps master + exception together;
+        ## otherwise there is no series to re-anchor.
+        if not self.feature_checked("save-load.event.recurrences.exception"):
+            self.set_feature(feature, None)
+            return
+
+        cal = self.checker.calendar
+        uid = "csc_reschedule_series"
+
+        ## A safe day-of-month (<= 28) so the MONTHLY recurrence is well defined,
+        ## comfortably in the future so OX's sliding window keeps it visible.
+        start = (datetime.now(tz=utc) + timedelta(days=45)).replace(day=10, hour=12, minute=0, second=0, microsecond=0)
+        if start.month == 12:
+            second = start.replace(year=start.year + 1, month=1)
+        else:
+            second = start.replace(month=start.month + 1)
+
+        def f(dt):
+            return dt.strftime("%Y%m%dT%H%M%SZ")
+
+        def ics(master_start, rid, exc_start, sequence):
+            hour = timedelta(hours=1)
+            return (
+                "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//caldav-server-tester//EN\n"
+                f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{f(start)}\n"
+                f"DTSTART:{f(master_start)}\nDTEND:{f(master_start + hour)}\n"
+                f"SEQUENCE:{sequence}\nRRULE:FREQ=MONTHLY\n"
+                "SUMMARY:reschedule series check\nEND:VEVENT\n"
+                f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{f(start)}\n"
+                f"RECURRENCE-ID:{f(rid)}\n"
+                f"DTSTART:{f(exc_start)}\nDTEND:{f(exc_start + hour)}\n"
+                f"SEQUENCE:{sequence}\nSUMMARY:exception occurrence\nEND:VEVENT\n"
+                "END:VCALENDAR\n"
+            )
+
+        original = ics(start, second, second, 0)
+        ## Re-anchor the whole series one hour later; the exception's RECURRENCE-ID
+        ## is shifted to keep lining up with the moved series.
+        rescheduled = ics(
+            start + timedelta(hours=1),
+            second + timedelta(hours=1),
+            second + timedelta(hours=1),
+            1,
+        )
+
+        try:
+            cal.add_event(original)
+        except (DAVError, PutError):
+            self.set_feature(feature, None)
+            return
+
+        try:
+            ## Reload to obtain a fresh etag, then PUT the rescheduled series with
+            ## that etag (If-Match), isolating this from if-match-optional.
+            obj = url_object(cal, uid)
+            obj.load()
+            if not obj.etag:
+                self.set_feature(feature, None)
+                return
+            obj.data = rescheduled
+            obj.save()
+            self.set_feature(feature)
+        except (DAVError, PutError):
+            self.set_feature(feature, False)
+        finally:
+            try:
+                url_object(cal, uid).delete()
+            except Exception:
+                pass
+
+
 class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
