@@ -1089,6 +1089,12 @@ class CheckTodoNoDtstartSearch(Check):
         tasklist = getattr(self.checker, "tasklist", None)
         if tasklist is None:
             return
+        ## If generic todo time-range search is broken or unsupported (e.g. Bedework),
+        ## the server returns all objects regardless of the date filter, so finding
+        ## csc_simple_task2 tells us nothing about no-DTSTART handling specifically.
+        ## Leave the feature unset so the parent status propagates.
+        if not self.checker.features_checked.is_supported("search.time-range.todo"):
+            return
         base = _base_year()
         try:
             results = tasklist.search(
