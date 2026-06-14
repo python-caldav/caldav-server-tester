@@ -36,26 +36,31 @@ class ServerQuirkChecker:
         self.debug_mode = debug_mode
 
         ## Handle search-cache delay if configured.
-        ## NOTE: This is a process-global side effect — Calendar.search is
-        ## patched on the class, affecting every Calendar in the process.
-        ## The delay value is stored as a class attribute so that subsequent
-        ## ServerQuirkChecker constructions with a different delay will update it.
+        ##
+        ## The caldav library owns every Calendar instance (they are created
+        ## on demand inside the library, not by this checker), so we cannot wrap
+        ## search() per instance.  The delay is therefore implemented by a
+        ## one-time class-level wrap of Calendar.search whose sleep duration is
+        ## read from a class attribute.  EVERY construction overwrites that
+        ## attribute — including resetting it to 0 when this server has no delay
+        ## configured — so a fast server can no longer inherit a previous slow
+        ## server's delay within the same process (the earlier hazard).
+        from caldav.collection import Calendar
+
         search_cache_config = self._client_obj.features.is_supported("search-cache", return_type=dict)
-        if search_cache_config.get("behaviour") == "delay":
-            delay = search_cache_config.get("delay", 1)
-            ## Wrap Calendar.search with delay decorator
-            from caldav.collection import Calendar
+        delay = search_cache_config.get("delay", 1) if search_cache_config.get("behaviour") == "delay" else 0
+        if delay and not hasattr(Calendar, "_original_search"):
+            Calendar._original_search = Calendar.search
 
-            if not hasattr(Calendar, "_original_search"):
-                Calendar._original_search = Calendar.search
+            def delayed_search(self, *args, **kwargs):
+                d = getattr(Calendar, "_search_delay", 0)
+                if d:
+                    time.sleep(d)
+                return Calendar._original_search(self, *args, **kwargs)
 
-                def delayed_search(self, *args, **kwargs):
-                    time.sleep(Calendar._search_delay)
-                    return Calendar._original_search(self, *args, **kwargs)
+            Calendar.search = delayed_search
 
-                Calendar.search = delayed_search
-
-            Calendar._search_delay = delay
+        Calendar._search_delay = delay
 
     def check_all(self):
         classes = [
