@@ -82,7 +82,7 @@ class ServerQuirkChecker:
     ## Probe objects PrepareCalendar deliberately PUT far in the past (year 2000).
     ## Sliding-window servers (e.g. OX) hide these from listings/REPORT, so they
     ## must be removed by direct URL rather than discovered via objects().
-    HIDDEN_PROBE_UIDS = ("csc_olddate_event", "csc_olddate_task")
+    HIDDEN_PROBE_UIDS = (checks.OLDDATE_EVENT_UID, checks.OLDDATE_TASK_UID)
 
     def _purge_csc_objects(self, calendars):
         """Delete every ``csc_*`` object from the given calendars.
@@ -193,7 +193,7 @@ class ServerQuirkChecker:
 
         Returns a ``(removed, errors)`` tuple (see ``_purge_csc_objects``).
         """
-        cal_id = "caldav-server-checker-calendar"
+        cal_id = checks.TEST_CALENDAR_CAL_ID
         candidates = []
 
         ## by calendar id (and the dedicated task/journal siblings)

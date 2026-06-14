@@ -17,6 +17,19 @@ from .checks_base import Check
 
 utc = timezone.utc
 
+## cal_id under which PrepareCalendar creates its test calendar (and, with the
+## _tasks/_journals suffixes, the dedicated task/journal calendars).  Single
+## source of truth: checker.cleanup_test_data() needs the same id to find
+## leftovers without re-running the checks.
+TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
+
+## UIDs of the two probe objects PrepareCalendar deliberately PUTs far in the
+## past (year 2000) to detect sliding-window servers.  Referenced by the
+## old-date / unlimited-time-range checks here and by the cleanup fallback in
+## checker.py (ServerQuirkChecker.HIDDEN_PROBE_UIDS).
+OLDDATE_EVENT_UID = "csc_olddate_event"
+OLDDATE_TASK_UID = "csc_olddate_task"
+
 
 def _base_year(now=None):
     """The calendar year the reusable test fixtures live in: *next* year.
@@ -994,7 +1007,7 @@ END:VCALENDAR""",
             self.checker.calendar.save_object(
                 Event,
                 summary="old-date probe event (year 2000)",
-                uid="csc_olddate_event",
+                uid=OLDDATE_EVENT_UID,
                 dtstart=datetime(2000, 1, 1, 12, 0, 0, tzinfo=utc),
                 dtend=datetime(2000, 1, 1, 13, 0, 0, tzinfo=utc),
             )
@@ -1004,7 +1017,7 @@ END:VCALENDAR""",
             self.checker.tasklist.save_object(
                 Todo,
                 summary="old-date probe task (year 2000)",
-                uid="csc_olddate_task",
+                uid=OLDDATE_TASK_UID,
                 dtstart=datetime(2000, 1, 9, 12, 0, 0, tzinfo=utc),
                 due=datetime(2000, 1, 9, 13, 0, 0, tzinfo=utc),
             )
@@ -1070,7 +1083,7 @@ END:VCALENDAR""",
         base = _base_year()
         self.checker.fixture_base_year = base
 
-        cal_id = "caldav-server-checker-calendar"
+        cal_id = TEST_CALENDAR_CAL_ID
         test_cal_info = self.checker.expected_features.is_supported(
             "test-calendar.compatibility-tests", return_type=dict
         )
@@ -1804,7 +1817,7 @@ class CheckSearch(Check):
                 event=True,
                 post_filter=False,
             )
-            old_event_ok = _found(events, "csc_olddate_event") and not _found(events, "csc_simple_event1")
+            old_event_ok = _found(events, OLDDATE_EVENT_UID) and not _found(events, "csc_simple_event1")
             self.set_feature("search.time-range.event.old-dates", old_event_ok)
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.event.old-dates", "ungraceful")
@@ -1817,7 +1830,7 @@ class CheckSearch(Check):
                 include_completed=True,
                 post_filter=False,
             )
-            old_todo_ok = _found(tasks, "csc_olddate_task") and not _found(tasks, "csc_simple_task3")
+            old_todo_ok = _found(tasks, OLDDATE_TASK_UID) and not _found(tasks, "csc_simple_task3")
             self.set_feature("search.time-range.todo.old-dates", old_todo_ok)
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.todo.old-dates", "ungraceful")
@@ -2000,7 +2013,7 @@ class CheckSearch(Check):
                     uids.add(str(o.icalendar_component.get("UID", "")))
                 except Exception:
                     pass
-            found_old = "csc_olddate_event" in uids
+            found_old = OLDDATE_EVENT_UID in uids
             found_next = "csc_simple_event1" in uids
             if found_old and found_next:
                 self.set_feature("search.unlimited-time-range")

@@ -23,8 +23,8 @@ Started 2026-06-14 (Claude Opus 4.8 via Claude Code). Status legend:
 | BTC-b | create-calendar.auto probe catches too few exceptions | ✅ | catches `DAVError` base class so a 500 no longer escapes/aborts the rest of the probe |
 | C-1 | Emacs backup files tracked in git | ✅ | already resolved upstream — no `~` files tracked, `.gitignore` has `*~` |
 | C-2 | Write-only state (`checker.cnt`, dead class attrs) | ✅ | removed write-only `checker.cnt` bookkeeping and the dead `Check.features_checked = set()` class attr |
-| C-3 | Process-global monkey-patch of Calendar.search | ⬜ | cleanup |
-| C-4 | Duplicated UIDs/calendar-id literals | ⬜ | cleanup |
+| C-3 | Process-global monkey-patch of Calendar.search | ✅ | per-checker reset of the class-level delay (true per-instance wrap impossible — library owns Calendars); validated against Bedework |
+| C-4 | Duplicated UIDs/calendar-id literals | ✅ | `TEST_CALENDAR_CAL_ID`, `OLDDATE_EVENT_UID`, `OLDDATE_TASK_UID` constants in checks.py, referenced from checker.py. (`.ics` fallback handled under C-5) |
 | C-5 | Repeated idioms worth a helper | ⬜ | cleanup |
 | C-6 | Wasted round-trips | ⬜ | cleanup |
 
