@@ -382,13 +382,11 @@ class CheckMakeDeleteCalendar(Check):
             cal = self.checker.principal.calendar(cal_id="this_should_not_exist")
             cal.events()
             self.set_feature("create-calendar.auto")
-        except (
-            NotFoundError,
-            AuthorizationError,
-            ReportError,
-        ):  ## robur throws a 403 .. and that's ok.
-            ## Some unknown server throws 500 internal server error ... well, we should survive that, too
-            ## (perhaps we should do an `except Exception` instead?)
+        except DAVError:
+            ## Any DAV-level error (404 NotFound, 403 robur, ReportError, or the
+            ## 500 some servers return) just means the non-existent calendar was
+            ## not auto-created.  Catch the DAVError base class so a 500 doesn't
+            ## escape and abort the rest of the make/delete probing below.
             self.set_feature("create-calendar.auto", False)
 
         ## Check on "no_default_calendar" flag

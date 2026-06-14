@@ -19,7 +19,7 @@ from unittest.mock import Mock
 
 import pytest
 from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import NotFoundError, ReportError
+from caldav.lib.error import DAVError, NotFoundError, ReportError
 
 from caldav_server_tester.checker import ServerQuirkChecker
 from caldav_server_tester.checks import (
@@ -244,6 +244,53 @@ class TestCheckMakeDeleteCalendar:
         # Should not detect auto-creation (first attempt with weird name fails)
         # Note: The actual result depends on complex flow, but calendar creation should succeed
         assert checker.features_checked.is_supported("create-calendar")
+
+    def test_auto_probe_survives_500_and_still_detects_create(self) -> None:
+        """BTC-b: a 500 on the auto-create probe must not escape the probe; the
+        check should record auto=False and go on to detect manual create support."""
+        checker, client, principal = self.create_checker_with_principal()
+
+        mock_calendar = Mock()
+        mock_calendar.events.return_value = []
+        mock_calendar.id = "caldav-server-checker-mkdel-test"
+        deleted_count = [0]
+
+        def delete_calendar():
+            deleted_count[0] += 1
+
+        mock_calendar.delete = delete_calendar
+        principal.make_calendar.return_value = mock_calendar
+
+        call_count = [0]
+
+        def calendar_side_effect(cal_id=None, name=None):
+            call_count[0] += 1
+            # Auto-create probe: server answers 500 (a generic DAVError)
+            if call_count[0] == 1 and cal_id == "this_should_not_exist":
+                raise DAVError("500 Internal Server Error")
+            if name == "Yep" and cal_id == "caldav-server-checker-mkdel-test":
+                mock_cal = Mock()
+                mock_cal.id = mock_calendar.id
+                mock_cal.events.return_value = []
+                return mock_cal
+            if deleted_count[0] > 0 and cal_id == "caldav-server-checker-mkdel-test":
+                raise NotFoundError("Deleted")
+            if cal_id == "caldav-server-checker-mkdel-test":
+                return mock_calendar
+            raise NotFoundError("Not found")
+
+        principal.calendar.side_effect = calendar_side_effect
+        principal.calendars.return_value = []
+
+        check = CheckMakeDeleteCalendar(checker)
+        check.run_check()
+
+        # The 500 was absorbed as auto=unsupported (before the fix it escaped the
+        # probe and the generic handler marked it "unknown")...
+        assert checker.features_checked.is_supported("create-calendar.auto", str) == "unsupported"
+        # ...and the probe carried on to the manual make/delete attempts instead
+        # of aborting at the auto probe.
+        principal.make_calendar.assert_called()
 
     def _run_displayname_probe(self, checker, principal, *, relocate, name_sticks=True, get_displayname_raises=False):
         """Drive CheckMakeDeleteCalendar._check_set_displayname() with a mocked
