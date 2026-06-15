@@ -203,7 +203,16 @@ def _do_cleanup_only(conn, calendar_name):
 
 
 def _check_server(
-    server, run_checks, run_features, verbose, output_format, show_diff, no_cleanup, calendar=None, cleanup_only=False
+    server,
+    run_checks,
+    run_features,
+    verbose,
+    output_format,
+    show_diff,
+    no_cleanup,
+    calendar=None,
+    cleanup_only=False,
+    features=None,
 ):
     """Start a TestServer (if needed), run checks, stop it, and print the report."""
     from caldav.davclient import DAVClient
@@ -211,6 +220,18 @@ def _check_server(
     server.start()
     try:
         main_client = server.get_sync_client()
+        ## An explicit --caldav-features overrides the registry server's own
+        ## feature set.  Without this the flag would be silently dropped on the
+        ## --name/registry path (it is only honoured on the explicit-config path
+        ## via get_davclient), so e.g. a write-delay peculiarity could never be
+        ## activated for a registered server without editing its config.
+        if features is not None:
+            from caldav.compatibility_hints import FeatureSet
+            from caldav.config import resolve_features
+
+            resolved = resolve_features(features)
+            if resolved is not None:
+                main_client.features = FeatureSet(resolved)
         if cleanup_only:
             with main_client:
                 _do_cleanup_only(main_client, calendar)
@@ -377,6 +398,7 @@ def check_server_compatibility(
                     no_cleanup,
                     calendar=caldav_calendar,
                     cleanup_only=cleanup_only,
+                    features=conn_keys.get("features"),
                 )
                 return
 

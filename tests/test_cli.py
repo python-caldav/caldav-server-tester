@@ -142,6 +142,32 @@ class TestCliNameFallback:
             )
             mock_check.assert_called_once()
 
+    def test_caldav_features_forwarded_to_check_server(self) -> None:
+        """--caldav-features must reach _check_server on the registry path.
+
+        Previously the flag was silently dropped for --name/registry servers
+        (honoured only on the explicit-config path via get_davclient), so a
+        peculiarity like write-delay could not be activated without editing the
+        registry server's config.
+        """
+        runner = CliRunner()
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = MagicMock()
+
+        with (
+            patch(
+                "caldav_server_tester.caldav_server_tester._find_caldav_test_registry",
+                return_value=mock_registry,
+            ),
+            patch("caldav_server_tester.caldav_server_tester._check_server") as mock_check,
+        ):
+            runner.invoke(
+                check_server_compatibility,
+                ["--name", "knownserver", "--caldav-features", "infomaniak"],
+            )
+            mock_check.assert_called_once()
+            assert mock_check.call_args.kwargs.get("features") == "infomaniak"
+
     def test_find_registry_works_when_tests_shadowed_in_sys_modules(self) -> None:
         """Registry discovery must succeed even when sys.modules['tests'] points elsewhere.
 
