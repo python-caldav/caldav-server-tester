@@ -327,6 +327,24 @@ class CheckMakeDeleteCalendar(Check):
         except DAVError:
             return False
 
+    def _poll_calendar_accessible(self, cal_id, timeout=10):
+        """Poll until the calendar at ``cal_id`` answers ``events()``.
+
+        Returns ``(cal_or_None, waited_seconds)``.  Some servers
+        (Infomaniak/SabreDAV) create calendars *asynchronously*: MKCALENDAR
+        returns before the collection is queryable, 404ing for a few seconds.
+        Anything that creates a calendar and immediately uses it must wait here,
+        or it both mis-probes the calendar AND leaks it (it does get created
+        server-side; we just never wait around to use or delete it).
+        """
+        cal = self.checker.principal.calendar(cal_id=cal_id)
+        waited = 0
+        while not self._calendar_is_accessible(cal) and waited < timeout:
+            time.sleep(1)
+            waited += 1
+            cal = self.checker.principal.calendar(cal_id=cal_id)
+        return (cal if self._calendar_is_accessible(cal) else None), waited
+
     def _try_make_calendar(self, cal_id, **kwargs):
         """
         Does some attempts on creating and deleting calendars, and sets some
@@ -350,13 +368,6 @@ class CheckMakeDeleteCalendar(Check):
         ## create the calendar
         try:
             cal = self.checker.principal.make_calendar(cal_id=cal_id, **kwargs)
-            ## calendar creation probably went OK, but we need to be sure...
-            cal.events()
-            ## calendar creation must have gone OK.
-            calmade = True
-            self.checker.principal.calendar(cal_id=cal_id).events()
-            self.set_feature("create-calendar")
-
         except DAVError:
             ## calendar creation created an exception.  Maybe the calendar exists?
             cal = self.checker.principal.calendar(cal_id=cal_id)
@@ -365,6 +376,25 @@ class CheckMakeDeleteCalendar(Check):
             if not cal:
                 ## cal not made and does not exist, exception thrown.
                 return False
+        else:
+            ## MKCALENDAR returned without error, but we must be sure the
+            ## collection is actually usable - poll for it (handles async creation,
+            ## see _poll_calendar_accessible) rather than concluding creation
+            ## failed on the first 404.
+            cal, waited = self._poll_calendar_accessible(cal_id)
+            if cal is None:
+                return False
+            calmade = True
+            if waited:
+                ## Supported, but the client must poll/wait for the calendar to
+                ## materialise — a quirk (is_supported(bool) stays True so the
+                ## downstream checks still run), not plain "full".
+                self.set_feature(
+                    "create-calendar",
+                    {"support": "quirk", "behaviour": f"delayed creation (not queryable until ~{waited}s)"},
+                )
+            else:
+                self.set_feature("create-calendar")
 
         assert cal
 
@@ -599,19 +629,16 @@ class CheckMakeDeleteCalendar(Check):
         ## clean slate
         _cleanup()
 
-        try:
-            self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
-        except DAVError:
-            ## Couldn't create the probe calendar (e.g. a server that needs mkcol
-            ## or refuses a name= at creation).  We can't probe the
-            ## set-displayname behaviour (which requires creating a calendar with
-            ## a name) - those two features collapse under the parent
-            ## create-calendar status.  But reading DAV:displayname is an
-            ## ordinary PROPFIND, so we can still probe propfind.displayname
-            ## against an existing calendar.  (propfind.displayname has no
-            ## checked parent, so it must be set explicitly either way, or the
-            ## post-check assertion in run_check() trips on it.)
-            unknown = {"support": "unknown", "behaviour": "could not create probe calendar"}
+        def _fallback_displayname(reason):
+            ## We can't probe the set-displayname behaviour (which requires
+            ## creating a usable calendar with a name) - those two features
+            ## collapse under the parent create-calendar status.  But reading
+            ## DAV:displayname is an ordinary PROPFIND, so we can still probe
+            ## propfind.displayname against an existing calendar.
+            ## (propfind.displayname has no checked parent, so it must be set
+            ## explicitly either way, or the post-check assertion in run_check()
+            ## trips on it.)
+            unknown = {"support": "unknown", "behaviour": reason}
             self.set_feature("create-calendar.set-displayname", unknown)
             self.set_feature("create-calendar.set-displayname.stable-url", unknown)
             existing = self._find_existing_calendar()
@@ -619,10 +646,26 @@ class CheckMakeDeleteCalendar(Check):
                 self._probe_propfind_displayname(existing)
             else:
                 self.set_feature("propfind.displayname", unknown)
+
+        try:
+            self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
+        except DAVError:
+            ## Couldn't create the probe calendar (e.g. a server that needs mkcol
+            ## or refuses a name= at creation).
+            _fallback_displayname("could not create probe calendar")
+            return
+
+        ## Wait for the probe calendar to materialise (async creation, see
+        ## _poll_calendar_accessible) before reading any properties off it -
+        ## otherwise display-name support is mis-probed as unsupported.
+        probe_cal, _ = self._poll_calendar_accessible(cal_id)
+        if probe_cal is None:
+            _fallback_displayname("probe calendar did not become queryable")
+            _cleanup()
             return
 
         ## Probe propfind.displayname directly from the calendar we just created.
-        self._probe_propfind_displayname(self.checker.principal.calendar(cal_id=cal_id))
+        self._probe_propfind_displayname(probe_cal)
 
         try:
             located = _find_by_displayname(unique_name)
@@ -696,6 +739,19 @@ class PrepareCalendar(Check):
                 )
             calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
             self.checker.calendar_was_created = True
+            ## Some servers (Infomaniak/SabreDAV) create calendars asynchronously:
+            ## the collection 404s for a few seconds after MKCALENDAR returns.
+            ## Wait for it to materialise before the fixture-loading checks start
+            ## using it (CheckMakeDeleteCalendar already detected this and marked
+            ## create-calendar as a "delayed creation" quirk).
+            waited = 0
+            while waited < 10:
+                try:
+                    calendar.events()
+                    break
+                except DAVError:
+                    time.sleep(1)
+                    waited += 1
 
         self.checker.calendar = calendar
         self.checker.tasklist = calendar

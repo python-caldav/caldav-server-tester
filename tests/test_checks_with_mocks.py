@@ -110,6 +110,60 @@ class TestCheckMakeDeleteCalendar:
 
         return checker, client, mock_principal
 
+    def test_create_calendar_async_delayed(self, monkeypatch) -> None:
+        """Infomaniak/SabreDAV create calendars asynchronously: MKCALENDAR returns
+        OK but the new collection 404s for a few seconds.  The probe must poll for
+        it to materialise instead of concluding creation failed (which both
+        mis-reports create-calendar AND leaks the orphaned calendar), and record
+        the result as a 'delayed creation' quirk."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, client, principal = self.create_checker_with_principal()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        # bypass the raw-DELETE machinery; this test is only about creation detection
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: None)
+
+        # events() 404s the first 3 times (calendar not yet materialised), then OK
+        state = {"n": 0}
+
+        def events_side_effect():
+            state["n"] += 1
+            if state["n"] <= 3:
+                raise NotFoundError("Node could not be found")
+            return []
+
+        probe_cal = Mock()
+        probe_cal.events.side_effect = events_side_effect
+        principal.calendar.return_value = probe_cal
+        principal.make_calendar.return_value = Mock()
+
+        check = CheckMakeDeleteCalendar(checker)
+        calmade = check._try_make_calendar(cal_id="x")
+
+        assert calmade is True
+        assert checker.features_checked.is_supported("create-calendar", str) == "quirk"
+        assert "delayed" in checker.features_checked.is_supported("create-calendar", dict)["behaviour"]
+
+    def test_create_calendar_never_materialises_is_unsupported(self, monkeypatch) -> None:
+        """If the calendar never becomes accessible, creation is still treated as
+        failed (returns False) — the poll must not turn a real failure into a
+        false positive."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, client, principal = self.create_checker_with_principal()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+
+        probe_cal = Mock()
+        probe_cal.events.side_effect = NotFoundError("never shows up")
+        principal.calendar.return_value = probe_cal
+        principal.make_calendar.return_value = Mock()
+
+        check = CheckMakeDeleteCalendar(checker)
+        assert check._try_make_calendar(cal_id="x") is False
+        ## _try_make_calendar leaves the verdict to the caller; it must NOT have
+        ## recorded create-calendar as supported off the back of a failed poll.
+        assert "create-calendar" not in checker.features_checked.dotted_feature_set_list()
+
     def test_calendar_auto_creation_detected(self) -> None:
         """When accessing non-existent calendar creates it, auto feature is set"""
         checker, client, principal = self.create_checker_with_principal()
