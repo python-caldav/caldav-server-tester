@@ -430,6 +430,50 @@ class TestCheckMakeDeleteCalendar:
         ## set-displayname behaviour is genuinely untestable here -> unknown
         assert checker.features_checked.is_supported("create-calendar.set-displayname", str) == "unknown"
 
+    def _drive_run_check_without_create_calendar(self, checker, principal):
+        """Run CheckMakeDeleteCalendar.run_check() with the make/delete probe
+        stubbed to the terminal state of a server that supports no calendar
+        creation at all (verified: Infomaniak).  Exercises the post-check
+        assertion in run_check() that used to abort the whole run."""
+        check = CheckMakeDeleteCalendar(checker)
+
+        def fake_probe_make_delete():
+            check.set_feature("get-current-user-principal.has-calendar", True)
+            check.set_feature("create-calendar.auto", False)
+            check.set_feature("create-calendar", False)
+            unknown = {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"}
+            check.set_feature("delete-calendar", unknown)
+            check.set_feature("delete-calendar.free-namespace", unknown)
+
+        check._probe_make_delete = fake_probe_make_delete
+        check.run_check()
+        return check
+
+    def test_propfind_displayname_probed_when_create_calendar_unsupported(self) -> None:
+        """A server with no calendar-creation support must not abort the run:
+        propfind.displayname is an ordinary PROPFIND, probed against an existing
+        calendar even though set-displayname cannot be tested.
+
+        Regression for: ``CheckMakeDeleteCalendar failed to check declared
+        features: {'propfind.displayname'}`` (the whole run aborted)."""
+        checker, client, principal = self.create_checker_with_principal()
+        existing = Mock()
+        existing.url = "https://example.com/dav/me/existing/"
+        existing.get_display_name.return_value = "My Calendar"
+        principal.calendars.return_value = [existing]
+
+        check = self._drive_run_check_without_create_calendar(checker, principal)
+        assert check.feature_checked("propfind.displayname")
+
+    def test_propfind_displayname_unknown_when_no_calendar_and_no_create(self) -> None:
+        """No calendar to probe and no create support: propfind.displayname is
+        recorded 'unknown' rather than left unset (which would abort the run)."""
+        checker, client, principal = self.create_checker_with_principal()
+        principal.calendars.return_value = []
+
+        check = self._drive_run_check_without_create_calendar(checker, principal)
+        assert check.feature_checked("propfind.displayname", str) == "unknown"
+
     @pytest.mark.skip(
         reason="Complex multi-call mocking pattern - CheckMakeDeleteCalendar._run_check has very complex logic with multiple retry paths"
     )

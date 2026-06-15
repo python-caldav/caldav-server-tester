@@ -425,10 +425,24 @@ class CheckMakeDeleteCalendar(Check):
 
     def _run_check(self):
         self._probe_make_delete()
-        ## The display-name behaviour is probed separately and deterministically,
-        ## but only if we were actually able to create calendars at all.
+        ## The set-displayname behaviour can only be probed by creating a
+        ## calendar with a name, so it is gated on create-calendar; when that is
+        ## unsupported, the two set-displayname* features collapse under the
+        ## create-calendar status.  But propfind.displayname is an ordinary
+        ## PROPFIND that works on any existing calendar and has no checked parent
+        ## to collapse under, so we must always probe it - against the freshly
+        ## created probe calendar when we can, against an existing one otherwise.
         if self.checker.features_checked.is_supported("create-calendar"):
             self._check_set_displayname()
+        else:
+            existing = self._find_existing_calendar()
+            if existing is not None:
+                self._probe_propfind_displayname(existing)
+            else:
+                self.set_feature(
+                    "propfind.displayname",
+                    {"support": "unknown", "behaviour": "no calendar available to probe"},
+                )
 
     def _probe_make_delete(self):
         try:
