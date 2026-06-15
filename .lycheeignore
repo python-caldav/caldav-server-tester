@@ -1,2 +1,7 @@
-## fsf.org redirects to www.fsf.org, but I don't want to change the LICENSE file due to that.  Also, fsf.org fails evey now and then.  Ignoring it ...
+## fsf.org redirects to www.fsf.org, but I don't want to change the LICENSE file due to that.  Also, fsf.org fails every now and then.  Ignoring it ...
 https://fsf.org
+
+## Placeholder/example URLs appearing in docstrings and test fixtures - not real endpoints
+https://host/.well-known/caldav
+https://x/dav/
+http://localhost:5232/
