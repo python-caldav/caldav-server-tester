@@ -553,6 +553,106 @@ class TestPurgeErrorReporting:
         assert errors == 0
 
 
+class TestWriteDelay:
+    """write-delay peculiarity: sleep after every write request.
+
+    Some servers (Infomaniak/SabreDAV) process writes asynchronously, so the
+    checker must wait after each PUT/DELETE/MKCALENDAR/... before relying on the
+    change being visible.  This is the general (write-side) counterpart of the
+    search-cache delay.
+    """
+
+    def _client(self, delay=None):
+        client = Mock()
+        features = FeatureSet()
+        if delay is not None:
+            features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": delay}}, collapse=False)
+        client.features = features
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        ## A real request() captured before wrapping; the wrapper must call through.
+        client.request = Mock(name="request", return_value="response")
+        return client
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_sleeps_after_write_method(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        ServerQuirkChecker(client)
+        result = client.request("https://example.com/caldav/cal/obj.ics", "PUT", "BEGIN:VCALENDAR...")
+        assert result == "response"  ## the original return value is passed through
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_sleeps_after_every_write_verb(self, mock_sleep) -> None:
+        client = self._client(delay=7)
+        ServerQuirkChecker(client)
+        for verb in ("PUT", "DELETE", "MKCALENDAR", "MKCOL", "PROPPATCH", "MOVE", "POST"):
+            client.request("https://example.com/caldav/x", verb)
+        assert mock_sleep.call_count == 7
+        assert all(c.args == (7,) for c in mock_sleep.call_args_list)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_does_not_sleep_after_read_method(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        ServerQuirkChecker(client)
+        for verb in ("GET", "PROPFIND", "REPORT", "OPTIONS", "HEAD"):
+            client.request("https://example.com/caldav/x", verb)
+        mock_sleep.assert_not_called()
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_method_matching_is_case_insensitive(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        ServerQuirkChecker(client)
+        client.request("https://example.com/caldav/x", "put")
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_no_delay_when_unconfigured(self, mock_sleep) -> None:
+        client = self._client(delay=None)
+        original = client.request
+        ServerQuirkChecker(client)
+        ## request must be left untouched when the server has no write-delay
+        assert client.request is original
+        client.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_not_called()
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_no_delay_when_behaviour_not_delay(self, mock_sleep) -> None:
+        client = self._client()
+        client.features.copyFeatureSet({"write-delay": {"behaviour": "normal"}}, collapse=False)
+        original = client.request
+        ServerQuirkChecker(client)
+        assert client.request is original
+        client.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_not_called()
+
+    def test_write_delay_is_reported_as_observed_quirk(self) -> None:
+        client = self._client(delay=10)
+        checker = ServerQuirkChecker(client)
+        observed = checker.features_checked.is_supported("write-delay", dict)
+        assert observed.get("support") == "quirk"
+        assert observed.get("delay") == 10
+        text = checker.report(return_what=str)
+        assert "write-delay" in text
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_also_wraps_extra_clients(self, mock_sleep) -> None:
+        main = self._client(delay=10)
+        extra = self._client(delay=10)
+        ServerQuirkChecker(main, extra_clients=[extra])
+        extra.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_does_not_double_wrap_shared_client(self, mock_sleep) -> None:
+        ## A client reused across two checkers must sleep ONCE per write, not twice.
+        client = self._client(delay=10)
+        ServerQuirkChecker(client)
+        ServerQuirkChecker(client)
+        client.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_called_once_with(10)
+
+
 class TestReportDoesNotCorruptFeatureData:
     """Finding #10: compact rendering must not strip per-child data from the
     lossless (hints / verbose) report branches."""

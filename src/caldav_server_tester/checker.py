@@ -9,6 +9,42 @@ from caldav.compatibility_hints import FeatureSet
 from . import checks
 from .checks_base import Check
 
+## HTTP methods that change server state.  A write-delay server settles each of
+## these asynchronously, so the checker sleeps after every such request.
+WRITE_HTTP_METHODS = frozenset({"PUT", "DELETE", "MKCALENDAR", "MKCOL", "PROPPATCH", "MOVE", "COPY", "POST"})
+
+
+def _install_write_delay(client, delay):
+    """Make ``client`` sleep ``delay`` seconds after every write request.
+
+    Some servers (Infomaniak/SabreDAV) process writes asynchronously: a PUT,
+    DELETE, MKCALENDAR, PROPPATCH, ... returns before the change is queryable,
+    so an immediate read-back 404s or returns stale data.  Sleeping after each
+    write request lets the change settle.  This is the general, write-side
+    counterpart of the search-cache delay (which only delays searches).
+
+    The delay is stored on the client and read dynamically by the wrapper, so a
+    later call with a different value (or 0) takes effect without re-wrapping.
+    Re-wrapping is guarded by a sentinel on the wrapper itself: ``is True``
+    rather than a plain truthiness test, because a Mock client's request()
+    auto-creates a (truthy) attribute that a naive guard would mistake for an
+    existing wrapper.
+    """
+    client._write_delay = delay
+    original_request = client.request
+    if getattr(original_request, "_write_delay_wrapper", False) is True:
+        return
+
+    def delayed_request(url, method="GET", *args, **kwargs):
+        response = original_request(url, method, *args, **kwargs)
+        d = getattr(client, "_write_delay", 0)
+        if d and str(method).upper() in WRITE_HTTP_METHODS:
+            time.sleep(d)
+        return response
+
+    delayed_request._write_delay_wrapper = True
+    client.request = delayed_request
+
 
 class ServerQuirkChecker:
     """This class will ...
@@ -61,6 +97,27 @@ class ServerQuirkChecker:
             Calendar.search = delayed_search
 
         Calendar._search_delay = delay
+
+        ## Handle write-delay if configured.  Unlike search-cache (which wraps the
+        ## library-owned Calendar class), every write goes through the client's
+        ## request(), which this checker owns - so wrap that per client, covering
+        ## the main connection and any extra (scheduling) accounts on the same
+        ## asynchronous server.  Reflect it into the observed feature set so the
+        ## report still flags "this server needs a write delay" rather than
+        ## silently smoothing over the fragility a naive client would hit.
+        write_delay_config = self._client_obj.features.is_supported("write-delay", return_type=dict)
+        write_delay = write_delay_config.get("delay", 0) if write_delay_config.get("behaviour") == "delay" else 0
+        if write_delay:
+            for client in (self._client_obj, *self._extra_clients):
+                _install_write_delay(client, write_delay)
+            self._features_checked.set_feature(
+                "write-delay",
+                {
+                    "support": "quirk",
+                    "behaviour": f"writes processed asynchronously; waiting ~{write_delay}s after every write",
+                    "delay": write_delay,
+                },
+            )
 
     def check_all(self):
         classes = [
