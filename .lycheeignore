@@ -5,3 +5,7 @@ https://fsf.org
 https://host/.well-known/caldav
 https://x/dav/
 http://localhost:5232/
+
+## Placeholder hosts in unit-test fixtures - never resolvable, and not meant to be
+^http://dav/
+^https://h/

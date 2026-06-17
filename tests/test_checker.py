@@ -687,3 +687,74 @@ class TestReportDoesNotCorruptFeatureData:
         text = checker.report(verbose=True, return_what=str)
         assert "note-A" in text
         assert "note-B" in text
+
+
+class TestPurgeProbeCalendars:
+    """The cleanup sweep must remove leftover throwaway probe calendars (so
+    repeated runs cannot accumulate calendars on quota-limited servers) without
+    touching the user's real calendars."""
+
+    ## The free-namespace probe names its calendars testcalendar-<uuid4>
+    ## (checks.py), and the sweep requires that shape rather than the bare
+    ## prefix so a human's "testcalendar-2019" is not deleted.  Fixtures here
+    ## therefore have to use real uuid-shaped ids.
+    @staticmethod
+    def _cal(url: str, name: str | None = None) -> Mock:
+        cal = Mock()
+        cal.url = url
+        cal.get_display_name.return_value = name
+        return cal
+
+    def _checker(self) -> ServerQuirkChecker:
+        return ServerQuirkChecker(Mock())
+
+    def test_purges_probe_calendars_only(self) -> None:
+        checker = self._checker()
+        real = self._cal("https://h/cal/61f72804-uuid/", name="Tobias Brox")
+        probes = [
+            self._cal("https://h/cal/caldav-server-checker-calendar/", "Calendar for checking"),
+            self._cal("https://h/cal/caldav-server-checker-mkdel-test/"),
+            self._cal("https://h/cal/caldav-server-checker-displayname-test/"),
+            self._cal("https://h/cal/testcalendar-2f1c8d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f/"),
+            self._cal("https://h/cal/csc-inbox-delivery-probe/", "csc-inbox-delivery-probe"),
+            # created with name only (no cal_id) -> server-assigned URL, matched by name
+            self._cal("https://h/cal/server-assigned-uuid/", name="csc_duplicate_uid_cal2"),
+        ]
+        checker.principal = Mock()
+        checker.principal.calendars.return_value = [real, *probes]
+        checker.extra_principals = []
+
+        removed = checker._purge_probe_calendars()
+
+        assert removed == len(probes)
+        real.delete.assert_not_called()
+        for p in probes:
+            p.delete.assert_called_once()
+
+    def test_sweeps_extra_principals_too(self) -> None:
+        checker = self._checker()
+        checker.principal = Mock()
+        checker.principal.calendars.return_value = []
+        attendee_probe = self._cal("https://h/cal/csc-inbox-probe-attendee-cal/", "csc-inbox-probe-attendee-cal")
+        extra = Mock()
+        extra.calendars.return_value = [attendee_probe]
+        checker.extra_principals = [extra]
+
+        removed = checker._purge_probe_calendars()
+
+        assert removed == 1
+        attendee_probe.delete.assert_called_once()
+
+    def test_delete_failure_does_not_abort_sweep(self) -> None:
+        checker = self._checker()
+        bad = self._cal("https://h/cal/testcalendar-11111111-2222-4333-8444-555555555555/")
+        bad.delete.side_effect = Exception("500")
+        good = self._cal("https://h/cal/testcalendar-66666666-7777-4888-8999-aaaaaaaaaaaa/")
+        checker.principal = Mock()
+        checker.principal.calendars.return_value = [bad, good]
+        checker.extra_principals = []
+
+        removed = checker._purge_probe_calendars()
+
+        assert removed == 1
+        good.delete.assert_called_once()

@@ -1,6 +1,7 @@
 import copy
 import inspect
 import logging
+import re
 import time
 
 import caldav
@@ -12,6 +13,33 @@ from .checks_base import Check
 ## HTTP methods that change server state.  A write-delay server settles each of
 ## these asynchronously, so the checker sleeps after every such request.
 WRITE_HTTP_METHODS = frozenset({"PUT", "DELETE", "MKCALENDAR", "MKCOL", "PROPPATCH", "MOVE", "COPY", "POST"})
+
+## cal_id / display-name prefixes for every throwaway calendar this tool creates
+## while probing (the main test calendar, the make/delete and display-name
+## probes, the free-namespace uniqueness probe and the scheduling probes).  The
+## cleanup sweep removes any leftover matching these, so a crashed run, an
+## exception, or an asynchronous server-side DELETE cannot make calendars
+## accumulate (some servers cap the number of calendars per principal).
+PROBE_CALENDAR_PREFIXES = (
+    "caldav-server-checker",  # main test calendar + mkdel / display-name probes
+    "testcalendar-",  # free-namespace uniqueness probe
+    "csc-",  # inbox-delivery / attendee / display-name-relocation probes
+    "csc_",  # duplicate-uid second calendar (created by name only)
+)
+
+
+## The free-namespace probe names its calendars testcalendar-<uuid4>.  Matching
+## the bare prefix would also match a human's "testcalendar-2019", so the uuid
+## shape is required for that one; the other prefixes are distinctive enough on
+## their own that no real calendar is plausibly named for them.
+_PROBE_UUID_RE = re.compile(r"^testcalendar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _matches_probe_shape(candidate: str) -> bool:
+    """Whether a cal_id or display name is one this tool creates."""
+    if _PROBE_UUID_RE.match(candidate):
+        return True
+    return any(candidate.startswith(p) for p in PROBE_CALENDAR_PREFIXES if p != "testcalendar-")
 
 
 def _install_write_delay(client, delay):
@@ -202,39 +230,97 @@ class ServerQuirkChecker:
         calendars are always ones the tool created, so they are deleted wholesale
         when the server supports it.
         """
-        if not hasattr(self, "calendar"):
-            return  ## PrepareCalendar never ran; nothing to clean up
-
         if not force:
             test_cal_info = self.expected_features.is_supported("test-calendar.compatibility-tests", return_type=dict)
             if not test_cal_info.get("cleanup", False):
                 return
 
-        can_delete_calendars = self.features_checked.is_supported(
-            "create-calendar"
-        ) and self.features_checked.is_supported("delete-calendar")
-        ## Default to False (the safe choice) when PrepareCalendar didn't record
-        ## ownership: never delete a calendar we can't prove we created.
-        calendar_was_created = getattr(self, "calendar_was_created", False)
+        ## Remove the main PrepareCalendar test calendar and its task/journal
+        ## siblings.  CheckMakeDeleteCalendar can create probe calendars without
+        ## PrepareCalendar ever running, so this part is guarded but the probe
+        ## sweep below always runs.
+        if hasattr(self, "calendar"):
+            can_delete_calendars = self.features_checked.is_supported(
+                "create-calendar"
+            ) and self.features_checked.is_supported("delete-calendar")
+            ## Default to False (the safe choice) when PrepareCalendar didn't record
+            ## ownership: never delete a calendar we can't prove we created.
+            calendar_was_created = getattr(self, "calendar_was_created", False)
 
-        purge_targets = []
-        if can_delete_calendars and calendar_was_created:
-            self.calendar.delete()
-        else:
-            purge_targets.append(self.calendar)
-
-        ## tasklist/journallist are separate calendars only when PrepareCalendar
-        ## created them itself, so deleting those wholesale is always safe.
-        for sibling in (self.tasklist, self.journallist):
-            if sibling is self.calendar:
-                continue
-            if can_delete_calendars:
-                sibling.delete()
+            purge_targets = []
+            if can_delete_calendars and calendar_was_created:
+                self.calendar.delete()
             else:
-                purge_targets.append(sibling)
+                purge_targets.append(self.calendar)
 
-        if purge_targets:
-            self._purge_csc_objects(purge_targets)
+            ## tasklist/journallist are separate calendars only when PrepareCalendar
+            ## created them itself, so deleting those wholesale is always safe.
+            for sibling in (self.tasklist, self.journallist):
+                if sibling is self.calendar:
+                    continue
+                if can_delete_calendars:
+                    sibling.delete()
+                else:
+                    purge_targets.append(sibling)
+
+            if purge_targets:
+                self._purge_csc_objects(purge_targets)
+
+        ## Belt-and-suspenders: sweep any throwaway probe calendars that inline
+        ## deletion missed (a crash, an exception, or an asynchronous server-side
+        ## DELETE).  This is what stops repeated runs from accumulating calendars.
+        self._purge_probe_calendars()
+
+    def _purge_probe_calendars(self):
+        """Delete leftover throwaway probe calendars across the main and any
+        extra (scheduling) principals.
+
+        Matches a calendar's ``cal_id`` (the last URL segment) or its display
+        name against ``PROBE_CALENDAR_PREFIXES``.  The display-name check catches
+        the duplicate-uid calendar, which is created by name only and so lives at
+        a server-assigned URL.  A listing/delete failure is logged and skipped so
+        one stuck calendar can't abort the rest of the sweep.  Returns the number
+        of calendars deleted.
+        """
+
+        ## Calendars the user pointed us at are never ours to delete, however
+        ## much their name looks like a probe.  cleanup() already refuses to
+        ## delete them (calendar_was_created); the sweep runs afterwards and
+        ## would otherwise undo that guard.
+        spared = set()
+        if not getattr(self, "calendar_was_created", False):
+            for attr in ("calendar", "tasklist", "journallist"):
+                cal = getattr(self, attr, None)
+                if cal is not None:
+                    spared.add(str(getattr(cal, "url", "")).rstrip("/"))
+
+        def _is_probe(cal):
+            if str(getattr(cal, "url", "")).rstrip("/") in spared:
+                return False
+            segment = str(cal.url).rstrip("/").rsplit("/", 1)[-1]
+            if _matches_probe_shape(segment):
+                return True
+            try:
+                name = cal.get_display_name() or ""
+            except Exception:
+                name = ""
+            return _matches_probe_shape(str(name))
+
+        removed = 0
+        for principal in (self.principal, *self.extra_principals):
+            try:
+                for cal in principal.calendars():
+                    if not _is_probe(cal):
+                        continue
+                    try:
+                        cal.delete()
+                        removed += 1
+                    except Exception as exc:
+                        logging.warning("Could not delete leftover probe calendar %s: %s", cal.url, exc)
+            except Exception as exc:
+                logging.warning("Could not list calendars for probe-calendar cleanup: %s", exc)
+                continue
+        return removed
 
     def cleanup_test_data(self, calendar_name=None):
         """Purge caldav-server-tester fixtures without running any checks.
