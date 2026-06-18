@@ -1,3 +1,56 @@
+# Rename / rethink `non-existing-raises-not-found`
+
+(Discussion 2026-06-15, not yet acted on.)
+
+The `non-existing-raises-not-found` feature (default `full`) records whether
+looking up a missing resource yields 404/`NotFoundError`; the deviant case
+(allegedly Robur) answers 403.  Findings:
+
+* It is effectively a **test-tolerance switch**, not a library feature — nothing
+  in `caldav/` reads it; the only consumer is the `_notFound()` helper in
+  `tests/test_caldav.py`, which uses it to widen `pytest.raises(NotFoundError)`
+  to `pytest.raises(DAVError)`.
+* It has **never been verified** by this server-tester.  `CheckNonExistingResource`
+  exists but has only ever seen 404 servers; the Robur value was carried over,
+  un-reprobed, from the old opt-in `non_existing_raises_other` flag.  Robur is
+  still down.
+* `CheckNonExistingResource` probes a missing **object resource** (an event URL),
+  not a missing **calendar collection**.  The "Robur 403s on any missing path"
+  claim is an inference, not data.
+
+Decisions:
+
+* **Do not** fold it into `create-calendar.auto`.  The calendar axis has three
+  poles (auto-create / 404 / 403); the object-resource axis has only two
+  (404 / 403) — no auto-create analogue — so they are not one axis.
+* Proposed rename: **`lookup.not-found`** (clearly a lookup concern, not
+  save-load, not calendar-create).  Cross-reference `create-calendar.auto` in
+  the descriptions as the related "access a non-existent target" axis.
+* Re-tag Robur as `ungraceful` (server throws a different error) rather than
+  `unsupported` per the taxonomy — or drop the speculative Robur entry back to
+  the default until the server can actually be probed.
+* Renaming touches both repos: feature definition + Robur dict + `_notFound()`
+  in caldav, and the 3 refs in `caldav-server-tester/.../checks.py`.  They must
+  land together or the renamed key silently falls back to its default.
+
+Related: if a `lookup.*` namespace is introduced, consider moving
+`save-load.get-by-url` → **`lookup.get-by-url`** for consistency (it is also a
+lookup concern — GET on an object-resource URL returns 200 vs 404).  Caveats:
+
+* Unlike `non-existing-raises-not-found`, this one *is* consumed by library
+  logic (the UID-based fallback when GET-by-URL is unsupported), so the rename is
+  more invasive.
+* References to update: definition + two commented-out server entries +
+  prose cross-refs in caldav (`compatibility_hints.py`), and 2-3 refs in
+  `caldav-server-tester/.../checks.py`.  Again both repos must land together.
+
+Open question: is `lookup` the right umbrella, and what else belongs in it?
+(`lookup.not-found`, `lookup.get-by-url`, possibly `save-load.stable-url`?)
+
+---
+
+# Possibly everything below is utterly obsoleted
+
 ## Two observations that should be investigated
 
 * When setting `search.time-range.open.start: False`, the whole `search.time-range.open`-tree collapses to False?  This is wrong.  `search.time-range.open` is not an independent feature, but should collapse to unsupported only when `search.time-range.open.*` has been checked and found to be unsupported.

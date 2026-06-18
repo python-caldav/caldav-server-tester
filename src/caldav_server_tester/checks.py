@@ -581,19 +581,23 @@ class CheckMakeDeleteCalendar(Check):
         * ``create-calendar.set-displayname`` - does a display name given at
           creation time stick?
         * ``create-calendar.set-displayname.stable-url`` - does setting it leave
-          the calendar URL unchanged?  Some servers (Zimbra) apply the display
-          name via a rename that *moves* the collection, relocating its canonical
-          URL to a display-name-derived path - while others (OX) keep the URL at
-          the requested cal_id and store the name as an ordinary property.
+          the requested cal_id reachable?  Some servers (Zimbra) apply the display
+          name via a rename that *moves* the collection, making the cal_id 404 -
+          while others (OX) keep the cal_id reachable and store the name as an
+          ordinary property.
 
         We create a calendar with a UNIQUE display name (exercising the same
-        create path the library uses) and then look up where the calendar with
-        that name ended up: still at the cal_id (stable) or under a
-        display-name-derived URL (relocated).  A unique name avoids the
-        namespace-collision fallback that makes a "create with name, read back by
-        cal_id" probe flap between runs.  We deliberately do NOT probe via a
-        rename/PROPPATCH after creation: that is a different operation (e.g. OX
-        accepts a name at creation but rejects later renames).
+        create path the library uses) and then probe whether the requested cal_id
+        URL stays reachable (PROPFIND/GET via events()).  Reachable means stable;
+        a 404 means the collection was relocated.  We deliberately do NOT compare
+        the calendar's *canonical* URL segment to the cal_id: OX hands out opaque
+        cal://0/NNN canonical URLs whether or not a name is set, yet resolves the
+        cal_id as an alias, so a segment comparison would mis-report it as
+        relocated.  A unique name avoids the namespace-collision fallback that
+        makes a "create with name, read back by cal_id" probe flap between runs.
+        We deliberately do NOT probe via a rename/PROPPATCH after creation: that
+        is a different operation (e.g. OX accepts a name at creation but rejects
+        later renames).
         """
         cal_id = "caldav-server-checker-displayname-test"
         unique_name = "csc-displayname-" + str(uuid.uuid4())
@@ -655,36 +659,53 @@ class CheckMakeDeleteCalendar(Check):
             _fallback_displayname("could not create probe calendar")
             return
 
-        ## Wait for the probe calendar to materialise (async creation, see
-        ## _poll_calendar_accessible) before reading any properties off it -
-        ## otherwise display-name support is mis-probed as unsupported.
+        ## Wait for the calendar to materialise (creation may be async, see
+        ## _poll_calendar_accessible) before reading any properties off it.  The
+        ## requested cal_id is also what decides stable-url: if it stays reachable
+        ## after creating-with-a-name the URL is stable (even when the server's
+        ## *canonical* URL is an opaque, differing segment - OX hands out
+        ## cal://0/NNN canonical URLs but keeps the cal_id alive as an alias); if
+        ## it 404s, the collection was relocated (Zimbra renames it to a
+        ## display-name-derived path).
         probe_cal, _ = self._poll_calendar_accessible(cal_id)
-        if probe_cal is None:
+
+        if probe_cal is not None:
+            ## cal_id is reachable.  Read the name back off it (the calendar we
+            ## just created) and, if it stuck, record a stable URL.
+            self._probe_propfind_displayname(probe_cal)
+            try:
+                located = _find_by_displayname(unique_name)
+                if located is None:
+                    ## the name did not stick
+                    self.set_feature("create-calendar.set-displayname", False)
+                    return
+                self.set_feature("create-calendar.set-displayname", True)
+                self.set_feature("create-calendar.set-displayname.stable-url", True)
+            finally:
+                _cleanup()
+            return
+
+        ## cal_id is NOT reachable.  Either the calendar relocated to a
+        ## display-name-derived URL (name stuck, URL not stable) or creation never
+        ## materialised at all - tell them apart by looking it up by display name.
+        located = _find_by_displayname(unique_name)
+        if located is None:
             _fallback_displayname("probe calendar did not become queryable")
             _cleanup()
             return
 
-        ## Probe propfind.displayname directly from the calendar we just created.
-        self._probe_propfind_displayname(probe_cal)
-
         try:
-            located = _find_by_displayname(unique_name)
-            if located is None:
-                ## the name did not stick anywhere
-                self.set_feature("create-calendar.set-displayname", False)
-                return
-
+            ## The name stuck (we found the calendar by it) but at a different,
+            ## relocated URL - read DAV:displayname off that calendar.
+            self._probe_propfind_displayname(located)
             self.set_feature("create-calendar.set-displayname", True)
-            if _segment(located) == cal_id:
-                self.set_feature("create-calendar.set-displayname.stable-url", True)
-            else:
-                self.set_feature(
-                    "create-calendar.set-displayname.stable-url",
-                    {
-                        "support": "unsupported",
-                        "behaviour": f"setting the display name relocated the calendar URL to {_segment(located)!r}",
-                    },
-                )
+            self.set_feature(
+                "create-calendar.set-displayname.stable-url",
+                {
+                    "support": "unsupported",
+                    "behaviour": f"setting the display name relocated the calendar URL to {_segment(located)!r}",
+                },
+            )
         finally:
             _cleanup()
 

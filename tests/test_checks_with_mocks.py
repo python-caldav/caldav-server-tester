@@ -356,13 +356,16 @@ class TestCheckMakeDeleteCalendar:
         get_displayname_raises=False,
         make_calendar_raises=False,
         existing_displayname=None,
+        cal_id_reachable=None,
+        located_segment=None,
     ):
         """Drive CheckMakeDeleteCalendar._check_set_displayname() with a mocked
         principal.
 
-        relocate: if True, creating the calendar with a display name lands it
-                  under a display-name-derived URL (Zimbra-style rename/move).
-                  If False the URL stays at the cal_id (normal / OX-style).
+        relocate: if True, creating the calendar with a display name moves the
+                  collection to a display-name-derived URL and the requested
+                  cal_id 404s (Zimbra-style rename/move).  If False the cal_id
+                  stays reachable (normal / OX-style).
         name_sticks: if False, the display name given at creation is not applied.
         get_displayname_raises: if True, the direct get_display_name() call on the
                   calendar object raises an exception (simulating no PROPFIND support).
@@ -371,9 +374,21 @@ class TestCheckMakeDeleteCalendar:
         existing_displayname: if set, the principal already exposes one calendar
                   with this display name (used as the propfind.displayname fallback
                   target when probe-calendar creation fails).
+        cal_id_reachable: whether a PROPFIND/GET on the requested cal_id succeeds
+                  after creating-with-a-name.  Defaults to ``not relocate``.  This
+                  is what now decides ``stable-url`` - independently of where the
+                  calendar's *canonical* URL ended up (OX hands out opaque
+                  cal://0/NNN canonical URLs but keeps the cal_id reachable as an
+                  alias, so it is stable despite the differing segment).
+        located_segment: the URL segment the calendar is discovered under when
+                  looked up by display name.  Defaults to a name-derived segment
+                  when ``relocate`` else the cal_id; pass an opaque value to model
+                  OX's cal://0/NNN canonical URL.
         """
         probe_cal_id = "caldav-server-checker-displayname-test"
         base = "https://example.com/dav/me/"
+        if cal_id_reachable is None:
+            cal_id_reachable = not relocate
 
         created = {"name": None, "url": None}
 
@@ -384,14 +399,18 @@ class TestCheckMakeDeleteCalendar:
             cal.url = base + cal_id + "/"
             if name_sticks and name:
                 created["name"] = name
-                created["url"] = base + (name if relocate else cal_id) + "/"
+                segment = located_segment or (name if relocate else cal_id)
+                created["url"] = base + segment + "/"
             return cal
 
         principal.make_calendar.side_effect = make_calendar
 
-        # calendar(cal_id=...) is used both for direct get_display_name() probe
-        # and for cleanup delete() — configure get_display_name accordingly.
+        # calendar(cal_id=...) is used for the cal_id reachability probe
+        # (events()), the direct get_display_name() probe, and cleanup delete().
         direct_cal_mock = Mock()
+        if not cal_id_reachable:
+            # the requested cal_id 404s after the create-with-a-name (relocate)
+            direct_cal_mock.events.side_effect = DAVError("cal_id not found")
         if get_displayname_raises:
             direct_cal_mock.get_display_name.side_effect = Exception("not supported")
         else:
@@ -424,8 +443,28 @@ class TestCheckMakeDeleteCalendar:
         assert checker.features_checked.is_supported("create-calendar.set-displayname")
         assert checker.features_checked.is_supported("create-calendar.set-displayname.stable-url")
 
-    def test_set_displayname_relocates_url(self) -> None:
-        """Zimbra-style: setting the display name relocates the calendar URL."""
+    def test_set_displayname_stable_url_opaque_canonical(self) -> None:
+        """OX-style: the calendar's canonical URL is an opaque cal://0/NNN that
+        differs from the requested cal_id, yet the cal_id stays reachable as an
+        alias - so the URL is stable.  (Regression: the old segment-comparison
+        probe mis-reported this as 'relocated/unsupported'.)"""
+        checker, client, principal = self.create_checker_with_principal()
+        self._run_displayname_probe(
+            checker,
+            principal,
+            relocate=False,
+            cal_id_reachable=True,
+            located_segment="cal%3A%2F%2F0%2F4711",
+        )
+        assert checker.features_checked.is_supported("create-calendar.set-displayname")
+        assert checker.features_checked.is_supported("create-calendar.set-displayname.stable-url")
+
+    def test_set_displayname_relocates_url(self, monkeypatch) -> None:
+        """Zimbra-style: setting the display name relocates the calendar and the
+        requested cal_id 404s."""
+        import caldav_server_tester.checks as checks_mod
+
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
         checker, client, principal = self.create_checker_with_principal()
         self._run_displayname_probe(checker, principal, relocate=True)
         # the name is still applied, so set-displayname itself is supported ...
