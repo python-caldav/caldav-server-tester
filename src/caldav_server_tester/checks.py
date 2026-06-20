@@ -307,7 +307,7 @@ class CheckMakeDeleteCalendar(Check):
         "create-calendar.auto",
         "create-calendar",
         "create-calendar.set-displayname",
-        "create-calendar.set-displayname.stable-url",
+        "create-calendar.stable-url",
         "propfind.displayname",
         "delete-calendar",
         "delete-calendar.free-namespace",
@@ -531,6 +531,17 @@ class CheckMakeDeleteCalendar(Check):
                 {"support": "unknown", "behaviour": "cannot test, create-calendar not supported"},
             )
 
+    def _displayname_verdict_is_measurable(self):
+        """Whether a "did the display name stick?" verdict means anything here.
+
+        The probe answers that question by reading DAV:displayname back off the
+        server's calendar listing.  On a server that does not serve the property
+        (propfind.displayname unsupported or broken) no name can ever match, so
+        a "did not stick" reading says nothing about set-displayname support -
+        it only restates that the property is unreadable.
+        """
+        return self.checker._features_checked.is_supported("propfind.displayname", str) in ("full", "quirk")
+
     def _probe_propfind_displayname(self, cal):
         """Probe ``propfind.displayname`` against an existing calendar collection.
 
@@ -574,30 +585,45 @@ class CheckMakeDeleteCalendar(Check):
         return cals[0] if cals else None
 
     def _check_set_displayname(self):
-        """Deterministically probe display-name support and URL stability.
+        """Deterministically probe display-name support and calendar-URL stability.
 
-        Two distinct server behaviours are checked:
+        Three things are checked:
 
         * ``create-calendar.set-displayname`` - does a display name given at
           creation time stick?
-        * ``create-calendar.set-displayname.stable-url`` - does setting it leave
-          the requested cal_id reachable?  Some servers (Zimbra) apply the display
-          name via a rename that *moves* the collection, making the cal_id 404 -
-          while others (OX) keep the cal_id reachable and store the name as an
-          ordinary property.
+        * ``create-calendar.stable-url`` - after the calendar is created, is it
+          still addressable at the *requested* cal_id URL, or did the server
+          assign a different canonical URL?  We create with a UNIQUE display name,
+          look the calendar up by that name to get its canonical URL, and compare
+          the canonical URL's final path segment to the requested cal_id:
 
-        We create a calendar with a UNIQUE display name (exercising the same
-        create path the library uses) and then probe whether the requested cal_id
-        URL stays reachable (PROPFIND/GET via events()).  Reachable means stable;
-        a 404 means the collection was relocated.  We deliberately do NOT compare
-        the calendar's *canonical* URL segment to the cal_id: OX hands out opaque
-        cal://0/NNN canonical URLs whether or not a name is set, yet resolves the
-        cal_id as an alias, so a segment comparison would mis-report it as
-        relocated.  A unique name avoids the namespace-collision fallback that
-        makes a "create with name, read back by cal_id" probe flap between runs.
-        We deliberately do NOT probe via a rename/PROPPATCH after creation: that
-        is a different operation (e.g. OX accepts a name at creation but rejects
-        later renames).
+            - segment == cal_id  -> URL stable      (supported)
+            - segment != cal_id  -> URL not stable  (unsupported)
+
+          The same server-agnostic comparison covers both known offenders with no
+          special-casing: Zimbra relocates the collection to a display-name-derived
+          path, and OX hands out an opaque ``cal://0/NNN`` (base64-segment)
+          canonical URL.  In both cases the canonical segment differs from the
+          requested cal_id, so both report ``unsupported`` and the consuming
+          library is expected to adopt the canonical URL after creation.
+        * ``propfind.displayname`` - can DAV:displayname be read back via PROPFIND?
+
+        Zimbra quirks deliberately NOT probed here (each could merit its own
+        dedicated probe one day; mirrored in the ``zimbra`` entry of caldav's
+        ``compatibility_hints.py``):
+
+        * The calendar URL only becomes unstable when a display name is supplied
+          at creation - a nameless MKCALENDAR stays put at the requested cal_id.
+          That is *why* this probe must create *with* a name to observe the
+          instability at all.
+        * Even when the calendar *collection* is reachable at the requested cal_id
+          (Zimbra keeps a collection-level alias there, answering PROPFIND/REPORT),
+          child object resources under it are NOT: a GET on
+          ``.../<cal_id>/<uid>.ics`` 404s while the object is only retrievable
+          under the canonical relocated URL.  So collection reachability at the
+          cal_id is a misleading signal for URL stability - we compare canonical
+          URLs instead, and the library must re-point to the canonical URL so that
+          later object operations resolve.
         """
         cal_id = "caldav-server-checker-displayname-test"
         unique_name = "csc-displayname-" + str(uuid.uuid4())
@@ -644,7 +670,7 @@ class CheckMakeDeleteCalendar(Check):
             ## trips on it.)
             unknown = {"support": "unknown", "behaviour": reason}
             self.set_feature("create-calendar.set-displayname", unknown)
-            self.set_feature("create-calendar.set-displayname.stable-url", unknown)
+            self.set_feature("create-calendar.stable-url", unknown)
             existing = self._find_existing_calendar()
             if existing is not None:
                 self._probe_propfind_displayname(existing)
@@ -659,53 +685,67 @@ class CheckMakeDeleteCalendar(Check):
             _fallback_displayname("could not create probe calendar")
             return
 
-        ## Wait for the calendar to materialise (creation may be async, see
-        ## _poll_calendar_accessible) before reading any properties off it.  The
-        ## requested cal_id is also what decides stable-url: if it stays reachable
-        ## after creating-with-a-name the URL is stable (even when the server's
-        ## *canonical* URL is an opaque, differing segment - OX hands out
-        ## cal://0/NNN canonical URLs but keeps the cal_id alive as an alias); if
-        ## it 404s, the collection was relocated (Zimbra renames it to a
-        ## display-name-derived path).
+        ## Wait for the calendar to materialise before reading anything off it
+        ## (creation may be async, see _poll_calendar_accessible).  On Zimbra/OX
+        ## the requested cal_id resolves as a collection-level alias, so this poll
+        ## returns quickly even when the *canonical* URL is elsewhere.
         probe_cal, _ = self._poll_calendar_accessible(cal_id)
 
-        if probe_cal is not None:
-            ## cal_id is reachable.  Read the name back off it (the calendar we
-            ## just created) and, if it stuck, record a stable URL.
-            self._probe_propfind_displayname(probe_cal)
-            try:
-                located = _find_by_displayname(unique_name)
-                if located is None:
-                    ## the name did not stick
-                    self.set_feature("create-calendar.set-displayname", False)
-                    return
-                self.set_feature("create-calendar.set-displayname", True)
-                self.set_feature("create-calendar.set-displayname.stable-url", True)
-            finally:
-                _cleanup()
-            return
-
-        ## cal_id is NOT reachable.  Either the calendar relocated to a
-        ## display-name-derived URL (name stuck, URL not stable) or creation never
-        ## materialised at all - tell them apart by looking it up by display name.
+        ## Locate the calendar by the unique display name to discover its
+        ## *canonical* URL - this is where the server really put it, and the only
+        ## reliable signal for URL stability (the cal_id alias is not, see the
+        ## docstring's Zimbra quirks).
         located = _find_by_displayname(unique_name)
+
         if located is None:
-            _fallback_displayname("probe calendar did not become queryable")
+            ## The name was not found under any calendar.  Either creation never
+            ## materialised, or the display name did not stick.
+            if probe_cal is None:
+                _fallback_displayname("probe calendar did not become queryable")
+                _cleanup()
+                return
+            ## cal_id is reachable but the name is not retained: set-displayname
+            ## is unsupported.  No relocation was triggered (Zimbra/OX only move
+            ## the URL when a name sticks), so the calendar sits at the requested
+            ## cal_id - the URL is stable.
+            self._probe_propfind_displayname(probe_cal)
+            if self._displayname_verdict_is_measurable():
+                self.set_feature("create-calendar.set-displayname", False)
+            else:
+                ## The name could not be read back at all, so "it did not stick"
+                ## is not something this probe actually observed.
+                self.set_feature(
+                    "create-calendar.set-displayname",
+                    {
+                        "support": "unknown",
+                        "behaviour": "DAV:displayname is not readable on this server, so the name could not be verified",
+                    },
+                )
+            self.set_feature("create-calendar.stable-url", True)
             _cleanup()
             return
 
         try:
-            ## The name stuck (we found the calendar by it) but at a different,
-            ## relocated URL - read DAV:displayname off that calendar.
+            ## The name stuck.  Read DAV:displayname off the located calendar and
+            ## decide stability purely by comparing its canonical URL segment to
+            ## the requested cal_id - identical handling for stable servers,
+            ## Zimbra (display-name-derived segment) and OX (opaque base64 segment).
             self._probe_propfind_displayname(located)
             self.set_feature("create-calendar.set-displayname", True)
-            self.set_feature(
-                "create-calendar.set-displayname.stable-url",
-                {
-                    "support": "unsupported",
-                    "behaviour": f"setting the display name relocated the calendar URL to {_segment(located)!r}",
-                },
-            )
+            if _segment(located) == cal_id:
+                self.set_feature("create-calendar.stable-url", True)
+            else:
+                self.set_feature(
+                    "create-calendar.stable-url",
+                    {
+                        "support": "unsupported",
+                        "behaviour": (
+                            f"the created calendar's canonical URL segment is "
+                            f"{_segment(located)!r}, not the requested {cal_id!r}; "
+                            "clients must adopt the canonical URL after creation"
+                        ),
+                    },
+                )
         finally:
             _cleanup()
 
