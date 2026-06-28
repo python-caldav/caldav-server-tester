@@ -1,6 +1,6 @@
 repos:
  - repo: https://github.com/astral-sh/ruff-pre-commit
-   rev: v0.11.2
+   rev: v0.15.20
    hooks:
     # Run the linter with auto-fix on commit
     - id: ruff
@@ -12,7 +12,7 @@ repos:
       stages: [pre-commit]
 
  - repo: https://github.com/pre-commit/pre-commit-hooks
-   rev: v5.0.0
+   rev: v6.0.0
    hooks:
     - id: trailing-whitespace
       stages: [pre-commit]
@@ -55,7 +55,7 @@ repos:
       stages: [pre-push]
 
  - repo: https://github.com/pycalendar/ai-prompt-auto-commit
-   rev: v0.0.6
+   rev: v0.0.8
    hooks:
     - id: unstage-ai-prompts
     - id: append-ai-prompts
@@ -66,18 +66,18 @@ repos:
       stages: [manual]
 
  - repo: https://github.com/compilerla/conventional-pre-commit
-   rev: v3.4.0
+   rev: v4.4.0
    hooks:
     - id: conventional-pre-commit
       stages: [commit-msg]
 
  - repo: https://github.com/fpgmaas/deptry.git
-   rev: "0.24.0"
+   rev: "0.25.1"
    hooks:
     - id: deptry
 
  - repo: https://github.com/lycheeverse/lychee
-   rev: lychee-v0.22.0
+   rev: lychee-v0.24.2
    hooks:
     - id: lychee
       args: ["--no-progress", "--timeout", "10", "--cache", "--max-cache-age", "1d", "."]
