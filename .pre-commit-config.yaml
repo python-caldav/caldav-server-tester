@@ -3,7 +3,7 @@ repos:
    rev: v0.15.20
    hooks:
     # Run the linter with auto-fix on commit
-    - id: ruff
+    - id: ruff-check
       args:
        - "--fix"
       stages: [pre-commit]
