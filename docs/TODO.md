@@ -62,6 +62,12 @@ lookup concern — GET on an object-resource URL returns 200 vs 404).  Caveats:
 Open question: is `lookup` the right umbrella, and what else belongs in it?
 (`lookup.not-found`, `lookup.get-by-url`, possibly `save-load.stable-url`?)
 
+Note the separate `url.*` namespace that now exists (`url.encode-at`): that one
+is about how a URL is *spelled* rather than what a lookup returns, so it is
+probably not a `lookup.*` candidate — but if `lookup.get-by-url` happens, the
+two namespaces sit next to each other and the split should be stated explicitly
+in the descriptions.
+
 ---
 
 # Possibly everything below is utterly obsoleted

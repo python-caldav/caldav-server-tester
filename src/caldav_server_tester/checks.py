@@ -3,6 +3,8 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from typing import NamedTuple
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
@@ -29,6 +31,99 @@ TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
 ## checker.py (ServerQuirkChecker.HIDDEN_PROBE_UIDS).
 OLDDATE_EVENT_UID = "csc_olddate_event"
 OLDDATE_TASK_UID = "csc_olddate_task"
+
+## UIDs of the url.encode-at probe objects.  The '@' has to be in the UID rather
+## than relying on one in the username: it is the only way to guarantee the
+## object's path contains an '@' on every server.  PrepareCalendar._check_encode_at
+## PUTs these objects itself rather than going through save_object(), which would
+## quote the '@' away.  Both keep the csc_ prefix so the cleanup sweep finds them.
+##
+## The second one exists only for the identity axis of the probe: it is PUT at
+## the '%40' spelling of the *first* one's path, so that re-reading the literal
+## path says whether the two spellings named one resource or two.  It carries a
+## UID of its own rather than reusing the first, because a server that enforces
+## UID uniqueness within a collection would reject the duplicate and the probe
+## would learn nothing.  It is removed again as soon as the question is answered.
+ENCODE_AT_UID = "csc_encode_at@example.com"
+ENCODE_AT_ALIAS_UID = "csc_encode_at_alias@example.com"
+
+## The collection axis of the same probe.  ``@`` in a *calendar id* rather than
+## in an object name: the ownCloud/Nextcloud shape the feature exists for is a
+## calendar-home-set (/remote.php/dav/calendars/user@example.com/), not an
+## object file name, and a server may route a username-bearing collection
+## segment quite differently from an .ics.  The probe calendars are created and
+## deleted within the run; the csc_ prefix keeps them inside
+## checker.PROBE_CALENDAR_PREFIXES so a sweep finds any that survive a crash.
+##
+## The object PUT inside them carries no '@' of its own - it is there only to
+## give the two collections something to hold apart, and an '@' in its name too
+## would confound the two axes.
+ENCODE_AT_CAL_ID = "csc_encode_at_cal@example.com"
+ENCODE_AT_IN_COLLECTION_UID = "csc_encode_at_in_collection"
+
+## Every UID the encode-at probes PUT.  ``_resolved_uid`` matches the body
+## against all of them: which one came back is the whole signal, and a UID it
+## does not know about would read as "this URL reached nothing".
+ENCODE_AT_PROBE_UIDS = (ENCODE_AT_UID, ENCODE_AT_ALIAS_UID, ENCODE_AT_IN_COLLECTION_UID)
+
+## Bodies for the requests the encode-at probes issue directly rather than
+## through the library, which would normalise the spelling they are about.
+## Deliberately no DAV:displayname: a display name relocates the collection on
+## some servers (Zimbra, OX), and this probe is about the URL it was asked for.
+ENCODE_AT_MKCALENDAR_BODY = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+    "<D:set><D:prop/></D:set>"
+    "</C:mkcalendar>"
+)
+ENCODE_AT_MKCOL_BODY = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<D:mkcol xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+    "<D:set><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop></D:set>"
+    "</D:mkcol>"
+)
+ENCODE_AT_PROPFIND_BODY = (
+    '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>'
+)
+
+
+class EncodeAtObservation(NamedTuple):
+    """What one axis of the ``url.encode-at`` probe managed to observe.
+
+    Three axes ask the same question of three different things a path can
+    embed an ``@``: an object name, a calendar id, and the username inside a
+    principal or calendar-home-set path.  They share the three subfeatures
+    rather than getting keys of their own - the client acts on one verdict per
+    subfeature, and inventing ``url.encode-at.identity.collection`` before any
+    server has been seen to differ between the axes would be modelling a
+    distinction nobody has observed.
+
+    A field left ``None`` is a question this axis could not answer, and stays
+    out of the merge entirely: an axis that saw nothing must not outvote one
+    that saw something.  ``behaviour`` is recorded either way, so a profile
+    read by a human says what happened even where nothing could be graded.
+    """
+
+    axis: str
+    behaviour: str
+    literal: str | None = None
+    encoded: str | None = None
+    identity: str | None = None
+
+
+def _object_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
+    """An observation about an '@' in an object name."""
+    return EncodeAtObservation("object paths", behaviour, literal, encoded, identity)
+
+
+def _collection_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
+    """An observation about an '@' in a calendar id."""
+    return EncodeAtObservation("calendar paths", behaviour, literal, encoded, identity)
+
+
+def _principal_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
+    """An observation about an '@' in the username, as a server-given path spells it."""
+    return EncodeAtObservation("principal paths", behaviour, literal, encoded, identity)
 
 
 def url_object(cal, uid, obj_class=None):
@@ -855,6 +950,9 @@ class PrepareCalendar(Check):
         "save-load.journal.mixed-calendar",
         "save-load.get-by-url",
         "save-load.stable-url",
+        "url.encode-at.identity",
+        "url.encode-at.literal",
+        "url.encode-at.encoded",
     }
 
     def _find_or_create_calendar(self, cal_id, name, test_cal_info):
@@ -1340,6 +1438,660 @@ END:VCALENDAR""",
         except Exception:
             self.set_feature("save-load.get-by-url", None)
 
+    def _resolved_uid(self, url):
+        """Which probe object a GET on ``url`` reaches.
+
+        Returns the UID found, ``False`` when the URL does not reach a probe
+        object at all, and ``None`` when the request said nothing either way.
+
+        Three deliberate differences from the ``save-load.get-by-url`` probe
+        next door, all of which would otherwise skew the encode-at verdict:
+
+        * every 4xx is a miss, not only 404 - a server answering a
+          percent-encoded path with ``400 Bad Request`` has still failed to
+          resolve it.  A 5xx is not: that is the server breaking, not the
+          spelling failing, and it comes back ``None``;
+        * ``AuthorizationError`` (401/403) and the rate-limit errors are raised
+          by the client *before* a response object exists, so they never show up
+          as a status.  A 403 on one spelling is a miss, not an unknown - this
+          suite documents servers (Robur) that answer 403 where others 404;
+        * a 2xx only counts when the body actually carries one of the probe
+          UIDs.  A server that answers 200 for any child path - the class this
+          suite probes as ``non-existing-raises-not-found`` broken - would
+          otherwise look like it resolved whatever we asked for.
+
+        Anything else (a dropped connection, a DNS failure) says nothing about
+        encoding and comes back ``None``.
+        """
+        try:
+            response = self.client.request(url)
+        except (AuthorizationError, NotFoundError):
+            return False
+        except Exception:
+            return None
+        if response.status >= 500:
+            return None
+        if response.status >= 400:
+            return False
+        try:
+            body = to_local(response.raw)
+        except Exception:
+            return None
+        for uid in ENCODE_AT_PROBE_UIDS:
+            if uid in body:
+                return uid
+        return False
+
+    def _put_probe_object(self, url, uid):
+        """PUT an encode-at probe object at ``url``.
+
+        ``True`` when the server took it, ``False`` when it refused it (a 4xx -
+        the ownCloud shape this probe exists for), and ``None`` when the
+        request said nothing either way: a 5xx, a dropped connection, a
+        timeout.  The three must stay apart, because "the server refuses a
+        literal '@' in a path" is copied into a server profile and makes the
+        client rewrite every such URL from then on.
+        """
+        year = self.checker.fixture_base_year
+        ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//url.encode-at probe//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            f"DTSTAMP:{year}0119T120000Z\r\n"
+            f"DTSTART:{year}0119T120000Z\r\n"
+            f"DTEND:{year}0119T130000Z\r\n"
+            "SUMMARY:url.encode-at probe\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        try:
+            response = self.client.put(url, ical, {"Content-Type": "text/calendar; charset=utf-8"})
+        except Exception:
+            return None
+        if response.status >= 500:
+            return None
+        return response.status < 400
+
+    def _record_encode_at(self, *observations):
+        """Merge what the axes saw into the three ``url.encode-at`` subfeatures.
+
+        Each subfeature is decided by the axes that actually observed it; an
+        axis that could not answer contributes nothing but its ``behaviour``
+        text.  Where the observing axes agree, that verdict is recorded.  Where
+        they disagree - the uid accepts both spellings but the calendar path
+        only takes ``%40``, say - the honest reading is ``fragile``: the
+        feature works in one place and not in another, and the behaviour names
+        which is which so a human can see what to work around.  Splitting the
+        subfeature in two (``…identity.collection``) is the right move only
+        once a server is actually seen to differ, and none has been yet.
+
+        A subfeature no axis observed is recorded ``unknown`` rather than
+        filled in from a sibling - each has its own default, and compare()
+        skips an unknown, so it says "not observed" and claims nothing.
+        """
+        observations = [o for o in observations if o is not None]
+        prose = "; ".join(f"{o.axis}: {o.behaviour}" for o in observations if o.behaviour)
+        for name in ("identity", "literal", "encoded"):
+            seen = [(o.axis, getattr(o, name)) for o in observations if getattr(o, name)]
+            levels = {level for _, level in seen}
+            if not levels:
+                support, note = "unknown", prose
+            elif len(levels) == 1:
+                support, note = levels.pop(), prose
+            else:
+                disagreement = ", ".join(f"{axis} {level}" for axis, level in seen)
+                support = "fragile"
+                note = f"the axes disagree ({disagreement})"
+                if prose:
+                    note = f"{note}; {prose}"
+            node = {"support": support}
+            if note:
+                node["behaviour"] = note
+            self.set_feature(f"url.encode-at.{name}", node)
+
+    def _delete_probe_object(self, url):
+        """Best-effort removal of a probe object; a leftover is a warning, not a failure."""
+        try:
+            self.client.delete(url)
+        except Exception:
+            logging.warning("Could not delete the url.encode-at probe object at %s", url)
+
+    ## ------------------------------------------------------------------
+    ## Axis 1: an '@' in an object name
+    ## ------------------------------------------------------------------
+
+    def _probe_encode_at_object_identity(self, literal_url, encoded_url, encoded_resolved_first):
+        """One resource, or two?  Writes a second object and sees what moves.
+
+        PUTs a *second* object at the ``%40`` spelling of the same path and
+        re-reads the literal one.  If the literal path now yields the second
+        object the server aliases the two spellings; if it still yields the
+        first they are two resources, and any client that rewrites one spelling
+        into the other is silently writing to one and reading from the other.
+
+        **Entered whether or not ``%40`` resolved to begin with**, and that is
+        the whole point.  A conformant server - two spellings, two resources -
+        answers 404 at ``%40`` for the simple reason that nothing was ever
+        written there, which is indistinguishable from a server that cannot
+        serve the encoded spelling at all.  Reading the first as the second is
+        how the conformant case became unobservable: it fell through to the
+        library default, which says the two spellings are one.  On the one
+        class of server where that is wrong, the client was then told it could
+        rewrite freely.  So the alias object is written either way, and what
+        happens to it decides both axes:
+
+        * the write lands and the literal path still holds the first object -
+          two resources, and ``%40`` demonstrably resolves;
+        * the write lands and the literal path now holds the second - one
+          resource under two names;
+        * the write is refused, and ``%40`` had not resolved before either -
+          the encoded spelling is unusable, and identity is unobservable
+          rather than "the same".
+
+        ``encoded_resolved_first`` is whether ``%40`` served the object back
+        before any of this: it is what separates "refused a second object"
+        (identity unknown, encoded still fine) from "will not take an object at
+        that spelling at all" (encoded unsupported).
+
+        Cleans up after itself: the second object is deleted where it turned
+        out to be a resource of its own, and the first is re-PUT where the
+        server overwrote it, so the fixture survives either outcome.
+        """
+        both = "both spellings resolve" if encoded_resolved_first else "only the literal spelling resolved"
+        alias_put = self._put_probe_object(encoded_url, ENCODE_AT_ALIAS_UID)
+        if not alias_put:
+            if alias_put is None:
+                return _object_axis(
+                    f"{both}, and the second probe object could not be PUT to the '%40' spelling, so it is unknown whether the two name the same resource",
+                    literal="full",
+                    encoded="full" if encoded_resolved_first else None,
+                )
+            if encoded_resolved_first:
+                return _object_axis(
+                    "both spellings resolve, but the server would not take a second object at the '%40' spelling, so it is unknown whether they name the same resource",
+                    literal="full",
+                    encoded="full",
+                )
+            return _object_axis(
+                "the server serves an object under the literal '@' spelling and refuses to store one under '%40'",
+                literal="full",
+                encoded="unsupported",
+            )
+
+        landed = self._resolved_uid(encoded_url)
+        literal_now = self._resolved_uid(literal_url)
+
+        if landed != ENCODE_AT_ALIAS_UID:
+            ## The second PUT went somewhere we cannot account for; say so
+            ## rather than reading the literal path as evidence of anything.
+            observation = _object_axis(
+                f"{both}, but the second probe object did not turn up at the '%40' spelling it was PUT to",
+                literal="full",
+                encoded="full" if encoded_resolved_first else None,
+            )
+        elif literal_now == ENCODE_AT_ALIAS_UID:
+            observation = _object_axis(
+                "both spellings resolve and reach the same resource - lenient rather than conformant, but nothing a client has to work around",
+                literal="full",
+                encoded="full",
+                identity="unsupported",
+            )
+        elif literal_now == ENCODE_AT_UID:
+            ## Two objects, two spellings, each holding its own: the encoded
+            ## spelling resolved here even if it had nothing to serve before.
+            self._delete_probe_object(encoded_url)
+            return _object_axis(
+                "both spellings resolve and name two different resources, which is what RFC3986 says they are",
+                literal="full",
+                encoded="full",
+                identity="full",
+            )
+        else:
+            observation = _object_axis(
+                f"{both}, but after writing to the '%40' spelling the literal one reached neither probe object",
+                literal="full",
+                encoded="full" if encoded_resolved_first else None,
+            )
+
+        ## Aliased (or undeterminable): the second PUT may have landed on the
+        ## fixture itself, so put the original content back.
+        self._put_probe_object(literal_url, ENCODE_AT_UID)
+        return observation
+
+    def _probe_encode_at_object(self, calendar):
+        """The object axis: an ``@`` in the name of an ``.ics`` inside a calendar.
+
+        *Reachability* - which spellings resolve at all.  RFC3986 section 3.3
+        makes ``@`` a legal ``pchar``, so no producer has to encode it, yet
+        servers disagree about whether the encoded spelling reaches the same
+        path.  Probed by establishing the object at the literal ``@`` URL and
+        GETting both spellings.
+
+        *Identity* - when both resolve, whether they are one resource or two.
+        Section 2.2 makes ``@`` reserved and section 6.2.2.2 licenses decoding
+        only *unreserved* octets, so "two" is the conformant reading; a server
+        that aliases them is being lenient.  This axis only matters because
+        clients rewrite spellings - the library's ownCloud calendar-home-set
+        heuristic does - and on a "two resources" server that rewriting means
+        writing one object and reading another.  Probed by writing a second
+        object at the ``%40`` spelling and re-reading the literal one.
+
+        The probe PUTs its own objects rather than reusing a fixture, because
+        the library's ``save_object()`` runs the UID through ``_quote_uid()``
+        and would silently place it at the ``%40`` URL - leaving us comparing a
+        spelling we never wrote to against one we did, which is how an earlier
+        draft of this check could report "the client must encode" for a server
+        that simply stores path segments verbatim.
+
+        Not this probe's business: a server that stores the object under one
+        spelling and later *reports* it under the other.  That is a flavour of
+        ``save-load.stable-url`` and is probed there.
+        """
+        try:
+            literal_url = str(calendar.url.join(ENCODE_AT_UID + ".ics"))
+            encoded_url = str(calendar.url.join(quote(ENCODE_AT_UID) + ".ics"))
+
+            ## Start from a known-empty pair of URLs.  An alias object left by
+            ## an aborted run (or by a DELETE the server only pretended to
+            ## honour) is otherwise read as "'%40' does not reach an object
+            ## stored under a literal '@'" - which is false: '%40' plainly
+            ## reached an object, just not the one this run wrote.
+            self._delete_probe_object(encoded_url)
+            self._delete_probe_object(literal_url)
+
+            literal_put = self._put_probe_object(literal_url, ENCODE_AT_UID)
+            if literal_put is None:
+                return _object_axis("the PUT to the literal '@' path could not be completed")
+            if not literal_put:
+                ## The server would not create a resource at the literal
+                ## spelling.  If it takes the encoded one instead, that alone
+                ## is the actionable fact; we can say nothing about how a
+                ## literally-stored resource would have behaved.
+                encoded_put = self._put_probe_object(encoded_url, ENCODE_AT_UID)
+                if encoded_put is None:
+                    return _object_axis("the PUT to the '%40' path could not be completed")
+                if not encoded_put:
+                    return _object_axis("the server accepted the probe object under neither spelling")
+                if self._resolved_uid(encoded_url) == ENCODE_AT_UID:
+                    return _object_axis(
+                        "the server refused a PUT to the literal '@' path and accepted the '%40' one",
+                        literal="unsupported",
+                        encoded="full",
+                    )
+                return _object_axis(
+                    "the server refused the literal '@' path and did not serve back what it accepted under '%40'",
+                )
+
+            literal_uid = self._resolved_uid(literal_url)
+            encoded_uid = self._resolved_uid(encoded_url)
+
+            if literal_uid is None or encoded_uid is None:
+                return _object_axis("the url.encode-at probe requests could not be completed")
+            if literal_uid == ENCODE_AT_UID:
+                ## Both resolve, or only the literal one - either way the
+                ## question is now whether a write to '%40' is a write to the
+                ## same resource, and that is the same experiment.
+                return self._probe_encode_at_object_identity(
+                    literal_url, encoded_url, encoded_resolved_first=encoded_uid == ENCODE_AT_UID
+                )
+            if encoded_uid == ENCODE_AT_UID:
+                ## The PUT went to the literal path and only the encoded one
+                ## serves it back: whatever the server did internally, '%40' is
+                ## the spelling that reaches the object.
+                return _object_axis(
+                    "an object PUT to the literal '@' path is reachable only under '%40'",
+                    literal="unsupported",
+                    encoded="full",
+                )
+            ## Neither spelling served it back.  A write delay looks exactly
+            ## like this, so this is not evidence that '@' paths are unusable -
+            ## it is simply not an answer.
+            return _object_axis(
+                "the probe object was not reachable under either spelling after it was stored",
+            )
+        except Exception:
+            return _object_axis("the url.encode-at object probe could not be carried out")
+
+    ## ------------------------------------------------------------------
+    ## Axis 2: an '@' in a calendar id
+    ## ------------------------------------------------------------------
+
+    def _propfind_resolves(self, url):
+        """Whether a PROPFIND on ``url`` reaches a collection.
+
+        ``True``/``False``/``None`` on the same terms as ``_resolved_uid``: a
+        4xx (and the 401/403/404 the client raises before a status exists) is a
+        miss, a 5xx or a dropped connection says nothing.  A GET would not do
+        here - plenty of servers answer 405 for a GET on a collection whether
+        or not it exists.
+        """
+        try:
+            response = self.client.propfind(url, ENCODE_AT_PROPFIND_BODY, 0)
+        except (AuthorizationError, NotFoundError):
+            return False
+        except Exception:
+            return None
+        if response.status >= 500:
+            return None
+        return response.status < 400
+
+    def _mkcalendar_probe(self, url):
+        """Create a probe calendar at exactly ``url``.
+
+        ``True``/``False``/``None`` on the same terms as ``_put_probe_object``.
+        Issued straight at the URL rather than through ``make_calendar()``,
+        which builds the path from a ``cal_id`` and would decide the spelling
+        this probe is asking about.  MKCOL is used where
+        ``create-calendar`` was probed as ``mkcol-required``: asking a server
+        that only answers MKCOL with MKCALENDAR fails by construction and
+        would be read as "it will not take a calendar at that spelling".
+        """
+        node = self.checker.features_checked.is_supported("create-calendar", return_type=dict)
+        mkcol = isinstance(node, dict) and node.get("behaviour") == "mkcol-required"
+        try:
+            if mkcol:
+                response = self.client.mkcol(url, ENCODE_AT_MKCOL_BODY)
+            else:
+                response = self.client.mkcalendar(url, ENCODE_AT_MKCALENDAR_BODY)
+        except (AuthorizationError, NotFoundError):
+            return False
+        except Exception:
+            return None
+        if response.status >= 500:
+            return None
+        return response.status < 400
+
+    def _delete_probe_collection(self, url):
+        """Best-effort removal of a probe calendar; a leftover is a warning, not a failure."""
+        try:
+            self.client.delete(url)
+        except Exception:
+            logging.warning("Could not delete the url.encode-at probe calendar at %s", url)
+
+    def _probe_encode_at_collection_identity(self, literal_url, encoded_url):
+        """One collection, or two?  Called with a calendar created at ``literal_url``.
+
+        An object is stored in it and then asked for through the ``%40``
+        spelling of the *collection* segment.  If it comes back, the two
+        spellings are one collection and there is nothing more to establish.
+        If it does not, that is not yet an answer: the encoded spelling may
+        name a different collection which simply does not exist yet, or it may
+        not resolve at all.  Creating a second calendar there separates the
+        two, exactly as the second object PUT does on the object axis.
+        """
+        literal_obj = literal_url + ENCODE_AT_IN_COLLECTION_UID + ".ics"
+        encoded_obj = encoded_url + ENCODE_AT_IN_COLLECTION_UID + ".ics"
+
+        stored = self._put_probe_object(literal_obj, ENCODE_AT_IN_COLLECTION_UID)
+        if not stored:
+            ## No object to compare with, so identity is out of reach - but
+            ## whether the encoded spelling answers for the collection at all
+            ## is still worth having.
+            resolves = self._propfind_resolves(encoded_url)
+            if resolves is None:
+                return _collection_axis(
+                    "a calendar exists at the literal '@' path, nothing could be stored in it, and the '%40' spelling did not answer either way",
+                    literal="full",
+                )
+            if resolves:
+                return _collection_axis(
+                    "both spellings answer for the calendar, but no object could be stored in it, so it is unknown whether they name the same collection",
+                    literal="full",
+                    encoded="full",
+                )
+            return _collection_axis(
+                "a calendar at the literal '@' path answers and the '%40' spelling of it does not",
+                literal="full",
+                encoded="unsupported",
+            )
+
+        seen = self._resolved_uid(encoded_obj)
+        if seen is None:
+            return _collection_axis(
+                "a calendar exists at the literal '@' path, but reading its contents through the '%40' spelling could not be completed",
+                literal="full",
+            )
+        if seen == ENCODE_AT_IN_COLLECTION_UID:
+            return _collection_axis(
+                "an object stored through the literal '@' spelling of the calendar path is served back through '%40' - one collection under two names",
+                literal="full",
+                encoded="full",
+                identity="unsupported",
+            )
+
+        second = self._mkcalendar_probe(encoded_url)
+        if second is None:
+            return _collection_axis(
+                "the '%40' spelling did not serve the calendar's contents, and creating a calendar of its own there could not be completed",
+                literal="full",
+            )
+        if not second:
+            ## Refused - but "there is already a collection here" is a refusal
+            ## too (RFC4918 makes that a 405), and it means the opposite of
+            ## "this spelling does not work".  A PROPFIND separates the two:
+            ## the only collection that can be there is the one just created
+            ## under '@', so an answer means the spelling resolves after all.
+            if self._propfind_resolves(encoded_url):
+                return _collection_axis(
+                    "the '%40' spelling answers for the calendar created under '@' but does not serve its contents, so it is unknown whether they name the same collection",
+                    literal="full",
+                    encoded="full",
+                )
+            return _collection_axis(
+                "the '%40' spelling of the calendar path neither serves the contents of the calendar created under '@' nor accepts a calendar of its own",
+                literal="full",
+                encoded="unsupported",
+            )
+
+        still_literal = self._resolved_uid(literal_obj)
+        now_encoded = self._resolved_uid(encoded_obj)
+        if still_literal is None or now_encoded is None:
+            return _collection_axis(
+                "a calendar was created at both spellings of the path, but reading them back could not be completed",
+                literal="full",
+                encoded="full",
+            )
+        if now_encoded == ENCODE_AT_IN_COLLECTION_UID:
+            ## The second MKCALENDAR was accepted and yet the object written
+            ## through the first spelling shows up through the second: the
+            ## server took the request as naming the collection it already had.
+            return _collection_axis(
+                "a second calendar was accepted at the '%40' spelling, but it serves the object stored through '@' - one collection under two names",
+                literal="full",
+                encoded="full",
+                identity="unsupported",
+            )
+        if still_literal == ENCODE_AT_IN_COLLECTION_UID:
+            return _collection_axis(
+                "the two spellings of the calendar path are two separate collections, each holding its own objects",
+                literal="full",
+                encoded="full",
+                identity="full",
+            )
+        return _collection_axis(
+            "a calendar was created at both spellings of the path, but the object stored in the first one was gone afterwards",
+            literal="full",
+            encoded="full",
+        )
+
+    def _probe_encode_at_collection(self):
+        """The collection axis: an ``@`` in a calendar id rather than an object name.
+
+        This is the shape the feature exists for.  The ownCloud/Nextcloud
+        calendar-home-set the library has a workaround for is
+        ``/remote.php/dav/calendars/user@example.com/`` - a *collection*
+        segment carrying an email address - and a server may route that quite
+        differently from an ``.ics`` file name, which is all the object axis
+        can speak for.
+
+        Creates a calendar of its own rather than looking at the real
+        calendar-home-set, because the question is what the server does with a
+        spelling *the client chose*, and because the home-set is not ours to
+        experiment on.  Returns ``None`` when there is nothing to be learnt:
+        no principal, or a server that cannot create and delete calendars, in
+        which case the probe would either fail by construction or leak a
+        calendar it cannot clean up.
+        """
+        if self.feature_ungood("create-calendar") or self.feature_ungood("delete-calendar"):
+            return _collection_axis(
+                "not probed: the server does not support creating and deleting calendars, so a probe calendar could not be made and cleaned up"
+            )
+        try:
+            home = self.checker.principal.calendar_home_set.url
+            literal_url = str(home.join(ENCODE_AT_CAL_ID + "/"))
+            encoded_url = str(home.join(quote(ENCODE_AT_CAL_ID) + "/"))
+        except Exception:
+            return None
+        if literal_url == encoded_url:
+            ## Nothing to compare - the two spellings came out the same, so
+            ## whatever built them normalised one into the other.
+            return None
+
+        try:
+            ## Clear both spellings first, for the same reason the object axis
+            ## does: a calendar left at '%40' by an aborted run would be read
+            ## as the encoded spelling resolving on its own.
+            self._delete_probe_collection(encoded_url)
+            self._delete_probe_collection(literal_url)
+
+            made = self._mkcalendar_probe(literal_url)
+            if made is None:
+                return _collection_axis("creating a calendar at the literal '@' path could not be completed")
+            if not made:
+                alternative = self._mkcalendar_probe(encoded_url)
+                try:
+                    if alternative is None:
+                        return _collection_axis("creating a calendar at the '%40' path could not be completed")
+                    if not alternative:
+                        return _collection_axis("the server accepted a probe calendar under neither spelling")
+                    if self._propfind_resolves(encoded_url):
+                        return _collection_axis(
+                            "the server refused a calendar at the literal '@' path and accepted one at '%40'",
+                            literal="unsupported",
+                            encoded="full",
+                        )
+                    return _collection_axis(
+                        "the server refused a calendar at the literal '@' path and did not answer for the one it accepted at '%40'"
+                    )
+                finally:
+                    self._delete_probe_collection(encoded_url)
+
+            try:
+                return self._probe_encode_at_collection_identity(literal_url, encoded_url)
+            finally:
+                self._delete_probe_collection(encoded_url)
+                self._delete_probe_collection(literal_url)
+        except Exception:
+            return _collection_axis("the url.encode-at collection probe could not be carried out")
+
+    ## ------------------------------------------------------------------
+    ## Axis 3: an '@' in the username, as it appears in a server-given path
+    ## ------------------------------------------------------------------
+
+    def _encode_at_principal_urls(self):
+        """The two spellings of a server-given path that embeds the username's ``@``.
+
+        Returns ``(literal_url, encoded_url)``, or ``None`` when the question
+        does not arise: a username without an ``@``, no principal, or a
+        principal and calendar-home-set whose paths do not carry the username
+        at all (plenty of servers address the principal by an opaque id).
+
+        Only the *path* is looked at.  An ``@`` in the authority is userinfo,
+        a different production entirely, and rewriting it would change which
+        credentials the request carries rather than which resource it names.
+        """
+        username = getattr(self.client, "username", None)
+        if not username or "@" not in username:
+            return None
+        principal = getattr(self.checker, "principal", None)
+        if principal is None:
+            return None
+
+        candidates = []
+        for get in (lambda: principal.url, lambda: principal.calendar_home_set.url):
+            try:
+                candidates.append(str(get()))
+            except Exception:
+                pass
+
+        for candidate in candidates:
+            parts = urlsplit(candidate)
+            if "@" in parts.path:
+                literal_path, encoded_path = parts.path, parts.path.replace("@", "%40")
+            elif "%40" in parts.path:
+                literal_path, encoded_path = parts.path.replace("%40", "@"), parts.path
+            else:
+                continue
+            return (
+                urlunsplit(parts._replace(path=literal_path)),
+                urlunsplit(parts._replace(path=encoded_path)),
+            )
+        return None
+
+    def _probe_encode_at_principal(self):
+        """The username axis: is a server-given path with an ``@`` reachable both ways?
+
+        Read-only, and deliberately no identity verdict.  Identity means "two
+        spellings, two resources", and establishing that takes writing a second
+        resource at the other spelling - which here would mean creating a
+        second principal.  What can be observed is reachability, and that is
+        the half that bites: the ownCloud workaround exists because a server
+        hands out a calendar-home-set containing a literal ``@`` and then
+        refuses to serve it.  A breakage on this axis is therefore recorded as
+        "supports the encoded spelling but not the literal one", or the
+        reverse, and nothing is said about identity.
+        """
+        urls = self._encode_at_principal_urls()
+        if urls is None:
+            return None
+        literal_url, encoded_url = urls
+        literal = self._propfind_resolves(literal_url)
+        encoded = self._propfind_resolves(encoded_url)
+        if literal is None or encoded is None:
+            return _principal_axis("the PROPFINDs on the two spellings of the principal path could not be completed")
+        if literal and encoded:
+            return _principal_axis(
+                "the server-given path carrying the username's '@' answers under both spellings (whether they are one resource or two is not observable here)",
+                literal="full",
+                encoded="full",
+            )
+        if literal:
+            return _principal_axis(
+                "the server-given path carrying the username's '@' answers only under the literal spelling",
+                literal="full",
+                encoded="unsupported",
+            )
+        if encoded:
+            return _principal_axis(
+                "the server-given path carrying the username's '@' answers only under '%40'",
+                literal="unsupported",
+                encoded="full",
+            )
+        return _principal_axis("neither spelling of the server-given path carrying the username's '@' answered")
+
+    def _check_encode_at(self, calendar):
+        """Probe ``url.encode-at``: how does the server treat ``@`` versus ``%40``?
+
+        Two orthogonal questions - which spellings resolve, and whether they
+        name one resource or two - asked of three different things a path can
+        embed an ``@`` in: an object name, a calendar id, and the username
+        inside a path the server itself handed out.  The three write to the
+        same three subfeatures, and ``_record_encode_at`` merges them; where
+        they disagree the result is ``fragile`` rather than one axis silently
+        winning.
+
+        Best-effort throughout: PrepareCalendar provisions the fixtures every
+        later check depends on, so nothing in here may raise, and anything
+        undeterminable is reported ``unknown`` rather than guessed at.
+        """
+        self._record_encode_at(
+            self._probe_encode_at_object(calendar),
+            self._probe_encode_at_collection(),
+            self._probe_encode_at_principal(),
+        )
+
     def _check_stable_url(self, calendar):
         """Check whether the server reports objects under the same URL the client stored them at.
 
@@ -1473,6 +2225,7 @@ END:VCALENDAR""",
 
         self._check_get_by_url(calendar)
         self._check_stable_url(calendar)
+        self._check_encode_at(calendar)
 
 
 class CheckTodoNoDtstartSearch(Check):
