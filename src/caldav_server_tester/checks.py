@@ -314,6 +314,10 @@ class CheckMakeDeleteCalendar(Check):
     }
     depends_on = {CheckGetCurrentUserPrincipal}
 
+    ## The cal_id the make/delete probe uses.  Prefixed so the cleanup sweep
+    ## recognises it (see checker.PROBE_CALENDAR_PREFIXES).
+    MKDEL_CAL_ID = "caldav-server-checker-mkdel-test"
+
     @staticmethod
     def _calendar_is_accessible(cal) -> bool:
         """Probe whether a calendar is accessible by calling events().
@@ -474,6 +478,70 @@ class CheckMakeDeleteCalendar(Check):
                     {"support": "unknown", "behaviour": "no calendar available to probe"},
                 )
 
+    def _probe_free_namespace(self, cal_id, timeout=5, method=None):
+        """Did the DELETE free up the calendar id for re-use?
+
+        Called with a ``cal_id`` that ``_try_make_calendar`` has just created and
+        deleted: re-creating it now answers the question inside this run.  A
+        server that keeps the name reserved - Nextcloud moves the calendar to a
+        trashbin that has to be emptied by hand - refuses that MKCALENDAR while
+        still accepting a fresh id, and that difference is the whole signal.  So
+        a failure is only reported as "not freed" when a fresh id succeeds; when
+        neither works the server is refusing to create calendars for some
+        unrelated reason and the feature is left unknown rather than blamed on
+        the namespace.
+
+        ``method`` is whatever created the calendar in the first place, and both
+        the retry and the fresh-id control have to use it: a server that only
+        answers MKCOL would otherwise be asked with MKCALENDAR here, fail for
+        that reason alone, and be recorded as keeping the name reserved.
+        """
+        kwargs = {} if method is None else {"method": method}
+        feature = "delete-calendar.free-namespace"
+        if not self.checker.features_checked.is_supported("delete-calendar"):
+            self.set_feature(feature, {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"})
+            return
+
+        waited = 0
+        while True:
+            try:
+                self.checker.principal.make_calendar(cal_id=cal_id, **kwargs)
+            except DAVError as e:
+                last_error = e
+            else:
+                ## Freed - immediately, or after a short wait on a server that
+                ## processes the delete asynchronously.  Either way the client
+                ## can re-use the id.
+                self.set_feature(feature, True)
+                self._discard_calendar(cal_id)
+                return
+            if waited >= timeout:
+                break
+            time.sleep(1)
+            waited += 1
+
+        fresh_id = "testcalendar-" + str(uuid.uuid4())
+        try:
+            self.checker.principal.make_calendar(cal_id=fresh_id, **kwargs)
+        except DAVError:
+            self.set_feature(
+                feature,
+                {
+                    "support": "unknown",
+                    "behaviour": f"cannot test, creating a calendar failed for both the deleted and a fresh cal_id ({last_error})",
+                },
+            )
+        else:
+            self._discard_calendar(fresh_id)
+            self.set_feature(feature, False)
+
+    def _discard_calendar(self, cal_id):
+        """Throw away a calendar that was created only to answer a probe."""
+        try:
+            DAVObject.delete(self.checker.principal.calendar(cal_id=cal_id))
+        except Exception:
+            pass
+
     def _probe_make_delete(self):
         try:
             cal = self.checker.principal.calendar(cal_id="this_should_not_exist")
@@ -495,32 +563,50 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("get-current-user-principal.has-calendar", False)
 
         _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
-        ## First attempt: a fixed cal_id.  If it succeeds, a previous run's
-        ## calendar with the same id was successfully removed (or never existed),
-        ## i.e. the namespace is free after deletion.
-        ## TODO: this is a lie on the very first run - we haven't really verified
-        ## this until a second script run.
-        makeret = self._try_make_calendar(cal_id="caldav-server-checker-mkdel-test")
+        ## _try_make_calendar creates the fixed cal_id and deletes it again, so
+        ## re-creating that same id afterwards is what tells us whether the
+        ## delete freed the namespace - see _probe_free_namespace.  (This used to
+        ## be inferred from whether the fixed id could be created at all, i.e.
+        ## from whether a *previous* run's leftover had been freed: no evidence
+        ## at all on a first run, and any transient MKCALENDAR failure was
+        ## recorded as "the namespace is not freed on delete".)
+        makeret = self._try_make_calendar(cal_id=self.MKDEL_CAL_ID)
         if makeret:
-            if self.checker.features_checked.is_supported("delete-calendar"):
-                self.set_feature("delete-calendar.free-namespace", True)
-            else:
-                self.set_feature("delete-calendar.free-namespace", _unknown_del)
+            self._probe_free_namespace(self.MKDEL_CAL_ID)
             return
-        ## The fixed cal_id is stuck (a previous calendar was not freed); a fresh
-        ## unique cal_id should still work -> namespace is not freed on delete.
+        ## The fixed cal_id could not be created at all; a fresh unique cal_id
+        ## tells us whether calendar creation works in the first place.
         unique_id = "testcalendar-" + str(uuid.uuid4())
         makeret = self._try_make_calendar(cal_id=unique_id)
         if makeret:
-            self.set_feature("delete-calendar.free-namespace", False)
+            ## Creation works, so the fixed id is what the server objects to.
+            ## Do NOT ask the namespace question about that id: this run never
+            ## created it, so it never deleted it either, and re-creating it
+            ## now only reports whether a *previous* run's leftover has been
+            ## freed - the very inference this probe exists to stop making.
+            ## The fresh id, on the other hand, was just created and deleted by
+            ## _try_make_calendar, so it can answer the question properly.
+            self._probe_free_namespace(unique_id)
             return
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
         if makeret:
             self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
-            if self.checker.features_checked.is_supported("delete-calendar"):
-                self.set_feature("delete-calendar.free-namespace", False)
-            else:
+            ## The fixed cal_id has only ever been tried with MKCALENDAR, which
+            ## on this server fails by construction - so its failure says
+            ## nothing about the namespace.  Create and delete it with MKCOL
+            ## and ask the question properly.
+            if not self.checker.features_checked.is_supported("delete-calendar"):
                 self.set_feature("delete-calendar.free-namespace", _unknown_del)
+            elif self._try_make_calendar(cal_id=self.MKDEL_CAL_ID, method="mkcol"):
+                self._probe_free_namespace(self.MKDEL_CAL_ID, method="mkcol")
+            else:
+                self.set_feature(
+                    "delete-calendar.free-namespace",
+                    {
+                        "support": "unknown",
+                        "behaviour": "cannot test, the probe cal_id could not be created with MKCOL either",
+                    },
+                )
         else:
             self.set_feature("create-calendar", False)
             self.set_feature(
@@ -1434,16 +1520,36 @@ class CheckTodoNoDtstartSearch(Check):
 
 class CheckNonExistingResource(Check):
     """
-    Checks what happens when a non-existing calendar object resource is looked
-    up.  The expected behaviour is a 404 (NotFoundError); some servers answer
-    403 instead (e.g. Robur, probably to avoid leaking whether a resource
-    exists).  Replaces the old 'non_existing_raises_other' flag.
+    Checks what happens when something that does not exist is looked up.  The
+    expected behaviour is a 404 (NotFoundError); some servers answer 403
+    instead (e.g. Robur, probably to avoid leaking whether a resource exists).
+    Replaces the old 'non_existing_raises_other' flag.
+
+    A missing calendar *object* and a missing calendar *collection* get separate
+    features, because servers do not necessarily treat them alike - and neither
+    does the caldav library.  What we can observe is the exception the client
+    ends up raising, not the raw status code: ``load()`` retries a failed GET as
+    a calendar-multiget REPORT against the parent calendar, so a server
+    answering 403 on the object URL still raises NotFoundError if it reports the
+    missing href with a 404 inside the multistatus (Robur does exactly that).  A
+    missing collection has no such fallback, hence the difference.
     """
 
-    depends_on = {PrepareCalendar}
-    features_to_be_checked = {"non-existing-raises-not-found"}
+    depends_on = {PrepareCalendar, CheckMakeDeleteCalendar}
+    features_to_be_checked = {
+        "non-existing-raises-not-found",
+        "non-existing-raises-not-found.collection",
+    }
+
+    ## Prefixed so the cleanup sweep would recognise it, in the unlikely event
+    ## that a server creates it behind our back (see PROBE_CALENDAR_PREFIXES).
+    MISSING_CAL_ID = "caldav-server-checker-does-not-exist"
 
     def _run_check(self) -> None:
+        self._probe_missing_object()
+        self._probe_missing_collection()
+
+    def _probe_missing_object(self) -> None:
         feature = "non-existing-raises-not-found"
         cal = self.checker.calendar
         missing = url_object(cal, "csc_does_not_exist_probe")
@@ -1451,12 +1557,9 @@ class CheckNonExistingResource(Check):
             missing.load()
         except NotFoundError:
             self.set_feature(feature, True)
-        except AuthorizationError as e:
-            self.set_feature(
-                feature,
-                {"support": "unsupported", "behaviour": f"raises {type(e).__name__} instead of NotFoundError"},
-            )
         except DAVError as e:
+            ## AuthorizationError (a DAVError subclass) is the common case: a
+            ## 403 rather than a 404, which is a legitimate choice.
             self.set_feature(
                 feature,
                 {"support": "unsupported", "behaviour": f"raises {type(e).__name__} instead of NotFoundError"},
@@ -1466,6 +1569,32 @@ class CheckNonExistingResource(Check):
             self.set_feature(
                 feature,
                 {"support": "broken", "behaviour": "no error raised for a non-existing resource"},
+            )
+
+    def _probe_missing_collection(self) -> None:
+        feature = "non-existing-raises-not-found.collection"
+        ## On a server that creates calendars on first access, looking up a
+        ## non-existing calendar would create the very thing we are probing for.
+        ## Leave the feature unset so the parent status propagates.
+        if self.checker.features_checked.is_supported("create-calendar.auto"):
+            return
+        missing = self.checker.principal.calendar(cal_id=self.MISSING_CAL_ID)
+        try:
+            missing.get_events()
+        except NotFoundError:
+            self.set_feature(feature, True)
+        except DAVError as e:
+            self.set_feature(
+                feature,
+                {
+                    "support": "unsupported",
+                    "behaviour": f"a non-existing calendar raises {type(e).__name__} instead of NotFoundError",
+                },
+            )
+        else:
+            self.set_feature(
+                feature,
+                {"support": "broken", "behaviour": "no error raised for a non-existing calendar"},
             )
 
 

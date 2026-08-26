@@ -10,13 +10,23 @@ looking up a missing resource yields 404/`NotFoundError`; the deviant case
   in `caldav/` reads it; the only consumer is the `_notFound()` helper in
   `tests/test_caldav.py`, which uses it to widen `pytest.raises(NotFoundError)`
   to `pytest.raises(DAVError)`.
-* It has **never been verified** by this server-tester.  `CheckNonExistingResource`
-  exists but has only ever seen 404 servers; the Robur value was carried over,
-  un-reprobed, from the old opt-in `non_existing_raises_other` flag.  Robur is
-  still down.
-* `CheckNonExistingResource` probes a missing **object resource** (an event URL),
-  not a missing **calendar collection**.  The "Robur 403s on any missing path"
-  claim is an inference, not data.
+* ~~It has **never been verified** by this server-tester.~~  Verified against
+  Robur 2026-08-26: it answers **403 for everything** that does not exist below
+  `/calendars/` and `/principals/`, a missing calendar *object* included (a raw
+  `GET` and a raw `PROPFIND` on a missing `.ics` in an existing calendar both
+  give 403; only paths outside those namespaces give a 404, from the web
+  server).
+* ~~`CheckNonExistingResource` probes a missing **object resource** (an event
+  URL), not a missing **calendar collection**.~~  It now probes both; the
+  collection axis is the new `non-existing-raises-not-found.collection`
+  subfeature.  The two do differ — but not for the reason assumed here:
+  `CalendarObjectResource.load()` retries a failed GET as a calendar-multiget
+  REPORT against the parent calendar, and Robur reports the missing href with an
+  inner 404 there, so the object lookup ends in `NotFoundError` after all, while
+  a missing collection (no such fallback) surfaces the 403 as
+  `AuthorizationError`.  **Both features therefore measure the client-visible
+  exception, not the server's status code** — a probe of the raw status would
+  have to bypass `load()`.
 
 Decisions:
 
@@ -27,8 +37,13 @@ Decisions:
   save-load, not calendar-create).  Cross-reference `create-calendar.auto` in
   the descriptions as the related "access a non-existent target" axis.
 * Re-tag Robur as `ungraceful` (server throws a different error) rather than
-  `unsupported` per the taxonomy — or drop the speculative Robur entry back to
-  the default until the server can actually be probed.
+  `unsupported` per the taxonomy — still open.  The probe and the Robur profile
+  both say `unsupported` for the collection axis, matching the feature
+  description ("recorded as 'unsupported' rather than 'broken'"), though
+  `ungraceful` arguably fits the taxonomy better; both resolve to False, so
+  nothing behaves differently either way.  The other half ("drop the speculative
+  Robur entry back to the default until the server can actually be probed") is
+  done: the server was probed, and the parent is back at its `full` default.
 * Renaming touches both repos: feature definition + Robur dict + `_notFound()`
   in caldav, and the 3 refs in `caldav-server-tester/.../checks.py`.  They must
   land together or the renamed key silently falls back to its default.
