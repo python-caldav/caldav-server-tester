@@ -1518,6 +1518,26 @@ class CheckTodoNoDtstartSearch(Check):
         self.set_feature(feature, found)
 
 
+def dav_error_status(exc):
+    """The HTTP status a ``DAVError`` carries, when it carries one at all.
+
+    There is no structured status on the exception: ``DAVObject`` raises its
+    errors as ``SomeError(errmsg(response))``, and ``errmsg`` renders
+    ``"<status> <reason>\n\n<body>"`` into what the exception then stores as
+    its ``url``.  So the status has to be read back off that string, and
+    anything that does not start with one gives ``None``.
+
+    Worth the ugliness because a 5xx means the server broke, not that it
+    answered the wrong error - and this suite's verdicts are copied into
+    server profiles, where "answers 403 instead of 404" is read as a
+    statement about the server rather than about the minute it was probed.
+    """
+    match = re.match(r"\s*(\d{3})\b", str(getattr(exc, "url", "") or ""))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 class CheckNonExistingResource(Check):
     """
     Checks what happens when something that does not exist is looked up.  The
@@ -1537,7 +1557,7 @@ class CheckNonExistingResource(Check):
 
     depends_on = {PrepareCalendar, CheckMakeDeleteCalendar}
     features_to_be_checked = {
-        "non-existing-raises-not-found",
+        "non-existing-raises-not-found.object",
         "non-existing-raises-not-found.collection",
     }
 
@@ -1549,34 +1569,92 @@ class CheckNonExistingResource(Check):
         self._probe_missing_object()
         self._probe_missing_collection()
 
+    NO_ERROR = {"support": "broken", "behaviour": "no error raised for a non-existing resource"}
+
+    @staticmethod
+    def _deviation_or_outage(exc, deviation):
+        """Classify a DAVError as a deviation from the RFC or as a bad minute.
+
+        ``deviation`` is the behaviour text for the former, with ``{name}``
+        standing in for the exception class.
+        """
+        status = dav_error_status(exc)
+        if status is not None and status >= 500:
+            return {
+                "support": "unknown",
+                "behaviour": f"cannot test, the server answered {status} ({type(exc).__name__}) - possibly transient",
+            }
+        return {"support": "unsupported", "behaviour": deviation.format(name=type(exc).__name__)}
+
     def _probe_missing_object(self) -> None:
-        feature = "non-existing-raises-not-found"
+        feature = "non-existing-raises-not-found.object"
         cal = self.checker.calendar
         missing = url_object(cal, "csc_does_not_exist_probe")
+
+        ## Ask the server first, with the library's rescue switched off:
+        ## load() retries a failed GET as a calendar-multiget REPORT against
+        ## the parent collection, and a server that answers 403 for anything
+        ## non-existing (Robur) is reported as a 404 inside that multistatus.
+        ## Probing through the rescue can therefore only ever observe "full".
+        raw_error = None
         try:
-            missing.load()
+            missing.load(multiget_fallback=False)
         except NotFoundError:
             self.set_feature(feature, True)
+            return
         except DAVError as e:
             ## AuthorizationError (a DAVError subclass) is the common case: a
             ## 403 rather than a 404, which is a legitimate choice.
-            self.set_feature(
-                feature,
-                {"support": "unsupported", "behaviour": f"raises {type(e).__name__} instead of NotFoundError"},
-            )
+            raw_error = type(e).__name__
         else:
-            ## No error at all for a non-existing resource.
+            self.set_feature(feature, self.NO_ERROR)
+            return
+
+        ## The server did not answer 404 - but the caller may still get the
+        ## NotFoundError it expects, out of the multiget fallback.  That is a
+        ## quirk rather than a breakage: nothing downstream has to care.
+        try:
+            missing.load()
+        except NotFoundError:
             self.set_feature(
                 feature,
-                {"support": "broken", "behaviour": "no error raised for a non-existing resource"},
+                {
+                    "support": "quirk",
+                    "behaviour": f"a direct lookup raises {raw_error}; the NotFoundError comes out of load()'s calendar-multiget fallback, where the server reports the missing href with an inner 404",
+                },
             )
+        except DAVError as e:
+            self.set_feature(feature, self._deviation_or_outage(e, "raises {name} instead of NotFoundError"))
+        else:
+            self.set_feature(feature, self.NO_ERROR)
 
     def _probe_missing_collection(self) -> None:
         feature = "non-existing-raises-not-found.collection"
         ## On a server that creates calendars on first access, looking up a
         ## non-existing calendar would create the very thing we are probing for.
-        ## Leave the feature unset so the parent status propagates.
+        ## Record it unknown rather than leaving it unset: its sibling says
+        ## nothing about it, so there is nothing to fall back on.
         if self.checker.features_checked.is_supported("create-calendar.auto"):
+            self.set_feature(
+                feature,
+                {
+                    "support": "unknown",
+                    "behaviour": "not probed: the server creates calendars on first access, so looking one up would create it",
+                },
+            )
+            return
+        ## ...and "we never found out whether it auto-creates" is not licence to
+        ## try: is_supported() is False for unknown just as for unsupported, so
+        ## a CheckMakeDeleteCalendar that raised would let the probe create the
+        ## very calendar it then reports as non-existing.
+        if self.feature_undeterminated("create-calendar.auto"):
+            self.set_feature(
+                feature,
+                {
+                    "support": "unknown",
+                    "behaviour": "not probed: create-calendar.auto was never established, so a lookup might create the calendar",
+                },
+            )
             return
         missing = self.checker.principal.calendar(cal_id=self.MISSING_CAL_ID)
         try:
@@ -1586,10 +1664,7 @@ class CheckNonExistingResource(Check):
         except DAVError as e:
             self.set_feature(
                 feature,
-                {
-                    "support": "unsupported",
-                    "behaviour": f"a non-existing calendar raises {type(e).__name__} instead of NotFoundError",
-                },
+                self._deviation_or_outage(e, "a non-existing calendar raises {name} instead of NotFoundError"),
             )
         else:
             self.set_feature(
