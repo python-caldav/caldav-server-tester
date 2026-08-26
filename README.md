@@ -45,6 +45,11 @@ See [USAGE.md](USAGE.md) for details on output formats (`--format
 json/yaml/hints`), the `--diff` flag, running individual checks, and safety
 considerations.
 
+## Roadmap
+
+[`docs/ROADMAP.md`](docs/ROADMAP.md) describes what the tool covers today, what
+is funded for the next period, and what is wanted but not funded.
+
 ## Background
 
 The caldav client library accumulated a large set of compatibility flags to
