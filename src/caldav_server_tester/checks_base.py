@@ -74,8 +74,39 @@ class Check:
             else:
                 raise ValueError(f"Unknown debug_mode {self.checker.debug_mode!r}")
 
-    def feature_checked(self, feature, return_type=bool):
+    def feature_check_result(self, feature, return_type=bool):
+        """The value we've found for the feature through checking -
+        as opposed to the configured value.
+        """
         return self.checker._features_checked.is_supported(feature, return_type)
+
+    ## The method above was earlier named `feature_checked()`, but
+    ## I read that as "was the feature checked or not?", so not
+    ## good.  Adding this for backward compatibility:
+    feature_checked = feature_check_result
+
+    ## The AI suggested "feature_unprobed", but I found it silly
+    def feature_undeterminated(self, feature) -> bool:
+        """True when the we don't know the state.
+
+        * None: check has not been run
+        * "unknown": check has been run, but could not probe it
+        * "fragile": check has been run, and the results from it is inconclusive
+        """
+        return self.feature_checked(feature, str) in (None, "unknown", "fragile")
+
+    ## Inspired by "doublespeak" ... but I think this is a good method name:
+    def feature_ungood(self, feature) -> bool:
+        """Returns true on non-good states
+
+        Both unknown, not probed, flaky and unsupported is considered
+        "ungood" here.  It's often used in the checks to check a
+        parent feature - a child would typically depend on a parent,
+        so if the parent feature is "ungood", it's often no point
+        trying to probe the children.
+
+        """
+        return self.feature_undeterminated(feature) or not self.feature_check_result(feature)
 
     def run_check(self, only_once=True):
         if only_once:

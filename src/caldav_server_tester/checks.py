@@ -3505,9 +3505,7 @@ class CheckSchedulingDetails(Check):
     features_to_be_checked = {"scheduling.mailbox", "scheduling.calendar-user-address-set"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("scheduling"):
-            self.set_feature("scheduling.mailbox", False)
-            self.set_feature("scheduling.calendar-user-address-set", False)
+        if self.feature_ungood("scheduling"):
             return
 
         principal = self.checker.principal
@@ -3558,8 +3556,7 @@ class CheckFreeBusyQueryRFC6638(Check):
     features_to_be_checked = {"scheduling.freebusy-query"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
-            self.set_feature("scheduling.freebusy-query", False)
+        if self.feature_ungood("scheduling.mailbox"):
             return
 
         principal = self.checker.principal
@@ -3622,8 +3619,7 @@ class CheckScheduleTag(Check):
     features_to_be_checked = {"scheduling.schedule-tag"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("scheduling"):
-            self.set_feature("scheduling.schedule-tag", False)
+        if self.feature_ungood("scheduling"):
             return
 
         ## Resolve the authenticated user's calendar address so that the probe
@@ -3732,9 +3728,7 @@ class CheckSchedulingInboxDelivery(Check):
     features_to_be_checked = {"scheduling.mailbox.inbox-delivery", "scheduling.auto-schedule"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("scheduling") or not self.feature_checked("scheduling.mailbox"):
-            self.set_feature("scheduling.mailbox.inbox-delivery", False)
-            self.set_feature("scheduling.auto-schedule", False)
+        if self.feature_ungood("scheduling.mailbox"):
             return
 
         principal = self.checker.principal
@@ -3922,8 +3916,7 @@ class CheckScheduleTagStablePartstat(Check):
     features_to_be_checked = {"scheduling.schedule-tag.stable-partstat"}
 
     def _run_check(self) -> None:
-        if not self.feature_checked("scheduling.schedule-tag"):
-            self.set_feature("scheduling.schedule-tag.stable-partstat", False)
+        if self.feature_ungood("scheduling.schedule-tag"):
             return
 
         extra_principals = self.checker.extra_principals
