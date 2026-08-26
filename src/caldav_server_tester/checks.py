@@ -2696,7 +2696,10 @@ class CheckRecurrenceSearch(Check):
             len(events) == 1 and events[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
         )
         if todo_testable:
-            todos = cal.search(
+            ## The task calendar, not the event calendar: on servers that keep
+            ## tasks in a separate collection this search finds nothing in cal
+            ## and the feature is reported unsupported for no reason.
+            todos = tl.search(
                 start=datetime(base, 2, 12, tzinfo=utc),
                 end=datetime(base, 2, 13, tzinfo=utc),
                 todo=True,
