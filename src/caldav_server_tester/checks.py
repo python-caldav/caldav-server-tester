@@ -1525,7 +1525,9 @@ END:VCALENDAR""",
         feature works in one place and not in another, and the behaviour names
         which is which so a human can see what to work around.  Splitting the
         subfeature in two (``…identity.collection``) is the right move only
-        once a server is actually seen to differ, and none has been yet.
+        once a server is actually seen to differ, and none has been yet - so
+        the disagreement also logs a warning asking for a report, which is how
+        that evidence would reach us.
 
         A subfeature no axis observed is recorded ``unknown`` rather than
         filled in from a sibling - each has its own default, and compare()
@@ -1541,11 +1543,29 @@ END:VCALENDAR""",
             elif len(levels) == 1:
                 support, note = levels.pop(), prose
             else:
+                ## A server that treats an '@' in an object name differently
+                ## from one in a calendar id (or in a principal path) is
+                ## expected never to turn up - the spelling of a path segment
+                ## is normally decided in one place, well below whatever the
+                ## segment happens to name.  If this warning ever fires against
+                ## a real server, THAT is the evidence for splitting the
+                ## subfeature into per-axis children
+                ## (url.encode-at.identity.object / .collection): until then
+                ## the split would be modelling a distinction nobody has seen,
+                ## and 'fragile' plus the behaviour text says what was observed
+                ## without inventing a shape for it.
                 disagreement = ", ".join(f"{axis} {level}" for axis, level in seen)
                 support = "fragile"
                 note = f"the axes disagree ({disagreement})"
                 if prose:
                     note = f"{note}; {prose}"
+                logging.warning(
+                    "url.encode-at.%s: the axes disagree (%s). This was not expected to happen on any "
+                    "real server - please report it, as it is the evidence needed to split this feature "
+                    "into per-axis subfeatures. Recording 'fragile'.",
+                    name,
+                    disagreement,
+                )
             node = {"support": support}
             if note:
                 node["behaviour"] = note

@@ -10,6 +10,7 @@ subfeatures.  What they cannot be allowed to do is quietly outvote each other,
 which is what most of this file is about.
 """
 
+import logging
 import warnings
 from unittest.mock import Mock
 
@@ -494,6 +495,27 @@ class TestTheAxesAreMerged:
         behaviour = _behaviour(checker, "literal")
         assert "object paths" in behaviour and "calendar paths" in behaviour
         assert "full" in behaviour and "unsupported" in behaviour
+
+    def test_a_disagreement_asks_to_be_reported(self, caplog) -> None:
+        """No server is expected to differ between the axes, and if one does,
+        that observation is the whole case for splitting the subfeature into
+        per-axis children.  A `fragile` buried in a profile would not reach
+        anyone; a warning on the run that saw it might."""
+        with caplog.at_level(logging.WARNING):
+            self._record(
+                _object_axis("both spellings work", literal="full"),
+                _collection_axis("only '%40' works", literal="unsupported"),
+            )
+        assert any("url.encode-at.literal" in r.getMessage() for r in caplog.records)
+
+    def test_agreeing_axes_are_not_warned_about(self, caplog) -> None:
+        """Otherwise the warning would be noise on every ordinary run."""
+        with caplog.at_level(logging.WARNING):
+            self._record(
+                _object_axis("both spellings work", literal="full", encoded="full", identity="full"),
+                _collection_axis("likewise", literal="full", encoded="full", identity="full"),
+            )
+        assert caplog.records == []
 
     def test_an_axis_that_observed_nothing_does_not_outvote_one_that_did(self) -> None:
         checker = self._record(
