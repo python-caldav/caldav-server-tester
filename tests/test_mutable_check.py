@@ -51,11 +51,13 @@ class TestCheckMutable:
         vevent = mock_event.icalendar_instance.walk("vevent")[0]
         # First get() returns original; after save() + load() simulate updated value
         call_count = [0]
+
         def get_side_effect(key, default=""):
             call_count[0] += 1
             if call_count[0] <= 1:
                 return "original"
             return "original (mutable-check)"
+
         vevent.get.side_effect = get_side_effect
 
         check = CheckMutable(checker)
@@ -117,11 +119,13 @@ class TestCheckMutable:
         mock_event.save.return_value = None
 
         call_count = [0]
+
         def get_side_effect(key, default=""):
             call_count[0] += 1
             if call_count[0] <= 1:
                 return "original"
             return "original (mutable-check)"
+
         mock_event.icalendar_instance.walk("vevent")[0].get.side_effect = get_side_effect
 
         with patch("caldav_server_tester.checks.Event") as MockEvent:

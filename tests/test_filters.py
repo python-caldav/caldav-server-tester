@@ -35,15 +35,13 @@ class TestFilterFixtureWindow:
 
         # Set up the component properties
         if dtstart is not None:
-            component.__contains__ = (
-                lambda self, key: key == "dtstart"
-                or (key == "due" and due is not None)
-                or (key == "dtend" and dtend is not None)
+            component.__contains__ = lambda self, key: (
+                key == "dtstart" or (key == "due" and due is not None) or (key == "dtend" and dtend is not None)
             )
             component.start = dtstart
         elif due is not None or dtend is not None:
-            component.__contains__ = lambda self, key: (key == "due" and due is not None) or (
-                key == "dtend" and dtend is not None
+            component.__contains__ = lambda self, key: (
+                (key == "due" and due is not None) or (key == "dtend" and dtend is not None)
             )
             component.end = due if due is not None else dtend
         else:
