@@ -4,7 +4,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
@@ -2113,20 +2113,77 @@ END:VCALENDAR""",
         )
 
     def _check_stable_url(self, calendar):
-        """Check whether the server reports objects under the same URL the client stored them at.
+        """May a client compare a searched object's URL with one it constructed?
 
-        Some servers (e.g. OX App Suite) canonicalize the calendar path, so an
-        object looked up via REPORT (object_by_uid) is reported under a different
-        URL than the one the client PUT to.  Clients must therefore not assume a
-        searched object's URL equals the URL it was created at.
+        It may when the server reports the object at ``<collection>/<uid>.ics``
+        under the collection address the client is holding.  Two different
+        things take that away, and they are asked separately here.
+
+        The server may rename the resource - then no client can construct its
+        URL at all, and that is this probe's own observation.
+
+        Or the *collection* may have more than one address.  OX serves every
+        calendar both at the requested cal_id and at an opaque canonical
+        ``cal://0/NNN`` path, and reports objects under the canonical one, so a
+        constructed URL matches only when the client happens to hold that
+        address - and the library hands out either, depending on how the
+        Calendar was obtained: ``make_calendar()`` adopts the canonical URL and
+        a listing reports it, while ``principal.calendar(cal_id=...)`` is pure
+        URL arithmetic and never round-trips.  Comparing the two URLs is
+        therefore not a question about the *server* at all, and this probe used
+        to do exactly that: a run that created the test calendar called OX
+        stable and a run that found it again by cal_id called the same server
+        unstable.
+
+        So that half is read from ``create-calendar.stable-url``, which probes
+        it deterministically by creating a calendar and comparing the canonical
+        URL segment with the requested cal_id.  Where it says the collection
+        was relocated, a client cannot rely on a constructed object URL either,
+        whichever address this particular run ended up with.
         """
+        stored_as = "csc_simple_event1.ics"
         try:
-            server_event = calendar.object_by_uid("csc_simple_event1")
-            client_url = calendar.url.join("csc_simple_event1.ics")
-            stable = server_event.url.canonical() == client_url.canonical()
-            self.set_feature("save-load.stable-url", stable)
+            server_event = calendar.object_by_uid(stored_as[: -len(".ics")])
+            reported_url = str(server_event.url)
+            reported_as = unquote(urlsplit(reported_url).path).rstrip("/").rsplit("/", 1)[-1]
         except Exception:
             self.set_feature("save-load.stable-url", None)
+            return
+
+        if reported_as != stored_as:
+            self.set_feature(
+                "save-load.stable-url",
+                {
+                    "support": "unsupported",
+                    "behaviour": (
+                        f"the object stored as {stored_as!r} is reported under the name "
+                        f"{reported_as!r}; a client cannot construct the URL of an object it saved"
+                    ),
+                },
+            )
+            return
+
+        ## An actual negative observation, not merely the absence of one: a
+        ## collection nobody managed to probe must not cost this feature its
+        ## verdict.
+        relocates = self.checker.features_checked.is_supported("create-calendar.stable-url", str)
+        if relocates in ("unsupported", "broken", "ungraceful"):
+            self.set_feature(
+                "save-load.stable-url",
+                {
+                    "support": "unsupported",
+                    "behaviour": (
+                        "the object keeps the name it was stored under, but the collection is "
+                        "served at more than one address (see create-calendar.stable-url), so a "
+                        "constructed object URL matches only when the client happens to hold the "
+                        "address the server reports objects under"
+                    ),
+                },
+            )
+            return
+
+        client_url = calendar.url.join(stored_as)
+        self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
 
     def _delete_stale_fixtures(self, object_by_uid):
         """Delete leftover fixtures from previous runs that aren't in the current set.
