@@ -153,9 +153,16 @@ def _run(checker) -> None:
     check._record_encode_at(check._probe_encode_at_object(_make_calendar()))
 
 
+## ``url.encode-at.literal`` is recorded per axis (Stalwart answers it one way
+## for an object name and another for a calendar path).  Everything in this
+## file drives the object axis, so "literal" here is that axis's key.
+_SUBFEATURE_KEYS = {"literal": "literal.object"}
+
+
 def _support(checker, name) -> str | None:
     """The support level recorded for one subfeature, or None if never set."""
-    node = checker._features_checked.is_supported(f"url.encode-at.{name}", dict, return_defaults=False)
+    key = _SUBFEATURE_KEYS.get(name, name)
+    node = checker._features_checked.is_supported(f"url.encode-at.{key}", dict, return_defaults=False)
     return node.get("support") if isinstance(node, dict) else None
 
 
@@ -430,8 +437,8 @@ class TestProbeIsGraceful:
         _run(checker)
         assert _support(checker, "identity") == "full"
 
-    def test_the_three_subfeatures_are_declared_as_checked(self) -> None:
-        for name in ("identity", "literal", "encoded"):
+    def test_every_subfeature_is_declared_as_checked(self) -> None:
+        for name in ("identity", "literal.object", "literal.collection", "literal.principal", "encoded"):
             assert f"url.encode-at.{name}" in PrepareCalendar.features_to_be_checked
 
 

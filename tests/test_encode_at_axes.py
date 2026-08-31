@@ -468,45 +468,45 @@ class TestTheAxesAreMerged:
             _object_axis("two resources", literal="full", encoded="full", identity="full"),
             _collection_axis("two collections", literal="full", encoded="full", identity="full"),
         )
-        assert _support(checker, "literal") == "full"
+        assert _support(checker, "literal.object") == "full"
+        assert _support(checker, "literal.collection") == "full"
         assert _support(checker, "encoded") == "full"
         assert _support(checker, "identity") == "full"
 
     def test_disagreeing_axes_are_fragile_rather_than_one_of_them(self) -> None:
-        """The case the ruling names: the uid takes both spellings while the
-        calendar path only takes '%40'.  The feature works in one place and not
-        in another, and "fragile" is the only honest single verdict."""
+        """Still true of the two subfeatures that are still shared: the uid
+        aliases the two spellings while the calendar path keeps them apart.
+        The feature holds in one place and not in another, and "fragile" is the
+        only honest single verdict."""
         checker = self._record(
-            _object_axis("both spellings work", literal="full", encoded="full", identity="unsupported"),
-            _collection_axis("only '%40' works", literal="unsupported", encoded="full"),
+            _object_axis("aliased", literal="full", encoded="full", identity="unsupported"),
+            _collection_axis("two collections", literal="full", encoded="full", identity="full"),
         )
-        assert _support(checker, "literal") == "fragile"
+        assert _support(checker, "identity") == "fragile"
         ## the axes that did agree are unaffected
         assert _support(checker, "encoded") == "full"
-        ## and identity had exactly one observer, which is not a disagreement
-        assert _support(checker, "identity") == "unsupported"
 
     def test_a_disagreement_says_which_axis_saw_what(self) -> None:
         """ "fragile" on its own leaves a human no way to work around it."""
         checker = self._record(
-            _object_axis("both spellings work", literal="full"),
-            _collection_axis("only '%40' works", literal="unsupported"),
+            _object_axis("aliased", identity="unsupported"),
+            _collection_axis("two collections", identity="full"),
         )
-        behaviour = _behaviour(checker, "literal")
+        behaviour = _behaviour(checker, "identity")
         assert "object paths" in behaviour and "calendar paths" in behaviour
         assert "full" in behaviour and "unsupported" in behaviour
 
     def test_a_disagreement_asks_to_be_reported(self, caplog) -> None:
-        """No server is expected to differ between the axes, and if one does,
-        that observation is the whole case for splitting the subfeature into
-        per-axis children.  A `fragile` buried in a profile would not reach
-        anyone; a warning on the run that saw it might."""
+        """A server differing between the axes is the whole case for splitting
+        a subfeature into per-axis children - it is what split ``literal``.  A
+        `fragile` buried in a profile would not reach anyone; a warning on the
+        run that saw it might."""
         with caplog.at_level(logging.WARNING):
             self._record(
-                _object_axis("both spellings work", literal="full"),
-                _collection_axis("only '%40' works", literal="unsupported"),
+                _object_axis("aliased", identity="unsupported"),
+                _collection_axis("two collections", identity="full"),
             )
-        assert any("url.encode-at.literal" in r.getMessage() for r in caplog.records)
+        assert any("url.encode-at.identity" in r.getMessage() for r in caplog.records)
 
     def test_agreeing_axes_are_not_warned_about(self, caplog) -> None:
         """Otherwise the warning would be noise on every ordinary run."""
@@ -524,31 +524,31 @@ class TestTheAxesAreMerged:
             _principal_axis("neither spelling answered"),
         )
         assert _support(checker, "identity") == "full"
-        assert _support(checker, "literal") == "full"
+        assert _support(checker, "encoded") == "full"
 
     def test_nothing_observed_at_all_is_unknown_not_a_guess(self) -> None:
         """Each subfeature has its own default and compare() skips an unknown,
         so "unknown" says "not observed" and claims nothing."""
         checker = self._record(_object_axis("nothing worked"), _collection_axis("nothing worked either"))
-        for name in ("identity", "literal", "encoded"):
+        for name in ("identity", "encoded", "literal.object", "literal.collection", "literal.principal"):
             assert _support(checker, name) == "unknown"
 
     def test_the_behaviour_of_every_axis_survives_into_the_profile(self) -> None:
         checker = self._record(
-            _object_axis("the object story", literal="full"),
-            _collection_axis("the calendar story", literal="full"),
-            _principal_axis("the principal story", literal="full"),
+            _object_axis("the object story", identity="full"),
+            _collection_axis("the calendar story", identity="full"),
+            _principal_axis("the principal story", identity="full"),
         )
-        behaviour = _behaviour(checker, "literal")
+        behaviour = _behaviour(checker, "identity")
         for fragment in ("the object story", "the calendar story", "the principal story"):
             assert fragment in behaviour
 
     def test_a_missing_axis_is_skipped(self) -> None:
         """The collection and principal axes return None where the question does
         not arise; that must not become an entry in the merge."""
-        checker = self._record(_object_axis("only the object axis ran", literal="full"), None, None)
-        assert _support(checker, "literal") == "full"
-        assert "None" not in _behaviour(checker, "literal")
+        checker = self._record(_object_axis("only the object axis ran", identity="full"), None, None)
+        assert _support(checker, "identity") == "full"
+        assert "None" not in _behaviour(checker, "identity")
 
     def test_the_merge_never_writes_an_unknown_feature_name(self) -> None:
         """A typo here reaches the user as a UserWarning from the library."""
@@ -587,7 +587,7 @@ class TestTheWholeProbeStillHoldsTogether:
         check._check_encode_at(Mock())
         assert called == ["object", "collection", "principal"]
 
-    def test_the_whole_probe_records_all_three_subfeatures(self) -> None:
+    def test_the_whole_probe_records_every_subfeature(self) -> None:
         from caldav.lib.url import URL
 
         checker = _make_checker()
@@ -595,14 +595,103 @@ class TestTheWholeProbeStillHoldsTogether:
         calendar = Mock()
         calendar.url = URL.objectify(HOME + "testcal/")
         PrepareCalendar(checker)._check_encode_at(calendar)
-        for name in ("identity", "literal", "encoded"):
+        for name in ("identity", "encoded", "literal.object", "literal.collection", "literal.principal"):
             assert _support(checker, name) is not None
 
-    def test_no_new_feature_keys_were_invented(self) -> None:
-        """The ruling was explicit: split url.encode-at.identity into per-axis
-        children only once a server is actually seen to differ between them."""
+    def test_only_the_subfeature_a_server_differed_on_was_split(self) -> None:
+        """The ruling stands for the two that are still shared: split them into
+        per-axis children only once a server is actually seen to differ.  Only
+        ``literal`` has been (Stalwart), so only ``literal`` has children."""
         assert {f for f in PrepareCalendar.features_to_be_checked if f.startswith("url.encode-at")} == {
             "url.encode-at.identity",
-            "url.encode-at.literal",
+            "url.encode-at.literal.object",
+            "url.encode-at.literal.collection",
+            "url.encode-at.literal.principal",
             "url.encode-at.encoded",
         }
+
+
+class TestLiteralIsRecordedPerAxis:
+    """The one subfeature a real server was seen to answer differently per axis.
+
+    Stalwart re-encodes an ``@`` in an object name - a PUT to the literal path
+    is accepted and the resource is then reachable only under ``%40`` - while
+    serving a calendar path under whichever spelling it was asked for.  Merged
+    into one verdict that came out ``fragile``, which told the one consumer
+    (the ownCloud home-set hack, which is about a principal path) nothing it
+    could act on.
+    """
+
+    def _record(self, *observations):
+        checker = _make_checker()
+        PrepareCalendar(checker)._record_encode_at(*observations)
+        return checker
+
+    def test_each_axis_keeps_its_own_verdict(self) -> None:
+        checker = self._record(
+            _object_axis("reachable only under '%40'", literal="unsupported"),
+            _collection_axis("both spellings answer", literal="full"),
+            _principal_axis("both spellings answer", literal="full"),
+        )
+        assert _support(checker, "literal.object") == "unsupported"
+        assert _support(checker, "literal.collection") == "full"
+        assert _support(checker, "literal.principal") == "full"
+
+    def test_disagreeing_axes_are_no_longer_fragile(self) -> None:
+        """That was the whole point: nothing is merged, so nothing collides."""
+        checker = self._record(
+            _object_axis("reachable only under '%40'", literal="unsupported"),
+            _collection_axis("both spellings answer", literal="full"),
+        )
+        for axis in ("object", "collection", "principal"):
+            assert _support(checker, f"literal.{axis}") != "fragile"
+
+    def test_a_disagreement_on_literal_is_not_warned_about_any_more(self, caplog) -> None:
+        """The warning asks for evidence to split a subfeature.  This one is
+        split, so the evidence has been acted on and the warning would be noise
+        on every Stalwart run."""
+        with caplog.at_level(logging.WARNING):
+            self._record(
+                _object_axis("reachable only under '%40'", literal="unsupported"),
+                _collection_axis("both spellings answer", literal="full"),
+            )
+        assert not any("url.encode-at.literal" in r.getMessage() for r in caplog.records)
+
+    def test_an_axis_that_did_not_grade_it_records_unknown(self) -> None:
+        checker = self._record(_object_axis("nothing could be established"))
+        assert _support(checker, "literal.object") == "unknown"
+
+    def test_an_axis_that_never_ran_records_unknown_too(self) -> None:
+        """The checker asserts that every declared feature was set, and a key
+        left absent would read as "the default applies" rather than "nobody
+        looked"."""
+        checker = self._record(_object_axis("only this axis ran", literal="full"), None, None)
+        assert _support(checker, "literal.collection") == "unknown"
+        assert _support(checker, "literal.principal") == "unknown"
+
+    def test_each_axis_carries_its_own_behaviour_text(self) -> None:
+        checker = self._record(
+            _object_axis("the object story", literal="unsupported"),
+            _collection_axis("the calendar story", literal="full"),
+        )
+        assert _behaviour(checker, "literal.object") == "the object story"
+        assert _behaviour(checker, "literal.collection") == "the calendar story"
+
+    def test_the_home_set_hack_reads_the_principal_axis(self) -> None:
+        """End to end into the library: the Stalwart shape must not switch on
+        the ownCloud workaround, and a real ownCloud observation must."""
+        from caldav.compatibility_hints import at_literal_is_refused
+
+        stalwart = self._record(
+            _object_axis("reachable only under '%40'", literal="unsupported"),
+            _collection_axis("both spellings answer", literal="full"),
+            _principal_axis("both spellings answer", literal="full"),
+        )
+        assert not at_literal_is_refused(stalwart._features_checked)
+
+        owncloud = self._record(
+            _object_axis("both spellings answer", literal="full"),
+            _collection_axis("both spellings answer", literal="full"),
+            _principal_axis("the home-set is served only as '%40'", literal="unsupported"),
+        )
+        assert at_literal_is_refused(owncloud._features_checked)

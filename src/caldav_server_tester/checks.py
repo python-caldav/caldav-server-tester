@@ -109,21 +109,22 @@ class EncodeAtObservation(NamedTuple):
     literal: str | None = None
     encoded: str | None = None
     identity: str | None = None
+    key: str = ""
 
 
 def _object_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
     """An observation about an '@' in an object name."""
-    return EncodeAtObservation("object paths", behaviour, literal, encoded, identity)
+    return EncodeAtObservation("object paths", behaviour, literal, encoded, identity, "object")
 
 
 def _collection_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
     """An observation about an '@' in a calendar id."""
-    return EncodeAtObservation("calendar paths", behaviour, literal, encoded, identity)
+    return EncodeAtObservation("calendar paths", behaviour, literal, encoded, identity, "collection")
 
 
 def _principal_axis(behaviour, literal=None, encoded=None, identity=None) -> EncodeAtObservation:
     """An observation about an '@' in the username, as a server-given path spells it."""
-    return EncodeAtObservation("principal paths", behaviour, literal, encoded, identity)
+    return EncodeAtObservation("principal paths", behaviour, literal, encoded, identity, "principal")
 
 
 def url_object(cal, uid, obj_class=None):
@@ -951,7 +952,9 @@ class PrepareCalendar(Check):
         "save-load.get-by-url",
         "save-load.stable-url",
         "url.encode-at.identity",
-        "url.encode-at.literal",
+        "url.encode-at.literal.object",
+        "url.encode-at.literal.collection",
+        "url.encode-at.literal.principal",
         "url.encode-at.encoded",
     }
 
@@ -1515,19 +1518,24 @@ END:VCALENDAR""",
         return response.status < 400
 
     def _record_encode_at(self, *observations):
-        """Merge what the axes saw into the three ``url.encode-at`` subfeatures.
+        """Write what the axes saw into the ``url.encode-at`` subfeatures.
 
-        Each subfeature is decided by the axes that actually observed it; an
-        axis that could not answer contributes nothing but its ``behaviour``
-        text.  Where the observing axes agree, that verdict is recorded.  Where
-        they disagree - the uid accepts both spellings but the calendar path
-        only takes ``%40``, say - the honest reading is ``fragile``: the
-        feature works in one place and not in another, and the behaviour names
-        which is which so a human can see what to work around.  Splitting the
-        subfeature in two (``…identity.collection``) is the right move only
-        once a server is actually seen to differ, and none has been yet - so
-        the disagreement also logs a warning asking for a report, which is how
-        that evidence would reach us.
+        ``literal`` gets one key per axis.  That used to be merged like the
+        other two, on the reasoning that the spelling of a path segment is
+        decided well below whatever the segment happens to name, so no server
+        would ever differ between the axes.  Stalwart does: it re-encodes an
+        ``@`` in an object name and serves a calendar path under whichever
+        spelling it was asked for.  Merged, that came out ``fragile``, which
+        says "somewhere this does not work" and leaves the one consumer - the
+        ownCloud home-set hack, which is about a *principal* path - no way to
+        know whether the verdict was about the segment it cares about.
+
+        ``identity`` and ``encoded`` stay shared, because no server has been
+        seen to differ on them.  Where their axes disagree the result is
+        ``fragile`` and a warning asking for a report: that report is what
+        justified splitting ``literal``, and it is what would justify
+        splitting either of these.  Splitting one on anything less would be
+        modelling a distinction nobody has observed.
 
         A subfeature no axis observed is recorded ``unknown`` rather than
         filled in from a sibling - each has its own default, and compare()
@@ -1535,7 +1543,8 @@ END:VCALENDAR""",
         """
         observations = [o for o in observations if o is not None]
         prose = "; ".join(f"{o.axis}: {o.behaviour}" for o in observations if o.behaviour)
-        for name in ("identity", "literal", "encoded"):
+        self._record_encode_at_literal(observations)
+        for name in ("identity", "encoded"):
             seen = [(o.axis, getattr(o, name)) for o in observations if getattr(o, name)]
             levels = {level for _, level in seen}
             if not levels:
@@ -1544,13 +1553,15 @@ END:VCALENDAR""",
                 support, note = levels.pop(), prose
             else:
                 ## A server that treats an '@' in an object name differently
-                ## from one in a calendar id (or in a principal path) is
+                ## from one in a calendar id (or in a principal path) was
                 ## expected never to turn up - the spelling of a path segment
                 ## is normally decided in one place, well below whatever the
-                ## segment happens to name.  If this warning ever fires against
-                ## a real server, THAT is the evidence for splitting the
-                ## subfeature into per-axis children
-                ## (url.encode-at.identity.object / .collection): until then
+                ## segment happens to name.  One did, on the reachability of
+                ## the literal spelling, and that is exactly why
+                ## url.encode-at.literal now has per-axis children.  If this
+                ## warning fires for identity or encoded, THAT is the same
+                ## evidence for splitting those
+                ## (url.encode-at.identity.object / .collection); until then
                 ## the split would be modelling a distinction nobody has seen,
                 ## and 'fragile' plus the behaviour text says what was observed
                 ## without inventing a shape for it.
@@ -1570,6 +1581,29 @@ END:VCALENDAR""",
             if note:
                 node["behaviour"] = note
             self.set_feature(f"url.encode-at.{name}", node)
+
+    ## The three axes, in the order their subfeature keys are written.  Named
+    ## here rather than taken from the observations, so that an axis which
+    ## returned nothing at all still gets its "unknown" written: the checker
+    ## asserts that every declared feature was set, and a silently absent key
+    ## would read as "the default applies" rather than "nobody looked".
+    ENCODE_AT_AXIS_KEYS = ("object", "collection", "principal")
+
+    def _record_encode_at_literal(self, observations):
+        """One ``url.encode-at.literal.<axis>`` per axis, no merging.
+
+        An axis that reached no verdict records ``unknown`` and keeps its
+        behaviour text, so the profile still says what was seen where nothing
+        could be graded.
+        """
+        by_key = {o.key: o for o in observations if o.key}
+        for key in self.ENCODE_AT_AXIS_KEYS:
+            observation = by_key.get(key)
+            support = observation.literal if observation is not None and observation.literal else "unknown"
+            node = {"support": support}
+            if observation is not None and observation.behaviour:
+                node["behaviour"] = observation.behaviour
+            self.set_feature(f"url.encode-at.literal.{key}", node)
 
     def _delete_probe_object(self, url):
         """Best-effort removal of a probe object; a leftover is a warning, not a failure."""
