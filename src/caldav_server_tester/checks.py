@@ -2200,17 +2200,24 @@ END:VCALENDAR""",
         ## An actual negative observation, not merely the absence of one: a
         ## collection nobody managed to probe must not cost this feature its
         ## verdict.
-        relocates = self.checker.features_checked.is_supported("create-calendar.stable-url", str)
-        if relocates in ("unsupported", "broken", "ungraceful"):
+        relocation = self.checker.features_checked.is_supported("create-calendar.stable-url", dict) or {}
+        if relocation.get("support") in ("unsupported", "broken", "ungraceful"):
+            ## Quote what create-calendar.stable-url observed rather than
+            ## restating one server's flavour of it: OX leaves a second working
+            ## address behind, Zimbra leaves an alias that 404s on child
+            ## objects.  Both make a constructed object URL unreliable, but
+            ## "served at more than one address" is only true of the first.
+            observed = relocation.get("behaviour")
             self.set_feature(
                 "save-load.stable-url",
                 {
                     "support": "unsupported",
                     "behaviour": (
-                        "the object keeps the name it was stored under, but the collection is "
-                        "served at more than one address (see create-calendar.stable-url), so a "
-                        "constructed object URL matches only when the client happens to hold the "
-                        "address the server reports objects under"
+                        "the object keeps the name it was stored under, but the collection does "
+                        "not stay at the address it was created at (create-calendar.stable-url"
+                        + (f": {observed}" if observed else "")
+                        + "), so a constructed object URL resolves only from the address the "
+                        "server reports objects under, and a client may be holding another one"
                     ),
                 },
             )

@@ -153,3 +153,34 @@ class TestTheSpellingOfTheNameIsNotTheQuestion:
         server that renames resources."""
         calendar = _calendar(ALIAS + "x/", reported_object_url=ALIAS + "x/" + "csc_simple%5Fevent1.ics")
         assert _probe(calendar, create_calendar_stable_url=True) == "full"
+
+
+class TestTheRelocationIsDescribedAsTheServerDidIt:
+    """The derived branch used to spell out the OX shape - a collection
+    "served at more than one address" - for every server that got there.  That
+    is not what Zimbra does: a display name relocates the collection, and the
+    alias left behind at the requested cal_id 404s on child objects, so it has
+    one usable address, not two.  Say what ``create-calendar.stable-url``
+    actually observed instead of restating one server's flavour of it."""
+
+    def _behaviour(self, create_calendar_stable_url) -> str:
+        checker = _make_checker(create_calendar_stable_url)
+        PrepareCalendar(checker)._check_stable_url(_calendar(ALIAS, reported_object_url=CANONICAL + UID + ".ics"))
+        return checker.features_checked.is_supported("save-load.stable-url", dict)["behaviour"]
+
+    def test_the_observed_reason_is_carried_through(self) -> None:
+        behaviour = self._behaviour(
+            {
+                "support": "unsupported",
+                "behaviour": "a display name set at creation relocates the collection",
+            }
+        )
+        assert "a display name set at creation relocates the collection" in behaviour
+
+    def test_no_server_specific_flavour_is_invented(self) -> None:
+        assert "more than one address" not in self._behaviour({"support": "unsupported"})
+
+    def test_an_observation_without_a_reason_still_explains_itself(self) -> None:
+        behaviour = self._behaviour({"support": "unsupported"})
+        assert "create-calendar.stable-url" in behaviour
+        assert "keeps the name it was stored under" in behaviour
