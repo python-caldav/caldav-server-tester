@@ -72,12 +72,18 @@ class FakeCollectionServer:
     the other exactly when the two are aliased - which is the question.
     """
 
-    def __init__(self, accepts, aliased=True, mkcal_status=None, propfind_status=None, raises=None):
+    def __init__(
+        self, accepts, aliased=True, mkcal_status=None, propfind_status=None, raises=None, put_status=None, deletes=True
+    ):
         self.accepts = set(accepts)
         self.aliased = aliased
         self.mkcal_status = mkcal_status or {}
         self.propfind_status = propfind_status or {}
         self.raises = raises or {}
+        ## per-URL PUT status overrides, and a server whose DELETE only says
+        ## 204 - both of them shapes that used to decide a verdict on their own
+        self.put_status = put_status or {}
+        self.deletes = deletes
         self.collections: dict[str, dict[str, str]] = {}
         self.calls: list[tuple[str, str]] = []
 
@@ -134,6 +140,8 @@ class FakeCollectionServer:
     def put(self, url, body, headers=None):
         url = str(url)
         self.calls.append(("PUT", url))
+        if url in self.put_status:
+            return Mock(status=self.put_status[url])
         collection, rest = self._split(url)
         if collection is None or not rest:
             return Mock(status=403)
@@ -161,6 +169,8 @@ class FakeCollectionServer:
     def delete(self, url):
         url = str(url)
         self.calls.append(("DELETE", url))
+        if not self.deletes:
+            return Mock(status=204)
         collection, rest = self._split(url)
         if collection is not None and not rest:
             self.collections.pop(self._slot(collection), None)
@@ -346,12 +356,213 @@ class TestTheCollectionAxis:
             assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
             assert server.calls == [], feature
 
-    def test_the_axis_never_raises(self) -> None:
+    def test_a_leftover_the_server_would_not_delete_is_not_a_refusal(self) -> None:
+        """RFC4918 answers a MKCOL/MKCALENDAR on an existing collection with 405.
+
+        The probe clears both spellings before it starts, but a DELETE the
+        server only pretends to honour leaves the collection there, and the
+        first create then fails for the one reason that means the opposite of
+        "this spelling does not work".  Read as a refusal it produced
+        ``literal: unsupported`` - a claim copied into a server profile - and
+        the leftover survived the run on top of it, because that branch only
+        cleans up the encoded spelling.
+        """
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=False, deletes=False)
+        server.collections[CAL_LITERAL] = {}
+        server.install(checker)
+        observation = _collection(checker)
+        assert observation.literal == "full"
+        assert observation.identity == "full"
+
+    def test_a_5xx_on_the_first_mkcalendar_still_cleans_up(self) -> None:
+        """A dropped connection or a 5xx may well have created the collection
+        server-side; every other exit from this probe deletes both spellings."""
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, mkcal_status={CAL_LITERAL: 503}).install(
+            checker
+        )
+        _collection(checker)
+        made = next(i for i, c in enumerate(server.calls) if c[0] in ("MKCALENDAR", "MKCOL"))
+        assert ("DELETE", CAL_LITERAL) in server.calls[made:]
+
+    def test_a_refused_object_write_does_not_make_the_encoded_spelling_unsupported(self) -> None:
+        """The conformant server again, one branch further in.
+
+        With a calendar created under '@' and nothing storable in it, the probe
+        asked a bare PROPFIND whether '%40' answers - and on a server that
+        keeps the two spellings apart it does not, because no calendar has been
+        created there yet.  That is the same 404 a missing collection gives,
+        and it was recorded as ``encoded: unsupported``.  Creating a calendar
+        at '%40' separates the two, exactly as it does thirty lines further
+        down; a server that merely creates asynchronously (the write-delay
+        quirk this suite already probes) tripped it with no fault at all.
+        """
+        checker = _make_checker()
+        FakeCollectionServer(
+            accepts={CAL_LITERAL, CAL_ENCODED},
+            aliased=False,
+            put_status={CAL_LITERAL + OBJ: 403},
+        ).install(checker)
+        observation = _collection(checker)
+        assert observation.literal == "full"
+        assert observation.encoded == "full"
+        assert observation.identity is None
+
+    def test_an_object_write_that_said_nothing_is_not_a_refusal_either(self) -> None:
+        """``stored`` conflated False (refused) with None (a 5xx, a dropped
+        connection) and took the same branch for both."""
+        checker = _make_checker()
+        FakeCollectionServer(
+            accepts={CAL_LITERAL, CAL_ENCODED},
+            aliased=False,
+            put_status={CAL_LITERAL + OBJ: 500},
+        ).install(checker)
+        observation = _collection(checker)
+        assert observation.encoded != "unsupported"
+
+    def test_an_object_that_turned_up_anyway_still_settles_identity(self) -> None:
+        """A 5xx on the PUT does not mean the object is not there.  If it comes
+        back through '%40' the two spellings are demonstrably one collection,
+        whatever the write said about itself."""
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=True)
+        server.install(checker)
+        real_put = server.put
+
+        def put(url, body, headers=None):
+            real_put(url, body, headers)
+            return Mock(status=500)
+
+        checker._client_obj.put.side_effect = put
+        observation = _collection(checker)
+        assert observation.identity == "unsupported"
+        assert observation.encoded == "full"
+
+    def test_a_server_taking_no_object_and_no_second_calendar_says_the_encoded_spelling_fails(self) -> None:
+        """The other half of the same branch: '%40' serves nothing and will not
+        take a collection of its own either, and now "it does not work" is the
+        only reading left."""
+        checker = _make_checker()
+        FakeCollectionServer(
+            accepts={CAL_LITERAL},
+            aliased=False,
+            put_status={CAL_LITERAL + OBJ: 403},
+        ).install(checker)
+        observation = _collection(checker)
+        assert observation.literal == "full"
+        assert observation.encoded == "unsupported"
+        assert observation.identity is None
+
+    def test_a_server_that_fails_every_request_is_not_a_verdict(self) -> None:
+        """Every helper swallows, so this never reaches the outer guard - what
+        it does test is that swallowing produces no verdict rather than a
+        default one."""
         checker = _make_checker()
         checker._client_obj.mkcalendar.side_effect = RuntimeError("boom")
         checker._client_obj.delete.side_effect = RuntimeError("boom")
         observation = _collection(checker)
-        assert observation is None or observation.identity is None
+        assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
+
+    def test_the_axis_never_raises(self) -> None:
+        """PrepareCalendar provisions the fixtures every later check depends on,
+        so an escape here aborts the whole run.
+
+        Driven through the one thing the probe's helpers do not swallow.
+        Failing every *request* cannot reach the outer guard - each helper
+        catches its own - so a test that only did that would pass with the
+        guard deleted.
+        """
+        checker = _make_checker()
+        FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=False).install(checker)
+        check = PrepareCalendar(checker)
+        check._probe_encode_at_collection_identity = Mock(side_effect=RuntimeError("boom"))
+        observation = check._probe_encode_at_collection()
+        assert observation is not None
+        assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
+
+    def test_no_calendar_home_set_is_not_a_verdict(self) -> None:
+        checker = _make_checker()
+        checker.principal.calendar_home_set.url = Mock(join=Mock(side_effect=RuntimeError("no home-set")))
+        assert _collection(checker) is None
+
+    def test_a_5xx_reading_the_object_back_is_not_a_verdict(self) -> None:
+        """The calendar is there and the object is in it; the read that would
+        have settled identity broke."""
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=False).install(checker)
+        checker._client_obj.request.side_effect = lambda url, *a, **k: (
+            Mock(status=502, raw="") if str(url) == CAL_ENCODED + OBJ else server.request(url, *a, **k)
+        )
+        observation = _collection(checker)
+        assert observation.literal == "full"
+        assert (observation.encoded, observation.identity) == (None, None)
+
+    def test_a_5xx_reading_the_two_calendars_back_is_not_a_verdict_either(self) -> None:
+        """Both calendars exist; the reads that would have told two collections
+        from one broke."""
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=False).install(checker)
+
+        def request(url, *a, **k):
+            ## fine until the second calendar exists, 5xx from then on
+            if len(server.collections) > 1:
+                return Mock(status=503, raw="")
+            return server.request(url, *a, **k)
+
+        checker._client_obj.request.side_effect = request
+        observation = _collection(checker)
+        assert (observation.literal, observation.encoded) == ("full", "full")
+        assert observation.identity is None
+
+    def test_a_second_calendar_that_serves_the_first_one_is_one_collection(self) -> None:
+        """A server that accepts the second MKCALENDAR and then serves the '@'
+        object through '%40' has taken the request as naming the collection it
+        already had - two names, one collection, whatever the 201 said."""
+        checker = _make_checker()
+        server = FakeCollectionServer(
+            accepts={CAL_LITERAL, CAL_ENCODED}, aliased=True, mkcal_status={CAL_ENCODED: 201}
+        ).install(checker)
+        checker._client_obj.request.side_effect = lambda url, *a, **k: (
+            server.request(url, *a, **k)
+            if str(url).startswith(CAL_LITERAL) or ("MKCALENDAR", CAL_ENCODED) in server.calls
+            else Mock(status=404, raw="")
+        )
+        observation = _collection(checker)
+        assert observation.identity == "unsupported"
+
+    def test_an_object_lost_to_the_second_create_settles_nothing(self) -> None:
+        """Two calendars, and the object stored in the first is gone: that is
+        not "two collections" and it is not "one" either."""
+        checker = _make_checker()
+        server = FakeCollectionServer(accepts={CAL_LITERAL, CAL_ENCODED}, aliased=False).install(checker)
+        real = server.mkcalendar
+
+        def mkcalendar(url, body="", dummy=None, _method="MKCALENDAR"):
+            response = real(url, body, dummy, _method)
+            if str(url) == CAL_ENCODED:
+                server.collections.get(CAL_LITERAL, {}).clear()
+            return response
+
+        checker._client_obj.mkcalendar.side_effect = mkcalendar
+        observation = _collection(checker)
+        assert (observation.literal, observation.encoded) == ("full", "full")
+        assert observation.identity is None
+
+    def test_a_5xx_on_the_fallback_create_is_not_a_verdict(self) -> None:
+        """The literal spelling was refused; the '%40' one said nothing."""
+        checker = _make_checker()
+        FakeCollectionServer(accepts=set(), mkcal_status={CAL_ENCODED: 503}).install(checker)
+        observation = _collection(checker)
+        assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
+
+    def test_a_fallback_calendar_the_server_will_not_answer_for_is_not_a_verdict(self) -> None:
+        """It took a calendar at '%40' and then would not PROPFIND it, so there
+        is no telling what it did with the literal spelling either."""
+        checker = _make_checker()
+        FakeCollectionServer(accepts={CAL_ENCODED}, propfind_status={CAL_ENCODED: 404}).install(checker)
+        observation = _collection(checker)
+        assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
 
 
 class TestThePrincipalAxis:
@@ -392,7 +603,11 @@ class TestThePrincipalAxis:
 
     def test_only_the_encoded_spelling_answering(self) -> None:
         """The ownCloud complaint in its original form: the server hands out a
-        home-set with a literal '@' and then will not serve it."""
+        home-set with a literal '@' and then will not serve it.
+
+        This is the one case where the spelling the server minted may be graded
+        negatively: the other spelling of the same path *did* answer, so the
+        miss is about the spelling rather than about the path."""
         checker = _make_checker()
 
         def propfind(url=None, props=None, depth=0):
@@ -404,7 +619,17 @@ class TestThePrincipalAxis:
         assert observation.encoded == "full"
         assert observation.identity is None
 
-    def test_only_the_literal_spelling_answering(self) -> None:
+    def test_only_the_literal_spelling_answering_grades_only_the_literal_one(self) -> None:
+        """The conformant server, and the reason this axis grades one spelling.
+
+        The server handed out a path with a literal '@'.  On a server that
+        gets RFC3986 right, the '%40' spelling of it names a *different*
+        principal - one nobody ever created - so it 404s for exactly the reason
+        a conformant object path does.  Reading that as "the encoded spelling
+        does not work" is the confusion the object axis was rewritten to avoid,
+        and it is worse here: 'encoded: unsupported' makes the client mint a
+        literal '@' everywhere from then on.
+        """
         checker = _make_checker()
 
         def propfind(url=None, props=None, depth=0):
@@ -413,7 +638,37 @@ class TestThePrincipalAxis:
         checker._client_obj.propfind.side_effect = propfind
         observation = self._run(checker)
         assert observation.literal == "full"
-        assert observation.encoded == "unsupported"
+        assert observation.encoded is None
+        assert "%40" in observation.behaviour
+
+    def test_a_spelling_the_server_did_not_hand_out_is_graded_when_it_answers(self) -> None:
+        """A miss on the other spelling is ambiguous; a hit is not.
+
+        Nothing was ever created at the other spelling, so the only way it can
+        answer is if the server treats it as the same path - which is the
+        server telling us that spelling resolves.
+        """
+        checker = _make_checker()
+        checker._client_obj.propfind.side_effect = lambda url=None, props=None, depth=0: Mock(status=207)
+        observation = self._run(checker)
+        assert observation.literal == "full"
+        assert observation.encoded == "full"
+
+    def test_an_encoded_home_set_that_only_answers_encoded_grades_only_encoded(self) -> None:
+        """The mirror image: the server minted '%40', so a 404 on '@' says
+        nothing about the literal spelling."""
+        checker = _make_checker(
+            principal_url="http://dav.example.com/p/9f1c/",
+            home_url=PRINCIPAL_ENCODED,
+        )
+
+        def propfind(url=None, props=None, depth=0):
+            return Mock(status=207 if str(url) == PRINCIPAL_ENCODED else 404)
+
+        checker._client_obj.propfind.side_effect = propfind
+        observation = self._run(checker)
+        assert observation.encoded == "full"
+        assert observation.literal is None
 
     def test_an_encoded_home_set_is_probed_in_its_literal_spelling_too(self) -> None:
         """The server may hand the path out already encoded; the pair of URLs
@@ -440,11 +695,34 @@ class TestThePrincipalAxis:
         assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
 
     def test_a_404_on_both_spellings_is_not_a_verdict(self) -> None:
-        """Whatever is wrong with that URL, it is not about the spelling."""
+        """Whatever is wrong with that URL, it is not about the spelling.
+
+        Not even about the spelling the server itself handed out: a principal
+        path that answers under neither spelling is unreachable for some other
+        reason entirely, and "the server refuses its own path" needs the other
+        spelling to have worked before it means anything."""
         checker = _make_checker()
         checker._client_obj.propfind.side_effect = NotFoundError("404")
         observation = self._run(checker)
         assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
+
+    def test_no_principal_raises_no_question(self) -> None:
+        """A run that never got a principal has no server-given path to ask
+        about, and the username on its own is not one."""
+        checker = _make_checker()
+        checker.principal = None
+        assert self._run(checker) is None
+
+    def test_an_unreadable_principal_url_falls_through_to_the_home_set(self) -> None:
+        """Infomaniak/kSuite hand out principal URLs the library cannot parse -
+        this suite has a check of its own for it - and that must not take the
+        home-set down with it."""
+        checker = _make_checker(home_url=PRINCIPAL_LITERAL)
+        type(checker.principal).url = property(lambda self: (_ for _ in ()).throw(RuntimeError("broken")))
+        checker._client_obj.propfind.side_effect = lambda url=None, props=None, depth=0: Mock(status=207)
+        observation = self._run(checker)
+        assert observation is not None
+        assert observation.literal == "full"
 
     def test_the_axis_writes_nothing(self) -> None:
         """It probes the user's own principal, which is not ours to write to."""
@@ -453,6 +731,60 @@ class TestThePrincipalAxis:
         self._run(checker)
         for method in ("put", "delete", "mkcalendar", "mkcol"):
             assert not getattr(checker._client_obj, method).called, method
+
+
+class TestTheProbeRequestsAllTriageAlike:
+    """One ladder, four verbs: read, PROPFIND, PUT and MKCALENDAR.
+
+    Each of the four grew its own 401/403 rule, and ``_mkcalendar_probe``'s
+    docstring claimed it behaved "on the same terms as ``_put_probe_object``"
+    while mapping an ``AuthorizationError`` to a refusal where that one mapped
+    it to "said nothing".  The distinction is not cosmetic: "the server refuses
+    a literal '@'" is copied into a server profile and makes the client
+    rewrite every such URL from then on, so a bad minute must never become one.
+    """
+
+    def _outcomes(self, checker):
+        """What each of the four says, normalised to hit / miss / no answer."""
+        check = PrepareCalendar(checker)
+        uid = check._resolved_uid(CAL_LITERAL + OBJ)
+        return {
+            "read": None if uid is None else bool(uid),
+            "propfind": check._propfind_resolves(CAL_LITERAL),
+            "put": check._put_probe_object(CAL_LITERAL + OBJ, ENCODE_AT_IN_COLLECTION_UID),
+            "mkcalendar": check._mkcalendar_probe(CAL_LITERAL),
+        }
+
+    def _all_verbs(self, checker, side_effect):
+        for verb in ("request", "propfind", "put", "mkcalendar", "mkcol"):
+            getattr(checker._client_obj, verb).side_effect = side_effect
+
+    def test_a_403_is_a_miss_for_all_four(self) -> None:
+        """Robur answers 403 where others answer 404, and this suite documents
+        it: a miss, not an unknown."""
+        checker = _make_checker()
+        self._all_verbs(checker, AuthorizationError("403"))
+        assert set(self._outcomes(checker).values()) == {False}
+
+    def test_a_404_raised_rather_than_returned_is_a_miss_for_all_four(self) -> None:
+        checker = _make_checker()
+        self._all_verbs(checker, NotFoundError("404"))
+        assert set(self._outcomes(checker).values()) == {False}
+
+    def test_a_5xx_says_nothing_for_all_four(self) -> None:
+        checker = _make_checker()
+        self._all_verbs(checker, lambda *a, **k: Mock(status=503, raw=""))
+        assert set(self._outcomes(checker).values()) == {None}
+
+    def test_a_transport_failure_says_nothing_for_all_four(self) -> None:
+        checker = _make_checker()
+        self._all_verbs(checker, RuntimeError("connection reset"))
+        assert set(self._outcomes(checker).values()) == {None}
+
+    def test_a_4xx_status_is_a_miss_for_all_four(self) -> None:
+        checker = _make_checker()
+        self._all_verbs(checker, lambda *a, **k: Mock(status=409, raw=""))
+        assert set(self._outcomes(checker).values()) == {False}
 
 
 class TestTheAxesAreMerged:

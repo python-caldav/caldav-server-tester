@@ -1441,33 +1441,29 @@ END:VCALENDAR""",
         except Exception:
             self.set_feature("save-load.get-by-url", None)
 
-    def _resolved_uid(self, url):
-        """Which probe object a GET on ``url`` reaches.
+    def _encode_at_request(self, send):
+        """Issue one encode-at probe request and triage what came back.
 
-        Returns the UID found, ``False`` when the URL does not reach a probe
-        object at all, and ``None`` when the request said nothing either way.
-
-        Three deliberate differences from the ``save-load.get-by-url`` probe
-        next door, all of which would otherwise skew the encode-at verdict:
+        Returns the response when the server answered affirmatively, ``False``
+        when it said no, and ``None`` when it said nothing either way.  All
+        four probe requests - the read, the PROPFIND, the PUT and the
+        MKCALENDAR/MKCOL - go through here, because they used to each grow
+        their own rule and the divergence is not cosmetic: "the server refuses
+        a literal '@'" is copied into a server profile and makes the client
+        rewrite every such URL from then on.
 
         * every 4xx is a miss, not only 404 - a server answering a
           percent-encoded path with ``400 Bad Request`` has still failed to
-          resolve it.  A 5xx is not: that is the server breaking, not the
-          spelling failing, and it comes back ``None``;
-        * ``AuthorizationError`` (401/403) and the rate-limit errors are raised
-          by the client *before* a response object exists, so they never show up
-          as a status.  A 403 on one spelling is a miss, not an unknown - this
-          suite documents servers (Robur) that answer 403 where others 404;
-        * a 2xx only counts when the body actually carries one of the probe
-          UIDs.  A server that answers 200 for any child path - the class this
-          suite probes as ``non-existing-raises-not-found`` broken - would
-          otherwise look like it resolved whatever we asked for.
-
-        Anything else (a dropped connection, a DNS failure) says nothing about
-        encoding and comes back ``None``.
+          resolve it;
+        * a 5xx is not a miss: that is the server breaking, not the spelling
+          failing, and so is a dropped connection, a timeout or a DNS failure;
+        * ``AuthorizationError`` (401/403) and ``NotFoundError`` are raised by
+          the client *before* a response object exists, so they never show up
+          as a status.  Both are misses - this suite documents servers (Robur)
+          that answer 403 where others answer 404.
         """
         try:
-            response = self.client.request(url)
+            response = send()
         except (AuthorizationError, NotFoundError):
             return False
         except Exception:
@@ -1476,6 +1472,28 @@ END:VCALENDAR""",
             return None
         if response.status >= 400:
             return False
+        return response
+
+    def _encode_at_ok(self, send):
+        """``_encode_at_request`` reduced to True / False / None."""
+        outcome = self._encode_at_request(send)
+        return outcome if outcome is None or outcome is False else True
+
+    def _resolved_uid(self, url):
+        """Which probe object a GET on ``url`` reaches.
+
+        Returns the UID found, ``False`` when the URL does not reach a probe
+        object at all, and ``None`` when the request said nothing either way.
+
+        Triaged by ``_encode_at_request``, with one addition the other three
+        do not need: a 2xx only counts when the body actually carries one of
+        the probe UIDs.  A server that answers 200 for any child path - the
+        class this suite probes as ``non-existing-raises-not-found`` broken -
+        would otherwise look like it resolved whatever we asked for.
+        """
+        response = self._encode_at_request(lambda: self.client.request(url))
+        if response is None or response is False:
+            return response
         try:
             body = to_local(response.raw)
         except Exception:
@@ -1488,12 +1506,9 @@ END:VCALENDAR""",
     def _put_probe_object(self, url, uid):
         """PUT an encode-at probe object at ``url``.
 
-        ``True`` when the server took it, ``False`` when it refused it (a 4xx -
-        the ownCloud shape this probe exists for), and ``None`` when the
-        request said nothing either way: a 5xx, a dropped connection, a
-        timeout.  The three must stay apart, because "the server refuses a
-        literal '@' in a path" is copied into a server profile and makes the
-        client rewrite every such URL from then on.
+        ``True`` when the server took it, ``False`` when it refused it (the
+        ownCloud shape this probe exists for), and ``None`` when the request
+        said nothing either way - ``_encode_at_request`` draws that line.
         """
         year = self.checker.fixture_base_year
         ical = (
@@ -1509,13 +1524,7 @@ END:VCALENDAR""",
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
-        try:
-            response = self.client.put(url, ical, {"Content-Type": "text/calendar; charset=utf-8"})
-        except Exception:
-            return None
-        if response.status >= 500:
-            return None
-        return response.status < 400
+        return self._encode_at_ok(lambda: self.client.put(url, ical, {"Content-Type": "text/calendar; charset=utf-8"}))
 
     def _record_encode_at(self, *observations):
         """Write what the axes saw into the ``url.encode-at`` subfeatures.
@@ -1605,12 +1614,15 @@ END:VCALENDAR""",
                 node["behaviour"] = observation.behaviour
             self.set_feature(f"url.encode-at.literal.{key}", node)
 
-    def _delete_probe_object(self, url):
-        """Best-effort removal of a probe object; a leftover is a warning, not a failure."""
+    def _delete_probe(self, url, what):
+        """Best-effort removal of a probe resource; a leftover is a warning, not a failure."""
         try:
             self.client.delete(url)
         except Exception:
-            logging.warning("Could not delete the url.encode-at probe object at %s", url)
+            logging.warning("Could not delete the url.encode-at probe %s at %s", what, url)
+
+    def _delete_probe_object(self, url):
+        self._delete_probe(url, "object")
 
     ## ------------------------------------------------------------------
     ## Axis 1: an '@' in an object name
@@ -1815,26 +1827,16 @@ END:VCALENDAR""",
     def _propfind_resolves(self, url):
         """Whether a PROPFIND on ``url`` reaches a collection.
 
-        ``True``/``False``/``None`` on the same terms as ``_resolved_uid``: a
-        4xx (and the 401/403/404 the client raises before a status exists) is a
-        miss, a 5xx or a dropped connection says nothing.  A GET would not do
-        here - plenty of servers answer 405 for a GET on a collection whether
-        or not it exists.
+        ``True``/``False``/``None`` on ``_encode_at_request``'s terms.  A GET
+        would not do here - plenty of servers answer 405 for a GET on a
+        collection whether or not it exists.
         """
-        try:
-            response = self.client.propfind(url, ENCODE_AT_PROPFIND_BODY, 0)
-        except (AuthorizationError, NotFoundError):
-            return False
-        except Exception:
-            return None
-        if response.status >= 500:
-            return None
-        return response.status < 400
+        return self._encode_at_ok(lambda: self.client.propfind(url, ENCODE_AT_PROPFIND_BODY, 0))
 
     def _mkcalendar_probe(self, url):
         """Create a probe calendar at exactly ``url``.
 
-        ``True``/``False``/``None`` on the same terms as ``_put_probe_object``.
+        ``True``/``False``/``None`` on ``_encode_at_request``'s terms.
         Issued straight at the URL rather than through ``make_calendar()``,
         which builds the path from a ``cal_id`` and would decide the spelling
         this probe is asking about.  MKCOL is used where
@@ -1844,25 +1846,12 @@ END:VCALENDAR""",
         """
         node = self.checker.features_checked.is_supported("create-calendar", return_type=dict)
         mkcol = isinstance(node, dict) and node.get("behaviour") == "mkcol-required"
-        try:
-            if mkcol:
-                response = self.client.mkcol(url, ENCODE_AT_MKCOL_BODY)
-            else:
-                response = self.client.mkcalendar(url, ENCODE_AT_MKCALENDAR_BODY)
-        except (AuthorizationError, NotFoundError):
-            return False
-        except Exception:
-            return None
-        if response.status >= 500:
-            return None
-        return response.status < 400
+        if mkcol:
+            return self._encode_at_ok(lambda: self.client.mkcol(url, ENCODE_AT_MKCOL_BODY))
+        return self._encode_at_ok(lambda: self.client.mkcalendar(url, ENCODE_AT_MKCALENDAR_BODY))
 
     def _delete_probe_collection(self, url):
-        """Best-effort removal of a probe calendar; a leftover is a warning, not a failure."""
-        try:
-            self.client.delete(url)
-        except Exception:
-            logging.warning("Could not delete the url.encode-at probe calendar at %s", url)
+        self._delete_probe(url, "calendar")
 
     def _probe_encode_at_collection_identity(self, literal_url, encoded_url):
         """One collection, or two?  Called with a calendar created at ``literal_url``.
@@ -1873,52 +1862,52 @@ END:VCALENDAR""",
         If it does not, that is not yet an answer: the encoded spelling may
         name a different collection which simply does not exist yet, or it may
         not resolve at all.  Creating a second calendar there separates the
-        two, exactly as the second object PUT does on the object axis.
+        two, exactly as the second object PUT does on the object axis - and
+        that disambiguation is needed on *every* path out of here, not only
+        where the object was stored successfully.  A bare PROPFIND on ``%40``
+        used to decide it where nothing could be stored, which made a
+        conformant server (nothing has been created at ``%40``, so it 404s)
+        and a merely slow one (the ``create-calendar`` write-delay quirk this
+        suite already probes) come out ``encoded: unsupported``.
+
+        A write that said nothing either way - a 5xx, a dropped connection -
+        is not a refusal: the object may be there regardless, so it is asked
+        for anyway, and an object that comes back through ``%40`` settles
+        identity whatever the PUT thought of itself.
         """
         literal_obj = literal_url + ENCODE_AT_IN_COLLECTION_UID + ".ics"
         encoded_obj = encoded_url + ENCODE_AT_IN_COLLECTION_UID + ".ics"
 
         stored = self._put_probe_object(literal_obj, ENCODE_AT_IN_COLLECTION_UID)
-        if not stored:
-            ## No object to compare with, so identity is out of reach - but
-            ## whether the encoded spelling answers for the collection at all
-            ## is still worth having.
-            resolves = self._propfind_resolves(encoded_url)
-            if resolves is None:
+        if stored is not False:
+            seen = self._resolved_uid(encoded_obj)
+            if seen == ENCODE_AT_IN_COLLECTION_UID:
                 return _collection_axis(
-                    "a calendar exists at the literal '@' path, nothing could be stored in it, and the '%40' spelling did not answer either way",
-                    literal="full",
-                )
-            if resolves:
-                return _collection_axis(
-                    "both spellings answer for the calendar, but no object could be stored in it, so it is unknown whether they name the same collection",
+                    "an object stored through the literal '@' spelling of the calendar path is served back through '%40' - one collection under two names",
                     literal="full",
                     encoded="full",
+                    identity="unsupported",
                 )
-            return _collection_axis(
-                "a calendar at the literal '@' path answers and the '%40' spelling of it does not",
-                literal="full",
-                encoded="unsupported",
-            )
+            if stored and seen is None:
+                return _collection_axis(
+                    "a calendar exists at the literal '@' path, but reading its contents through the '%40' spelling could not be completed",
+                    literal="full",
+                )
 
-        seen = self._resolved_uid(encoded_obj)
-        if seen is None:
-            return _collection_axis(
-                "a calendar exists at the literal '@' path, but reading its contents through the '%40' spelling could not be completed",
-                literal="full",
+        ## Either nothing could be stored, or the object did not come back
+        ## through '%40'.  Neither says yet that the encoded spelling fails:
+        ## it may name a collection of its own that does not exist.
+        missing = (
+            "no object could be stored in it"
+            if stored is False
+            else (
+                "storing an object in it could not be completed" if stored is None else "it does not serve that object"
             )
-        if seen == ENCODE_AT_IN_COLLECTION_UID:
-            return _collection_axis(
-                "an object stored through the literal '@' spelling of the calendar path is served back through '%40' - one collection under two names",
-                literal="full",
-                encoded="full",
-                identity="unsupported",
-            )
-
+        )
         second = self._mkcalendar_probe(encoded_url)
         if second is None:
             return _collection_axis(
-                "the '%40' spelling did not serve the calendar's contents, and creating a calendar of its own there could not be completed",
+                f"a calendar exists at the literal '@' path and {missing} through '%40', and creating a calendar of its own there could not be completed",
                 literal="full",
             )
         if not second:
@@ -1929,7 +1918,7 @@ END:VCALENDAR""",
             ## under '@', so an answer means the spelling resolves after all.
             if self._propfind_resolves(encoded_url):
                 return _collection_axis(
-                    "the '%40' spelling answers for the calendar created under '@' but does not serve its contents, so it is unknown whether they name the same collection",
+                    f"the '%40' spelling answers for the calendar created under '@' but {missing}, so it is unknown whether they name the same collection",
                     literal="full",
                     encoded="full",
                 )
@@ -1937,6 +1926,16 @@ END:VCALENDAR""",
                 "the '%40' spelling of the calendar path neither serves the contents of the calendar created under '@' nor accepts a calendar of its own",
                 literal="full",
                 encoded="unsupported",
+            )
+
+        if not stored:
+            ## A calendar of its own was accepted at '%40', so that spelling
+            ## works - but there is no object of ours in the first one to
+            ## compare against, so identity stays out of reach.
+            return _collection_axis(
+                f"both spellings of the calendar path take a calendar of their own, but {missing}, so it is unknown whether they name the same collection",
+                literal="full",
+                encoded="full",
             )
 
         still_literal = self._resolved_uid(literal_obj)
@@ -2012,7 +2011,20 @@ END:VCALENDAR""",
 
             made = self._mkcalendar_probe(literal_url)
             if made is None:
+                ## A 5xx or a dropped connection may well have created the
+                ## collection anyway; every other exit from here deletes both
+                ## spellings, and this one used to leak a calendar with an '@'
+                ## in its name into the user's account.
+                self._delete_probe_collection(literal_url)
                 return _collection_axis("creating a calendar at the literal '@' path could not be completed")
+            if not made and self._propfind_resolves(literal_url):
+                ## "There is already a collection here" is a refusal too
+                ## (RFC4918 makes that a 405), and it means the opposite of
+                ## "the server will not take an '@' in a calendar path".  The
+                ## only collection that can be here is a leftover of ours the
+                ## DELETE above did not manage to remove - so carry on with it,
+                ## which also gets it cleaned up on the way out.
+                made = True
             if not made:
                 alternative = self._mkcalendar_probe(encoded_url)
                 try:
@@ -2047,10 +2059,16 @@ END:VCALENDAR""",
     def _encode_at_principal_urls(self):
         """The two spellings of a server-given path that embeds the username's ``@``.
 
-        Returns ``(literal_url, encoded_url)``, or ``None`` when the question
-        does not arise: a username without an ``@``, no principal, or a
-        principal and calendar-home-set whose paths do not carry the username
-        at all (plenty of servers address the principal by an opaque id).
+        Returns ``(literal_url, encoded_url, minted)`` where ``minted`` is
+        ``"literal"`` or ``"encoded"`` - which of the two the server itself
+        handed out - or ``None`` when the question does not arise: a username
+        without an ``@``, no principal, or a principal and calendar-home-set
+        whose paths do not carry the username at all (plenty of servers address
+        the principal by an opaque id).
+
+        ``minted`` is what makes the axis gradeable.  Nothing is ever created
+        at the *other* spelling, so a miss there is no evidence at all; see
+        ``_probe_encode_at_principal``.
 
         Only the *path* is looked at.  An ``@`` in the authority is userinfo,
         a different production entirely, and rewriting it would change which
@@ -2073,14 +2091,17 @@ END:VCALENDAR""",
         for candidate in candidates:
             parts = urlsplit(candidate)
             if "@" in parts.path:
+                minted = "literal"
                 literal_path, encoded_path = parts.path, parts.path.replace("@", "%40")
             elif "%40" in parts.path:
+                minted = "encoded"
                 literal_path, encoded_path = parts.path.replace("%40", "@"), parts.path
             else:
                 continue
             return (
                 urlunsplit(parts._replace(path=literal_path)),
                 urlunsplit(parts._replace(path=encoded_path)),
+                minted,
             )
         return None
 
@@ -2093,14 +2114,31 @@ END:VCALENDAR""",
         second principal.  What can be observed is reachability, and that is
         the half that bites: the ownCloud workaround exists because a server
         hands out a calendar-home-set containing a literal ``@`` and then
-        refuses to serve it.  A breakage on this axis is therefore recorded as
-        "supports the encoded spelling but not the literal one", or the
-        reverse, and nothing is said about identity.
+        refuses to serve it.
+
+        **Only the spelling the server itself minted is graded, and only
+        downwards when the other one answered.**  The other spelling names
+        nothing this run created, so on an RFC3986-conformant server it is the
+        path of a principal that was never made and 404s for that reason alone
+        - exactly the confusion the object axis was rewritten to avoid, and
+        worse here, since ``encoded: unsupported`` makes the client mint a
+        literal ``@`` for every URL from then on.  So:
+
+        * the minted spelling answers - it works, and that is a fact about
+          the server, not about a resource we invented;
+        * the other spelling answers too - it works as well: nothing was ever
+          created there, so the only way it can answer is if the server treats
+          the two as the same path;
+        * the other spelling misses - no vote, prose only;
+        * the minted spelling misses while the other answers - the ownCloud
+          breakage: a server refusing to serve the path it handed out;
+        * neither answers - the path is unreachable for some reason that is
+          not about spelling, and nothing is graded.
         """
         urls = self._encode_at_principal_urls()
         if urls is None:
             return None
-        literal_url, encoded_url = urls
+        literal_url, encoded_url, minted = urls
         literal = self._propfind_resolves(literal_url)
         encoded = self._propfind_resolves(encoded_url)
         if literal is None or encoded is None:
@@ -2111,19 +2149,29 @@ END:VCALENDAR""",
                 literal="full",
                 encoded="full",
             )
-        if literal:
+        if not literal and not encoded:
+            return _principal_axis("neither spelling of the server-given path carrying the username's '@' answered")
+
+        answered, other = ("literal", "encoded") if literal else ("encoded", "literal")
+        spelling = {"literal": "'@'", "encoded": "'%40'"}
+        if answered == minted:
+            ## The other spelling missed.  It names a principal nobody ever
+            ## created, so on a conformant server that miss is expected and
+            ## says nothing about whether the spelling would resolve.
             return _principal_axis(
-                "the server-given path carrying the username's '@' answers only under the literal spelling",
-                literal="full",
-                encoded="unsupported",
+                f"the server-given path carrying the username's '@' answers under the {spelling[minted]} "
+                f"spelling it was handed out in; the {spelling[other]} spelling of it does not, which on a "
+                "server that keeps the two apart says nothing, since no principal was ever created there",
+                **{minted: "full"},
             )
-        if encoded:
-            return _principal_axis(
-                "the server-given path carrying the username's '@' answers only under '%40'",
-                literal="unsupported",
-                encoded="full",
-            )
-        return _principal_axis("neither spelling of the server-given path carrying the username's '@' answered")
+        ## The server will not serve the path it minted, and the other
+        ## spelling of it will.  That is the ownCloud breakage, and it is the
+        ## one thing on this axis that can be graded downwards.
+        return _principal_axis(
+            f"the server hands out a path carrying the username's '@' spelled {spelling[minted]} and then "
+            f"serves it only under {spelling[answered]}",
+            **{minted: "unsupported", answered: "full"},
+        )
 
     def _check_encode_at(self, calendar):
         """Probe ``url.encode-at``: how does the server treat ``@`` versus ``%40``?
@@ -2131,10 +2179,12 @@ END:VCALENDAR""",
         Two orthogonal questions - which spellings resolve, and whether they
         name one resource or two - asked of three different things a path can
         embed an ``@`` in: an object name, a calendar id, and the username
-        inside a path the server itself handed out.  The three write to the
-        same three subfeatures, and ``_record_encode_at`` merges them; where
-        they disagree the result is ``fragile`` rather than one axis silently
-        winning.
+        inside a path the server itself handed out.  ``_record_encode_at``
+        writes what the three saw: ``literal`` gets a key per axis, since
+        Stalwart answers it one way for an object name and another for a
+        calendar path, while ``identity`` and ``encoded`` are still shared and
+        come out ``fragile`` where the axes disagree, rather than letting one
+        of them silently win.
 
         Best-effort throughout: PrepareCalendar provisions the fixtures every
         later check depends on, so nothing in here may raise, and anything

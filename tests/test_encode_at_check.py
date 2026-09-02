@@ -376,9 +376,13 @@ class TestTheVerdictIsConsumable:
     def test_the_probe_never_writes_an_unknown_feature_name(self) -> None:
         """A typo here reaches the user as a UserWarning from the library.
 
-        Every server shape the probe can meet, not just the happy one: the
-        feature name is written at eight separate call sites and a typo in any
-        of the other seven would go unnoticed by a single-shape test.
+        The names used to be written at eight separate call sites, one per
+        verdict, and a single-shape test left seven of them unwatched.  The
+        merge collapsed that to two - ``_record_encode_at`` for the shared
+        subfeatures and ``_record_encode_at_literal`` for the per-axis
+        children - so one shape would very nearly do; every shape is still
+        driven because the list is shared with the test below, where the
+        variety is the point.
         """
         import warnings
 
@@ -409,18 +413,34 @@ class TestTheVerdictIsConsumable:
             assert at_spelling_to_mint(fs) in ("@", "%40")
             assert at_spellings_are_aliased(fs) in (True, False)
         ## and the shapes really do produce different verdicts, so this is not
-        ## one outcome exercised nine times
+        ## one outcome exercised ten times
         assert len(emitted) >= 4, emitted
 
 
 class TestProbeIsGraceful:
-    def test_probe_never_raises(self) -> None:
-        """PrepareCalendar provisions the fixtures every later check needs; this
-        probe must never be the thing that aborts the run."""
+    def test_a_server_that_fails_every_write_is_not_a_verdict(self) -> None:
+        """``_put_probe_object`` swallows, so this never reaches the probe's own
+        guard - what it tests is that swallowing produces no verdict."""
         checker = _make_checker()
         checker._client_obj.put.side_effect = RuntimeError("boom")
         _run(checker)
         assert _nothing_observed(checker)
+
+    def test_probe_never_raises(self) -> None:
+        """PrepareCalendar provisions the fixtures every later check needs; this
+        probe must never be the thing that aborts the run.
+
+        Driven through the one step the probe does not swallow.  Failing every
+        request cannot reach the outer guard - each helper catches its own - so
+        a test that only did that would pass with the guard deleted.
+        """
+        checker = _make_checker()
+        FakeServer(accepts={LITERAL, ENCODED}, aliased=False).install(checker)
+        check = PrepareCalendar(checker)
+        check._probe_encode_at_object_identity = Mock(side_effect=RuntimeError("boom"))
+        observation = check._probe_encode_at_object(_make_calendar())
+        assert observation is not None
+        assert (observation.literal, observation.encoded, observation.identity) == (None, None, None)
 
     def test_cleanup_eligible_uids(self) -> None:
         """checker.cleanup() sweeps by the csc_ prefix."""
@@ -489,6 +509,57 @@ class TestABadMinuteIsNotAVerdict:
         _run(checker)
         assert _support(checker, "literal") == "full"
         assert _support(checker, "encoded") == "unsupported"
+
+
+class TestTheObjectAxisSaysNothingWhereItSawNothing:
+    """The exits that record no verdict at all, each of which used to be one
+    ``else`` away from claiming something about the server."""
+
+    def test_a_5xx_on_the_fallback_write_is_not_a_verdict(self) -> None:
+        """The literal spelling was refused and the '%40' one said nothing."""
+        checker = _make_checker()
+        FakeServer(accepts={ENCODED}, put_status={ENCODED: 503}).install(checker)
+        _run(checker)
+        assert _nothing_observed(checker)
+
+    def test_an_object_the_server_took_and_will_not_serve_is_not_a_verdict(self) -> None:
+        """It refused the literal spelling and accepted '%40' - and then did not
+        serve back what it accepted, so "'%40' is the spelling that works" is
+        not established either."""
+        checker = _make_checker()
+        FakeServer(accepts={ENCODED}, serves=set()).install(checker)
+        _run(checker)
+        assert _nothing_observed(checker)
+
+    def test_a_second_object_that_went_missing_settles_no_identity(self) -> None:
+        """The alias object was accepted and is not at the URL it was PUT to.
+        Whatever the server did with it, the literal path is no evidence about
+        identity now."""
+        checker = _make_checker()
+        FakeServer(accepts={LITERAL, ENCODED}, serves={LITERAL}, aliased=False).install(checker)
+        _run(checker)
+        assert _support(checker, "literal") == "full"
+        assert _support(checker, "identity") == "unknown"
+        assert _support(checker, "encoded") == "unknown"
+
+    def test_a_literal_path_emptied_by_the_second_write_settles_no_identity(self) -> None:
+        """The alias object landed where it was PUT and the literal path now
+        reaches neither object.  That is not "one resource" - the first object
+        did not turn into the second, it went away - and it is not "two"."""
+        checker = _make_checker()
+        server = FakeServer(accepts={LITERAL, ENCODED}, aliased=False).install(checker)
+        real = server.put
+
+        def put(url, body, headers=None):
+            response = real(url, body, headers)
+            if str(url) == ENCODED:
+                server.store.pop(LITERAL, None)
+            return response
+
+        checker._client_obj.put.side_effect = put
+        _run(checker)
+        assert _support(checker, "literal") == "full"
+        assert _support(checker, "identity") == "unknown"
 
 
 class TestADistinctServerCanActuallyBeObserved:
