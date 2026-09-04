@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 from caldav.compatibility_hints import FeatureSet
+from caldav.lib.error import ReportError
 
 from caldav_server_tester.checks import CheckSyncToken
 
@@ -172,3 +173,70 @@ class TestCheckSyncTokenAPI:
         result = checker._features_checked.is_supported("sync-token", return_type=dict)
         assert result is not None
         assert result.get("support") == "fragile"
+
+
+class _SyncResult:
+    """What ``objects_by_sync_token`` hands back: a token and some changes."""
+
+    def __init__(self, token, changes=0):
+        self.sync_token = token
+        self._changes = [Mock() for _ in range(changes)]
+
+    def __iter__(self):
+        return iter(self._changes)
+
+
+class TestSyncTokenDeleteGrading:
+    """`sync-token.delete` asks whether a deletion is *reported* by the sync.
+
+    Three outcomes, three gradings.  The one that matters is the middle one: a
+    server that answers the post-delete REPORT with no changes at all has
+    silently dropped the deletion, and a client syncing incrementally never
+    learns the object is gone.  That is what 'unsupported' means in this
+    vocabulary, and it used to be reported as full support because the probe
+    only looked at whether the call raised.
+    """
+
+    def _checker(self, final):
+        """A checker whose post-delete sync behaves as `final` says.
+
+        The two earlier sync calls are scripted so the probe walks straight past
+        the fragile- and time-based-token tests to the deletion one.
+        """
+        cal = Mock()
+        cal.objects.return_value = _SyncResult("token-1")
+        cal.save_object.return_value = Mock(
+            icalendar_instance=Mock(subcomponents=[{"SUMMARY": "Test"}]),
+        )
+        cal.objects_by_sync_token.side_effect = [
+            _SyncResult("token-1", changes=0),  ## nothing changed yet: not fragile
+            _SyncResult("token-2", changes=1),  ## the edit shows up: not time-based
+            final,  ## and this is the one under test
+        ]
+
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker.features_checked = checker._features_checked
+        checker.debug_mode = None
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.expected_features = FeatureSet()
+        checker.calendar = cal
+        checker.fixture_base_year = 2027
+        return checker
+
+    def _run(self, final):
+        checker = self._checker(final)
+        CheckSyncToken(checker)._run_check()
+        return checker._features_checked.is_supported("sync-token.delete", str)
+
+    def test_a_reported_deletion_is_full(self) -> None:
+        assert self._run(_SyncResult("token-3", changes=1)) == "full"
+
+    def test_a_deletion_the_sync_never_mentions_is_unsupported(self) -> None:
+        """No error, no change reported - the deletion vanished silently."""
+        assert self._run(_SyncResult("token-3", changes=0)) == "unsupported"
+
+    def test_a_sync_that_raises_after_a_delete_is_ungraceful(self) -> None:
+        """Infomaniak answers 418 for the removed member; the client can catch it."""
+        assert self._run(ReportError("418 I'm a teapot")) == "ungraceful"

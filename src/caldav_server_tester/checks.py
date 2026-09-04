@@ -4431,14 +4431,31 @@ class CheckSyncToken(Check):
 
             try:
                 my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token2, disable_fallback=True)
+                ## RFC 6578 3.2: a removed member comes back as a <response> of its
+                ## own with status 404, and the library builds an object for every
+                ## <response> in the multistatus - so a server that reports the
+                ## deletion yields at least one changed object here.  Not raising is
+                ## not the same as reporting it: a server that answers 207 with an
+                ## empty multistatus has silently dropped the deletion, and a client
+                ## syncing incrementally never learns the object is gone.
                 deleted_count = len(list(my_changed_objects))
-
-                ## If we get here without exception, deletion is supported
-                self.set_feature("sync-token.delete", True)
+                if deleted_count:
+                    self.set_feature("sync-token.delete", True)
+                else:
+                    self.set_feature(
+                        "sync-token.delete",
+                        {
+                            "support": "unsupported",
+                            "behaviour": "the sync-collection report after a delete listed no changes",
+                        },
+                    )
             except (ReportError, DAVError) as e:
-                ## Some servers (like sabre-based) return "418 I'm a teapot" or other errors
+                ## Some servers (like sabre-based) return "418 I'm a teapot" or other
+                ## errors.  The sync does not silently come back wrong, it raises - so
+                ## this is "ungraceful", the same grading Test 1 above gives its own
+                ## failed REPORT.
                 self.set_feature(
-                    "sync-token.delete", {"support": "unsupported", "behaviour": f"sync fails after deletion: {e}"}
+                    "sync-token.delete", {"support": "ungraceful", "behaviour": f"sync fails after deletion: {e}"}
                 )
         finally:
             ## Ensure cleanup even if an exception occurred
