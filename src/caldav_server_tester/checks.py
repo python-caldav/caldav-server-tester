@@ -3672,10 +3672,8 @@ class CheckRecurrenceSearch(Check):
         base = self.checker.fixture_base_year
 
         ## Precondition: basic event time-range search must return exactly the
-        ## one recurring event in Jan <base>.  On servers with broken comp-type
-        ## filtering (e.g. Bedework) this may return extra objects, making
-        ## recurrence checks unreliable.  Some servers (e.g. CCS) reject
-        ## some date ranges entirely.  Either way, mark all features unsupported.
+        ## one recurring event in Jan <base>.  The two ways it can fail are not
+        ## the same thing, and are not graded the same way.
         try:
             events = cal.search(
                 start=datetime(base, 1, 12, tzinfo=utc),
@@ -3684,8 +3682,17 @@ class CheckRecurrenceSearch(Check):
                 post_filter=False,
             )
         except (AuthorizationError, DAVError):
-            events = []
+            ## The server rejected the range outright (e.g. CCS, which enforces a
+            ## min/max-date-time).  It raised rather than answering wrongly, so
+            ## this is "ungraceful" - the same reading the far-future probe below
+            ## gives the very same 403.
+            for feat in self.features_to_be_checked:
+                self.set_feature(feat, "ungraceful")
+            return
         if len(events) != 1:
+            ## The search answered, but with the wrong objects - broken comp-type
+            ## filtering (e.g. Bedework) returns extra ones.  That is a silent
+            ## wrong answer, which is what "unsupported" means here.
             for feat in self.features_to_be_checked:
                 self.set_feature(feat, False)
             return
@@ -3734,9 +3741,21 @@ class CheckRecurrenceSearch(Check):
                 post_filter=False,
             )
             implicit_allday = len(allday_events) == 1
+            allday_raised = False
         except (AuthorizationError, DAVError):
-            implicit_allday = implicit_datetime
-        if implicit_datetime and not implicit_allday:
+            ## Don't fold a raise into the datetime verdict: the server refusing
+            ## the all-day query is not evidence that all-day recurrence works.
+            implicit_allday = False
+            allday_raised = True
+        if allday_raised:
+            self.set_feature(
+                "search.recurrences.includes-implicit.event",
+                {
+                    "support": "ungraceful",
+                    "behaviour": "the all-day (VALUE=DATE) recurrence query was rejected",
+                },
+            )
+        elif implicit_datetime and not implicit_allday:
             ## Datetime recurring events work but all-day (VALUE=DATE) events do not.
             self.set_feature(
                 "search.recurrences.includes-implicit.event",
@@ -3796,7 +3815,8 @@ class CheckRecurrenceSearch(Check):
         ## the suite runs; a fixed year would shrink to ~18 years once the fixtures
         ## moved to the near future, letting bounded-expansion servers (e.g. Zimbra)
         ## look falsely "infinite".  Servers that enforce a max-date-time (e.g. CCS)
-        ## reject the query outright with 403 - treat that as unsupported.
+        ## reject the query outright with 403 - that is an error, not a silent
+        ## non-answer, so it is "ungraceful" rather than "unsupported".
         try:
             far_future_recurrence = cal.search(
                 start=datetime(base + 45, 3, 12, tzinfo=utc),
@@ -3806,7 +3826,7 @@ class CheckRecurrenceSearch(Check):
             )
             self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(far_future_recurrence) == 1)
         except (AuthorizationError, DAVError):
-            self.set_feature("search.recurrences.includes-implicit.infinite-scope", False)
+            self.set_feature("search.recurrences.includes-implicit.infinite-scope", "ungraceful")
 
         ## server-side expansion
         events = cal.search(
