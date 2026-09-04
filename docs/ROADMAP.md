@@ -18,6 +18,12 @@ documentation work** carried out by another person.  The documentation hours
 are not counted inside the 80 and are not planned in this document; the phases
 below are the 80.
 
+The v1.3.0 release itself is one of those 80 hours - four of them (item 1.0).  An
+earlier draft of this document assumed the release would ship before the funded
+period began and be donated to it; that is no longer the plan.  The release ships
+first and is charged, and the four hours come out of item 1.1, which was estimated
+at eight.
+
 The original plan was a flat list of twelve RFCs to add probes for.  That list is
 still recognisable in Phase 3 - but a review of the code, the feature database and
 the open issues moved roughly half the budget to work the flat list did not name:
@@ -62,9 +68,9 @@ in probes that had looked fine for a year.
 
 ### Baseline: what v1.3.0 already ships
 
-**v1.3.0 will be released before the funded period begins and is not charged to it.**
-Everything below is measured against that release, not against v1.2.0 and not
-against the current `main`.  It is a large release - 80 commits, and an
+**v1.3.0 ships first, and the release work is charged to the grant** (item 1.0,
+four hours).  Everything below is measured against that release, not against
+v1.2.0 and not against the current `main`.  It is a large release - 80 commits, and an
 `[Unreleased]` section that is longer than the entire rest of the changelog.
 
 What exists at the baseline:
@@ -138,14 +144,18 @@ because everything in Phases 2-4 inherits the infrastructure it fixes.
 
 | Item | Deliverable | h | Issue |
 |---|---|---|---|
-| 1.1 Re-run the fleet, correct the profiles | A full run against every reachable server in the 21-profile fleet on the v1.3.0 code, with each disagreement between the run and the stored profile resolved as either a corrected profile entry or a fixed probe | 8 | |
+| 1.0 Release v1.3.0 | The `[Unreleased]` changelog section closed, the release cut and published to PyPI - the baseline everything below is measured against | 4 | |
+| 1.1 Re-run the fleet, correct the profiles | A full run against every reachable server in the 21-profile fleet on the v1.3.0 code, with each disagreement between the run and the stored profile resolved as either a corrected profile entry or a fixed probe | 4 | |
 | 1.2 Safe against a production calendar | Either a documented guarantee of what the tool will and will not delete when `--caldav-calendar` names a real calendar, backed by tests, or a documented verdict that the guarantee cannot be made and a loud refusal to run without an explicit override | 4 | |
 | 1.3 Feature taxonomy and the `lookup.*` rename | [`docs/TODO.md`](TODO.md)'s rename carried out across both repositories in one landing: `non-existing-raises-not-found` → `lookup.not-found`, the `lookup.get-by-url` question decided either way, and the `url.*` / `lookup.*` split stated in the feature descriptions | 2 | |
 
-1.1 is the item most likely to *grow*.  Every profile correction is a small piece
-of evidence that a probe was wrong, and the v1.3.0 cycle's hit rate on that was
-high: probing Robur on a single day produced two probe fixes and a changed
-verdict.  Eight hours buys the sweep and the obvious corrections; a deep
+1.1 is the item most likely to *grow*, and it is also the item that paid for 1.0.
+Every profile correction is a small piece of evidence that a probe was wrong, and
+the v1.3.0 cycle's hit rate on that was high: probing Robur on a single day
+produced two probe fixes and a changed verdict.  Eight hours would have bought the
+sweep across the whole 21-profile fleet plus the obvious corrections; **four buys
+the sweep and the corrections that fall out of it, and no more** - if the hit rate
+holds, the residue is filed as issues rather than fixed inside this item.  A deep
 investigation into any one server is charged against the hours its RFC sits in.
 
 1.2 carries the maintainer's own note from the June 2026 code review: *"The
@@ -305,7 +315,7 @@ carried out by another person.
 
 The original plan was twelve lines, all of them "add probes for RFC N", summing
 to exactly the 80 funded hours.  It carried its own note - *"expand the list
-below"* - and the expansion turned out to be a reprojection: 36 of the 80 hours
+below"* - and the expansion turned out to be a reprojection: 42 of the 80 hours
 now sit in work the flat list did not name.
 
 | Original item | Was | Now | Why |
@@ -321,9 +331,11 @@ now sit in work the flat list did not name.
 | RFC 4331 (research only) | 2 | ↑ | " |
 | Negated searches | 4 | 4 | Unchanged |
 | More work on collations | 4 | 4 | Unchanged |
-| Various other research and additional checks | 20 | 0 | Distributed, and named.  This is where the 36 hours came from: the twenty unspecified hours plus the sixteen freed by re-estimating the half-built items above |
-| *(new)* Phase 1 - trustworthy verdicts | - | 14 | The tool's verdicts configure a client library.  The v1.3.0 cycle found several probes reporting `full` for features the server did not have, all of them a year old.  Auditing that is worth more than another RFC |
+| Various other research and additional checks | 20 | 0 | Distributed, and named.  This is where the 42 hours came from: the twenty unspecified hours plus the twenty-two freed by re-estimating the half-built items above |
+| *(new)* Release v1.3.0 (1.0) | - | 4 | Not in the original list, and for a while not in this document either: the release was going to be donated to the grant.  It is now charged, and 1.1 was re-estimated from 8 to 4 to pay for it |
+| *(new)* Phase 1 - trustworthy verdicts (1.1-1.3) | - | 10 | The tool's verdicts configure a client library.  The v1.3.0 cycle found several probes reporting `full` for features the server did not have, all of them a year old.  Auditing that is worth more than another RFC |
 | *(new)* Phase 2 - defined but unprobed | - | 12 | Nine features are declared in the database and measured by nothing; nine legacy flags predate the database entirely.  Both backlogs are countable, and one of them is the only open issue in the tracker |
+| *(new)* Phase 4 - `prop-filter`/`param-filter` depth (4.3) | - | 2 | Parameter filtering and multi-condition `prop-filter` composition.  Not in the original list: the two search lines it sits beside are the ones that were named, and this is the part of RFC 4791 §9.7 neither of them reaches |
 | *(new)* Phase 5 - QA of the checker | - | 14 | 51% coverage on the 4,700-line module that holds all the logic, and 32 of 116 functions with any type annotation.  An untested probe does not crash - it ships a wrong verdict |
 
 ---
@@ -435,6 +447,7 @@ funding, though the first priority will always be to get food on the table.
 | Async / `aio` probing | 8-12 h | The caldav library has an async client; nothing checks whether servers behave the same under concurrent requests |
 | A reproducible server fleet (containers) | 12-20 h | A compose file bringing up every self-hostable server in the fleet at pinned versions, so a run is reproducible and a regression can be bisected across server versions |
 | Automated upstream bug reports | 8-16 h | The tool finds real server bugs.  Turning a finding into a filed, reproducible report against the server project is currently entirely manual |
+| The second half of the fleet re-run (item 1.1) | 4 h | 1.1 was estimated at 8 hours and is funded at 4, because the v1.3.0 release was charged to Phase 1.  If the v1.3.0 cycle's hit rate on wrong verdicts holds, this is the residue that gets filed as issues instead of fixed |
 
 ---
 
