@@ -147,3 +147,27 @@ Added a second overlap scenario [11:00, 13:00] (start before DTSTART, end inside
 and a `not_spurious` check: `csc_simple_task3` (DTSTART=Jan 9) must NOT appear in the
 Jan-18 range search. If a server returns it, the server is not actually filtering and the
 feature is reported as unsupported rather than full.
+
+## A broad `except DAVError` turns a transient failure into a permanent verdict
+
+(Clean-context review 2026-09-05, filed rather than fixed.)
+
+`DAVError` is the base of every error the caldav library raises, so every
+`except (AuthorizationError, DAVError)` in `checks.py` also catches a 500, a
+dropped connection and a `RateLimitError`.  Roughly 25 handlers then record a
+verdict from it — `False`/`unsupported` in most of them, `ungraceful` in the
+ones corrected in September 2026 — and either way a server having a bad minute
+gets an authoritative claim written about it.
+
+That contradicts what the project settled on elsewhere: `fix: an unprobed
+feature is unknown, not unsupported`, and the `url.encode-at` probe, which
+records `unknown` for a 5xx precisely so that "a momentary outage must not
+become a permanent claim about the server's error handling".
+
+The fix is not local — narrowing two handlers while the other two dozen keep
+the broad catch buys nothing.  What it wants is one helper that classifies a
+caught `DAVError`: 4xx is evidence (`ungraceful`, or `unsupported` where the
+server answered rather than refused), while 5xx, a lost connection and
+rate-limiting are `unknown`.  Then every handler in the file goes through it.
+Worth its own round, and it will move recorded verdicts on servers that were
+merely unwell during a run.
