@@ -113,3 +113,20 @@ def test_a_rejected_allday_query_is_not_folded_into_the_datetime_verdict() -> No
     query said, which asserts something the server never answered."""
     observed = _run(_FakeCalendar(found=_REACH_FAR_FUTURE | {(BASE, 2, 12)}, reject=(BASE, 3, 1)))
     assert observed.is_supported("search.recurrences.includes-implicit.event", str) == "ungraceful"
+
+
+def test_an_unmeasured_todo_precondition_is_unknown() -> None:
+    """The event side works, but the VTODO time-range probe never answered.
+
+    Nothing was observed about todo *recurrence*, so recording `unsupported`
+    for it claims the server lacks a feature nobody looked at - and that claim
+    is then copied into a profile and shipped as client behaviour.  Observed on
+    purelymail, whose profile rightly declares these `full`.
+    """
+    observed = _run(_FakeCalendar(found=_REACH_FAR_FUTURE))
+    for feature in (
+        "search.recurrences.includes-implicit.todo",
+        "search.recurrences.includes-implicit.todo.pending",
+        "search.recurrences.expanded.todo",
+    ):
+        assert observed.is_supported(feature, str) == "unknown", feature

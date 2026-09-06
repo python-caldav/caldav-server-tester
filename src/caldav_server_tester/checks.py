@@ -3718,7 +3718,7 @@ class CheckRecurrenceSearch(Check):
         if not todo_testable:
             logging.warning(
                 "Recurring-todo precondition not met (VTODO time-range search unreliable in Jan %d); "
-                "todo recurrence sub-features reported unsupported",
+                "todo recurrence sub-features reported unknown",
                 base,
             )
 
@@ -3784,8 +3784,12 @@ class CheckRecurrenceSearch(Check):
             else:
                 self.set_feature("search.recurrences.includes-implicit.todo.pending", False)
         else:
-            self.set_feature("search.recurrences.includes-implicit.todo", False)
-            self.set_feature("search.recurrences.includes-implicit.todo.pending", False)
+            ## The VTODO time-range precondition was never established - either the
+            ## server has no todo time-range search, or the probe query came back
+            ## with the wrong objects.  Either way nothing was observed about todo
+            ## *recurrence*, and not observed is not observed-not-to-work.
+            self.set_feature("search.recurrences.includes-implicit.todo", "unknown")
+            self.set_feature("search.recurrences.includes-implicit.todo.pending", "unknown")
 
         exception = cal.search(
             start=datetime(base, 2, 13, 11, tzinfo=utc),
@@ -3856,7 +3860,8 @@ class CheckRecurrenceSearch(Check):
                 len(todos) == 1 and todos[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
             )
         else:
-            self.set_feature("search.recurrences.expanded.todo", False)
+            ## Unmeasured for the same reason as the two above.
+            self.set_feature("search.recurrences.expanded.todo", "unknown")
         exception = cal.search(
             start=datetime(base, 2, 13, 11, tzinfo=utc),
             end=datetime(base, 2, 13, 13, tzinfo=utc),
