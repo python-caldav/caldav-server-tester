@@ -2415,6 +2415,10 @@ class CheckTodoNoDtstartSearch(Check):
         feature = "search.time-range.todo.no-dtstart"
         tasklist = getattr(self.checker, "tasklist", None)
         if tasklist is None:
+            ## Nothing was probed, and this feature's default is "full" - so
+            ## returning here would publish a positive verdict about a server
+            ## nobody asked anything.
+            self.set_feature(feature, {"support": "unknown", "behaviour": "no task calendar to probe against"})
             return
         ## If generic todo time-range search is broken or unsupported (e.g. Bedework),
         ## the server returns all objects regardless of the date filter, so finding
@@ -2432,9 +2436,19 @@ class CheckTodoNoDtstartSearch(Check):
                 start=datetime(base, 1, 1, tzinfo=utc),
                 end=datetime(base, 1, 31, tzinfo=utc),
                 include_completed=True,
+                ## Measure the server, not the library: without these the client
+                ## post-filters the result by its own reading of RFC4791 9.9, and
+                ## post-filtering can only drop rows - so the probe would blame
+                ## the server for the client's filter.
+                post_filter=False,
+                compatibility_workarounds=False,
             )
-        except (DAVError, AuthorizationError):
-            return  ## cannot probe; leave unset so the default ("full") applies
+        except (DAVError, AuthorizationError) as e:
+            ## The server raised rather than quietly answering wrong, so the
+            ## client can catch it.  Leaving it unset instead would let this
+            ## feature's "full" default stand as an observation nobody made.
+            self.set_feature(feature, {"support": "ungraceful", "behaviour": str(e)})
+            return
         found = any("csc_simple_task2" in (getattr(o, "data", "") or "") for o in results)
         self.set_feature(feature, found)
 
@@ -2905,6 +2919,19 @@ class CheckRescheduleRecurrenceSeries(Check):
             self.set_feature(feature, None)
             return
 
+        def master_dtstart(o):
+            """The DTSTART of the master VEVENT - the one without a RECURRENCE-ID.
+
+            Normalised to UTC: a server is free to hand the instant back in any
+            zone, and comparing wall-clock times would read that as a refusal.
+            """
+            for comp in o.icalendar_instance.subcomponents:
+                if comp.name != "VEVENT" or "RECURRENCE-ID" in comp:
+                    continue
+                dt = comp["DTSTART"].dt
+                return dt.astimezone(utc) if getattr(dt, "tzinfo", None) else None
+            return None
+
         try:
             ## Reload to obtain a fresh etag, then PUT the rescheduled series with
             ## that etag (If-Match), isolating this from if-match-optional.
@@ -2915,9 +2942,25 @@ class CheckRescheduleRecurrenceSeries(Check):
                 return
             obj.data = rescheduled
             obj.save()
-            self.set_feature(feature)
-        except (DAVError, PutError):
-            self.set_feature(feature, False)
+            ## Read it back.  A server that accepts the PUT and silently drops the
+            ## re-anchoring is the data-loss case this feature exists to name, and
+            ## "the PUT did not raise" cannot tell it from success.
+            obj.load()
+            if master_dtstart(obj) == start + timedelta(hours=1):
+                self.set_feature(feature)
+            else:
+                self.set_feature(
+                    feature,
+                    {
+                        "support": "unsupported",
+                        "behaviour": "the PUT was accepted but the master DTSTART did not move",
+                    },
+                )
+        except DAVError as e:
+            ## The server refused (OX answers 409 Conflict even with a matching
+            ## etag).  It raised rather than quietly ignoring us, so the client
+            ## can catch it: that is "ungraceful", not "unsupported".
+            self.set_feature(feature, {"support": "ungraceful", "behaviour": str(e)})
         finally:
             try:
                 url_object(cal, uid).delete()
