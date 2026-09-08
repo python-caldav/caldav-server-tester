@@ -139,11 +139,24 @@ class TestACollectionWithTwoAddresses:
 
 
 class TestANonObservationIsNotAnObservation:
-    def test_an_unprobed_relocation_does_not_decide_this_one(self) -> None:
-        """``create-calendar.stable-url`` comes back ``unknown`` on a server
-        whose calendars cannot be created at all.  That is not evidence that a
-        constructed object URL will not match."""
+    def test_a_relocation_probe_that_gave_up_does_not_decide_this_one(self) -> None:
+        """``create-calendar.stable-url`` recorded as ``unknown`` says the probe
+        ran and could not tell.  That is not evidence that a constructed object
+        URL will not match."""
         assert _probe(_calendar(ALIAS), create_calendar_stable_url={"support": "unknown"}) == "full"
+
+    def test_a_relocation_never_probed_does_not_decide_this_one(self) -> None:
+        """On a server where neither MKCALENDAR nor MKCOL works,
+        ``CheckMakeDeleteCalendar`` records ``create-calendar`` unsupported and
+        never reaches its ``stable-url`` sub-probe, so that feature is never
+        set at all.  ``is_supported()`` walks *up* the dotted tree when a
+        feature is unset, so asking for the child hands back the parent's
+        ``unsupported`` - an observation about whether calendars can be created,
+        which says nothing about where an existing one is addressable."""
+        checker = _make_checker()
+        checker.features_checked.set_feature("create-calendar", False)
+        PrepareCalendar(checker)._check_stable_url(_calendar(ALIAS))
+        assert checker.features_checked.is_supported("save-load.stable-url", str) == "full"
 
 
 class TestTheSpellingOfTheNameIsNotTheQuestion:

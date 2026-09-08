@@ -2404,8 +2404,13 @@ END:VCALENDAR""",
 
         ## An actual negative observation, not merely the absence of one: a
         ## collection nobody managed to probe must not cost this feature its
-        ## verdict.
-        relocation = self.checker.features_checked.is_supported("create-calendar.stable-url", dict) or {}
+        ## verdict.  is_supported() alone cannot tell the two apart - it walks
+        ## UP the dotted tree when a feature is unset, so on a server where
+        ## calendars cannot be created at all it answers for the *parent*
+        ## create-calendar, and this probe would report a relocation that was
+        ## never looked for.  So ask first whether the sub-feature was recorded.
+        recorded = self.checker.features_checked.dotted_feature_set_list()
+        relocation = recorded.get("create-calendar.stable-url") or {}
         if relocation.get("support") in ("unsupported", "broken", "ungraceful"):
             ## Quote what create-calendar.stable-url observed rather than
             ## restating one server's flavour of it: OX leaves a second working
