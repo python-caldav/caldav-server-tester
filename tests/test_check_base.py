@@ -2,10 +2,12 @@
 
 ## DISCLAIMER: those tests are AI-generated, gone through a very quick human QA
 
+import logging
 from unittest.mock import Mock
 
 import pytest
 from caldav.compatibility_hints import FeatureSet
+from caldav.lib.error import NotFoundError
 
 from caldav_server_tester.checks_base import Check
 
@@ -323,3 +325,206 @@ class TestCheckRunCheck:
 
         with pytest.raises(NotImplementedError):
             check.run_check()
+
+
+class TestPollCalendar:
+    """Test the shared calendar polling helper on the Check base class.
+
+    Three near-identical poll loops used to live in checks.py (wait for a
+    calendar to materialise, wait for it to disappear, and a hand-rolled copy in
+    PrepareCalendar).  They are one helper here; these tests pin both polarities
+    and the round-trip count, since every extra probe is a network round-trip
+    against a server we already know is slow.
+    """
+
+    def _check(self, monkeypatch) -> Check:
+        import caldav_server_tester.checks_base as base
+
+        monkeypatch.setattr(base.time, "sleep", lambda _s: None)
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.debug_mode = None
+        return Check(checker)
+
+    @staticmethod
+    def _calendar(fail_times: int) -> Mock:
+        """A calendar whose events() raises NotFoundError the first N calls."""
+        state = {"n": 0}
+
+        def events():
+            state["n"] += 1
+            if state["n"] <= fail_times:
+                raise NotFoundError("Node could not be found")
+            return []
+
+        cal = Mock()
+        cal.events.side_effect = events
+        cal.probe_count = state
+        return cal
+
+    def test_polls_until_accessible(self, monkeypatch) -> None:
+        check = self._check(monkeypatch)
+        cal = self._calendar(fail_times=3)
+        check.checker.principal.calendar.return_value = cal
+
+        found, waited = check._poll_calendar(cal_id="x")
+
+        assert found is cal
+        assert waited == 3
+
+    def test_polls_until_gone(self, monkeypatch) -> None:
+        """The delete probe wants the opposite polarity: wait for the 404."""
+        check = self._check(monkeypatch)
+        state = {"n": 0}
+
+        def events():
+            state["n"] += 1
+            if state["n"] > 2:
+                raise NotFoundError("gone at last")
+            return []
+
+        cal = Mock()
+        cal.events.side_effect = events
+        check.checker.principal.calendar.return_value = cal
+
+        found, waited = check._poll_calendar(cal_id="x", until_accessible=False)
+
+        assert found is None
+        assert waited == 2
+
+    def test_timeout_returns_none(self, monkeypatch) -> None:
+        check = self._check(monkeypatch)
+        cal = self._calendar(fail_times=99)
+        check.checker.principal.calendar.return_value = cal
+
+        found, waited = check._poll_calendar(cal_id="x", timeout=4)
+
+        assert found is None
+        assert waited == 4
+
+    def test_probes_once_per_second(self, monkeypatch) -> None:
+        """One accessibility probe per iteration - no redundant re-probe.
+
+        The old helper called _calendar_is_accessible() once more after the loop
+        to build its return value, paying an extra round-trip on every call.
+        """
+        check = self._check(monkeypatch)
+        cal = self._calendar(fail_times=99)
+        check.checker.principal.calendar.return_value = cal
+
+        check._poll_calendar(cal_id="x", timeout=3)
+
+        ## 4 probes: the immediate one plus one per second waited
+        assert cal.probe_count["n"] == 4
+
+    def test_immediate_success_does_not_sleep(self, monkeypatch) -> None:
+        import caldav_server_tester.checks_base as base
+
+        slept = []
+        monkeypatch.setattr(base.time, "sleep", slept.append)
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.debug_mode = None
+        check = Check(checker)
+        cal = self._calendar(fail_times=0)
+        checker.principal.calendar.return_value = cal
+
+        found, waited = check._poll_calendar(cal_id="x")
+
+        assert (found, waited) == (cal, 0)
+        assert slept == []
+
+    def test_polls_a_supplied_calendar_object_without_refetching(self, monkeypatch) -> None:
+        """PrepareCalendar polls the object make_calendar returned.
+
+        Re-fetching by cal_id would break on servers where a created calendar
+        does not live at the requested cal_id (create-calendar.stable-url
+        unsupported - Zimbra hands back an opaque cal://0/NNN URL).
+        """
+        check = self._check(monkeypatch)
+        cal = self._calendar(fail_times=2)
+
+        found, waited = check._poll_calendar(cal=cal)
+
+        assert (found, waited) == (cal, 2)
+        check.checker.principal.calendar.assert_not_called()
+
+
+class TestObservedDelayWarning:
+    """An observed delay is checked against the configured one.
+
+    A write-delay in a server profile is a number somebody wrote by hand, and
+    the only way to find out it is too small is to measure the server.  Once a
+    probe records how long the server actually took, set_feature compares it
+    with what the profile asks a client to sleep and complains through the same
+    debug_mode machinery as any other unmet expectation.
+    """
+
+    def _check(self, configured=None, debug_mode="logging") -> Check:
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker.debug_mode = debug_mode
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        check = Check(checker)
+        expected = FeatureSet()
+        if configured is not None:
+            expected.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": configured}}, collapse=False)
+        check.expected_features = expected
+        return check
+
+    @staticmethod
+    def _delayed(delay, **extra):
+        return {"support": "quirk", "behaviour": "delayed creation", "delay": delay, **extra}
+
+    def test_warns_when_the_observed_delay_eats_the_margin(self, caplog) -> None:
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("create-calendar", self._delayed(9))
+        assert "observed delay" in caplog.text
+        assert "create-calendar" in caplog.text
+        assert "9" in caplog.text and "10" in caplog.text
+
+    def test_quiet_when_the_configured_delay_has_room(self, caplog) -> None:
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("create-calendar", self._delayed(4))
+        assert "observed delay" not in caplog.text
+
+    def test_warns_when_nothing_is_configured(self, caplog) -> None:
+        """A delay nobody configured is the case worth hearing about."""
+        check = self._check(configured=None)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("create-calendar", self._delayed(3))
+        assert "observed delay" in caplog.text
+        assert "no write-delay is configured" in caplog.text
+
+    def test_a_lower_bound_always_warns(self, caplog) -> None:
+        """The probe gave up waiting, so the real delay is longer than this."""
+        check = self._check(configured=100)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("create-calendar", self._delayed(10, **{"delay-is-lower-bound": True}))
+        assert "observed delay" in caplog.text
+
+    def test_a_zero_delay_says_nothing(self, caplog) -> None:
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("write-delay", {"support": "full", "save-load-delay": 0, "delay": 0})
+        assert "observed delay" not in caplog.text
+
+    def test_silent_when_debug_mode_is_off(self, caplog) -> None:
+        check = self._check(configured=None, debug_mode=None)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("create-calendar", self._delayed(9))
+        assert caplog.text == ""
+
+    def test_a_fragile_verdict_still_gets_the_delay_checked(self, caplog) -> None:
+        """The fragile/unknown early return must not swallow the comparison."""
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("delete-calendar", {"support": "fragile", "behaviour": "slow", "delay": 9})
+        assert "observed delay" in caplog.text

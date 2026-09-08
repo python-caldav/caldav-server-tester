@@ -70,6 +70,33 @@ in the descriptions.
 
 ---
 
+# Optimistic read-back with retry, instead of a configured delay
+
+(Discussion 2026-09-08, not acted on.)
+
+The `write-delay` peculiarity is a flat sleep after every write, and the
+alternative considered was: continue immediately whenever the read-back meets
+expectations, and wait-and-reprobe only when it does not.  That is the better
+shape in principle - it costs nothing on a synchronous server and adapts to a
+slow one without anybody having to measure it first - and it is what the
+calendar create/delete probes already do locally.
+
+Two things stopped it from being done here:
+
+* It needs a retry contract for **every** read-back in `checks.py`, not just the
+  calendar lifecycle - hundreds of `events()` / `search()` / `load()` sites.
+  Retrofitting that is a redesign, not a change.
+* Checks that expect an **absence** cannot use it.  `CheckNonExistingResource`
+  and every negative search assertion cannot tell "not yet" from "correctly
+  absent", so they would have to wait the full timeout on every run - putting
+  the arbitrary delay on the *conformant* servers rather than the broken ones.
+
+What was done instead: the delays are measured and reported (`CheckWriteDelay`,
+and the `delay` key on `create-calendar` / `delete-calendar`), an observation
+that outgrows the configured value is warned about, and the configured value
+stays something a human writes into the profile.  Read-back retry remains the
+right answer for the save-load side if the redesign is ever budgeted.
+
 # Possibly everything below is utterly obsoleted
 
 ## Two observations that should be investigated

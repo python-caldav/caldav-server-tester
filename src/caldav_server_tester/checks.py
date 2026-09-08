@@ -32,6 +32,10 @@ TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
 OLDDATE_EVENT_UID = "csc_olddate_event"
 OLDDATE_TASK_UID = "csc_olddate_task"
 
+## The write-delay probe writes and removes this one within the run; the csc_
+## prefix keeps it inside the cleanup sweep should the run die in between.
+WRITE_DELAY_UID = "csc_write_delay_probe"
+
 ## UIDs of the url.encode-at probe objects.  The '@' has to be in the UID rather
 ## than relying on one in the username: it is the only way to guarantee the
 ## object's path contains an '@' on every server.  PrepareCalendar._check_encode_at
@@ -471,37 +475,6 @@ class CheckMakeDeleteCalendar(Check):
     ## recognises it (see checker.PROBE_CALENDAR_PREFIXES).
     MKDEL_CAL_ID = "caldav-server-checker-mkdel-test"
 
-    @staticmethod
-    def _calendar_is_accessible(cal) -> bool:
-        """Probe whether a calendar is accessible by calling events().
-
-        Returns True if events() succeeds, False if the server returns any DAV
-        error (404 Not Found, 403 Forbidden, 500 Internal Server Error, etc.).
-        """
-        try:
-            cal.events()
-            return True
-        except DAVError:
-            return False
-
-    def _poll_calendar_accessible(self, cal_id, timeout=10):
-        """Poll until the calendar at ``cal_id`` answers ``events()``.
-
-        Returns ``(cal_or_None, waited_seconds)``.  Some servers
-        (Infomaniak/SabreDAV) create calendars *asynchronously*: MKCALENDAR
-        returns before the collection is queryable, 404ing for a few seconds.
-        Anything that creates a calendar and immediately uses it must wait here,
-        or it both mis-probes the calendar AND leaks it (it does get created
-        server-side; we just never wait around to use or delete it).
-        """
-        cal = self.checker.principal.calendar(cal_id=cal_id)
-        waited = 0
-        while not self._calendar_is_accessible(cal) and waited < timeout:
-            time.sleep(1)
-            waited += 1
-            cal = self.checker.principal.calendar(cal_id=cal_id)
-        return (cal if self._calendar_is_accessible(cal) else None), waited
-
     def _try_make_calendar(self, cal_id, **kwargs):
         """
         Does some attempts on creating and deleting calendars, and sets some
@@ -536,10 +509,14 @@ class CheckMakeDeleteCalendar(Check):
         else:
             ## MKCALENDAR returned without error, but we must be sure the
             ## collection is actually usable - poll for it (handles async creation,
-            ## see _poll_calendar_accessible) rather than concluding creation
-            ## failed on the first 404.
-            cal, waited = self._poll_calendar_accessible(cal_id)
+            ## see _poll_calendar) rather than concluding creation failed on the
+            ## first 404.
+            cal, waited = self._poll_calendar(cal_id=cal_id, timeout=self.checker.delay_probe_timeout)
             if cal is None:
+                ## MKCALENDAR was accepted; the collection just never showed up
+                ## within the timeout.  That is the only failure mode a leftover
+                ## from a previous run can speak to - see _probe_make_delete.
+                self._make_timed_out = True
                 return False
             calmade = True
             if waited:
@@ -574,13 +551,10 @@ class CheckMakeDeleteCalendar(Check):
                 ## asynchronously, so poll for up to ~10s rather than flatly
                 ## sleeping the whole time — most async deletes finish well under
                 ## that, and the final verdict is the same either way.
-                cal = self.checker.principal.calendar(cal_id=cal_id)
-                waited = 0
-                while self._calendar_is_accessible(cal) and waited < 10:
-                    time.sleep(1)
-                    waited += 1
-                    cal = self.checker.principal.calendar(cal_id=cal_id)
-                if self._calendar_is_accessible(cal):
+                cal, waited = self._poll_calendar(
+                    cal_id=cal_id, until_accessible=False, timeout=self.checker.delay_probe_timeout
+                )
+                if cal is not None:
                     ## Calendar not deleted, but no exception thrown.
                     ## Perhaps it's a "move to thrashbin"-regime on the server
                     self.set_feature(
@@ -588,30 +562,61 @@ class CheckMakeDeleteCalendar(Check):
                         {"support": "unknown", "behaviour": "move to trashbin?"},
                     )
                 else:
-                    ## Calendar was deleted, it just took some time.
+                    ## Calendar was deleted, it just took some time.  That is a
+                    ## quirk, not "fragile": fragile means it sometimes works and
+                    ## sometimes not, while here it deterministically works and
+                    ## only the length of the wait varies.  The distinction is
+                    ## not just wording - only 'quirk' counts as a positive
+                    ## status, so a fragile verdict would make
+                    ## is_supported("delete-calendar") False and silently skip
+                    ## the free-namespace probe below.
                     self.set_feature(
                         "delete-calendar",
-                        {"support": "fragile", "behaviour": "delayed deletion"},
+                        {
+                            "support": "quirk",
+                            "behaviour": f"delayed deletion (still queryable for ~{waited}s)",
+                            "delay": waited,
+                        },
                     )
                     return calmade
             return calmade
         except DAVError as e:
-            time.sleep(10)
-            try:
-                DAVObject.delete(cal)
+            ## The DELETE itself raised.  On Cyrus and Nextcloud this is
+            ## "deleting a recently created calendar fails" - the same
+            ## asynchronous-write shape, the server just reports it rather than
+            ## quietly ignoring it - so retry once a second and measure how long
+            ## it takes, instead of flatly sleeping 10s and retrying once.
+            waited = 0
+            while True:
+                time.sleep(1)
+                waited += 1
+                try:
+                    DAVObject.delete(cal)
+                except DAVError as e2:
+                    if waited >= self.checker.delay_probe_timeout:
+                        self.set_feature("delete-calendar", False)
+                        return calmade
+                    continue
                 self.set_feature(
                     "delete-calendar",
                     {
-                        "support": "fragile",
-                        "behaviour": "deleting a recently created calendar causes exception",
+                        "support": "quirk",
+                        "behaviour": (
+                            f"deleting a recently created calendar raises for ~{waited}s before it succeeds ({e})"
+                        ),
+                        "delay": waited,
                     },
                 )
-            except DAVError as e2:
-                self.set_feature("delete-calendar", False)
-            return calmade
+                return calmade
 
     def _run_check(self):
-        self._probe_make_delete()
+        ## This check is where the server's own write delay is measured, so it
+        ## runs with the configured delay suspended - see
+        ## ServerQuirkChecker.without_write_delay.  With the sleep in place the
+        ## calendar has always materialised by the time the poll runs, and the
+        ## two features the delay was configured because of come out "full".
+        with self.checker.without_write_delay():
+            self._probe_make_delete()
         ## The set-displayname behaviour can only be probed by creating a
         ## calendar with a name, so it is gated on create-calendar; when that is
         ## unsupported, the two set-displayname* features collapse under the
@@ -723,9 +728,45 @@ class CheckMakeDeleteCalendar(Check):
         ## from whether a *previous* run's leftover had been freed: no evidence
         ## at all on a first run, and any transient MKCALENDAR failure was
         ## recorded as "the namespace is not freed on delete".)
+        ## A calendar sitting under our own stable cal_id before we start is
+        ## evidence in its own right, and the only evidence available for a
+        ## delay longer than we are willing to wait for.  A previous run created
+        ## it, gave up polling, and so never came back to delete it - which means
+        ## MKCALENDAR did take effect, just later than anyone watched.  Read it
+        ## before _try_make_calendar wipes the id, or the evidence is destroyed
+        ## before it is used.
+        leftover = self._calendar_is_accessible(self.checker.principal.calendar(cal_id=self.MKDEL_CAL_ID))
+
+        self._make_timed_out = False
         makeret = self._try_make_calendar(cal_id=self.MKDEL_CAL_ID)
         if makeret:
             self._probe_free_namespace(self.MKDEL_CAL_ID)
+            return
+        ## Only a creation that was *accepted and never materialised* is what a
+        ## leftover explains.  A refused MKCALENDAR is a different failure, and
+        ## the MKCOL retry below is the answer to it - short-circuiting here
+        ## would report a server that simply wants MKCOL as a slow one.
+        if leftover and self._make_timed_out:
+            ## Creation "failed" this run too, but we know it does not really
+            ## fail.  Reporting unsupported here would be wrong twice over: it
+            ## mis-describes the server, and the two further cal_ids tried below
+            ## would leak two more orphans on a server that is merely slow.
+            timeout = self.checker.delay_probe_timeout
+            self.set_feature(
+                "create-calendar",
+                {
+                    "support": "quirk",
+                    "behaviour": (
+                        f"delayed creation, longer than the {timeout}s polled for "
+                        f"(a calendar from a previous run was found, so MKCALENDAR does take effect)"
+                    ),
+                    "delay": timeout,
+                    "delay-is-lower-bound": True,
+                },
+            )
+            _cannot = "cannot test, the calendar did not materialise within the timeout"
+            self.set_feature("delete-calendar", {"support": "unknown", "behaviour": _cannot})
+            self.set_feature("delete-calendar.free-namespace", {"support": "unknown", "behaviour": _cannot})
             return
         ## The fixed cal_id could not be created at all; a fresh unique cal_id
         ## tells us whether calendar creation works in the first place.
@@ -965,7 +1006,7 @@ class CheckMakeDeleteCalendar(Check):
         ## (creation may be async, see _poll_calendar_accessible).  On Zimbra/OX
         ## the requested cal_id resolves as a collection-level alias, so this poll
         ## returns quickly even when the *canonical* URL is elsewhere.
-        probe_cal, _ = self._poll_calendar_accessible(cal_id)
+        probe_cal, _ = self._poll_calendar(cal_id=cal_id)
 
         ## Locate the calendar by the unique display name to discover its
         ## *canonical* URL - this is where the server really put it, and the only
@@ -1109,15 +1150,11 @@ class PrepareCalendar(Check):
             ## the collection 404s for a few seconds after MKCALENDAR returns.
             ## Wait for it to materialise before the fixture-loading checks start
             ## using it (CheckMakeDeleteCalendar already detected this and marked
-            ## create-calendar as a "delayed creation" quirk).
-            waited = 0
-            while waited < 10:
-                try:
-                    calendar.events()
-                    break
-                except DAVError:
-                    time.sleep(1)
-                    waited += 1
+            ## create-calendar as a "delayed creation" quirk).  Poll the object
+            ## make_calendar() handed back rather than re-resolving the cal_id -
+            ## the created calendar does not necessarily live there (see
+            ## create-calendar.stable-url).
+            self._poll_calendar(cal=calendar)
 
         self.checker.calendar = calendar
         self.checker.tasklist = calendar
@@ -2724,6 +2761,153 @@ class CheckNonExistingResource(Check):
                 feature,
                 {"support": "broken", "behaviour": "no error raised for a non-existing calendar"},
             )
+
+
+class CheckWriteDelay(Check):
+    """How long after a write does the server need before the change is readable?
+
+    Servers like Infomaniak/SabreDAV process writes asynchronously: a PUT
+    returns before the object can be read back.  The CalDAV library's answer is
+    the ``write-delay`` peculiarity - sleep after every write - but that value
+    has to be put into a server profile by hand, and until somebody measures it
+    the tester mis-probes the server instead of reporting it as slow.  This
+    check makes the delay an observation rather than only a setting.
+
+    It PUTs one object and times how long it takes to become readable *by direct
+    GET*.  Not by search: a search read-back would re-measure ``search-cache``,
+    which is a different peculiarity with a different remedy, and a server can
+    have either without the other.  Nothing is polled unless the first read-back
+    fails, so a synchronous server pays one extra GET and no waiting at all.
+
+    The verdict then combines that with the delays the calendar create/delete
+    probe measured.  A blanket post-write sleep is only the right prescription
+    when *object writes* are affected: a server that merely creates collections
+    asynchronously would have every PUT slowed down for nothing.  So a delay on
+    save-load together with one on calendar creation recommends ``write-delay``,
+    while a calendar delay on its own is recorded in the behaviour text and left
+    at ``full``.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"write-delay"}
+
+    def _configured(self):
+        """The delay the server profile asks a client to sleep, or 0."""
+        return self.checker.configured_write_delay
+
+    def _passthrough(self, why):
+        """Report the configured value when the delay could not be observed.
+
+        A configured value is the best guess available when nothing can be
+        probed - but it is a guess, and the observed feature set is otherwise a
+        record of observations, so it says so rather than reading as one.
+        """
+        configured = self._configured()
+        if not configured:
+            self.set_feature("write-delay", {"support": "unknown", "behaviour": why})
+            return
+        self.set_feature(
+            "write-delay",
+            {
+                "support": "quirk",
+                "behaviour": f"writes processed asynchronously; waiting ~{configured}s after every write",
+                "delay": configured,
+                "note": f"passed through from the server profile, not probed ({why})",
+            },
+        )
+
+    def _measure_save_load(self):
+        """Seconds until a freshly PUT object is readable, or None if never.
+
+        Returns 0 on a server that answers immediately, which is the interesting
+        common case: it is what tells "no delay" apart from "not measured".
+        """
+        cal = self.checker.calendar
+        ## Same year as the reusable fixtures, but computed rather than read off
+        ## the checker: the probe never searches for this object (it is fetched
+        ## by direct URL and deleted again), so it is not tied to whatever
+        ## PrepareCalendar settled on.
+        base = _base_year()
+        try:
+            cal.save_object(
+                Event,
+                summary="write-delay probe",
+                uid=WRITE_DELAY_UID,
+                dtstart=datetime(base, 1, 1, 9, 0, 0, tzinfo=utc),
+                dtend=datetime(base, 1, 1, 10, 0, 0, tzinfo=utc),
+            )
+        except (DAVError, AuthorizationError):
+            return None
+
+        obj = url_object(cal, WRITE_DELAY_UID, Event)
+        waited = 0
+        while True:
+            try:
+                obj.load()
+                return waited
+            except DAVError:
+                if waited >= self.checker.delay_probe_timeout:
+                    return None
+                time.sleep(1)
+                waited += 1
+
+    def _cleanup(self):
+        try:
+            url_object(self.checker.calendar, WRITE_DELAY_UID, Event).delete()
+        except Exception:
+            pass
+
+    def _run_check(self):
+        if self.checker.calendar is None:
+            self._passthrough("no calendar to write to")
+            return
+
+        ## Measuring the delay with the delay in place measures nothing: the
+        ## sleep has already happened by the time the read-back is issued.
+        with self.checker.without_write_delay():
+            try:
+                save_load = self._measure_save_load()
+            finally:
+                self._cleanup()
+
+        if save_load is None:
+            self._passthrough("the probe object never became readable")
+            return
+
+        ## What the calendar lifecycle probe measured, if it ran.
+        checked = self.checker.features_checked
+        create = checked.is_supported("create-calendar", dict).get("delay", 0)
+        delete = checked.is_supported("delete-calendar", dict).get("delay", 0)
+
+        notes = []
+        if save_load:
+            notes.append(f"a new object takes ~{save_load}s to become readable")
+        if create:
+            notes.append(f"create-calendar takes ~{create}s")
+        if delete:
+            notes.append(f"delete-calendar takes ~{delete}s")
+
+        if save_load and create:
+            ## Both an object write and a collection write are delayed - the
+            ## server is asynchronous across the board, which is what a blanket
+            ## post-write sleep is for.
+            self.set_feature(
+                "write-delay",
+                {
+                    "support": "quirk",
+                    "behaviour": "; ".join(notes) + " - consider configuring write-delay for this server",
+                    "delay": max(save_load, create, delete),
+                    "save-load-delay": save_load,
+                },
+            )
+            return
+
+        value = {"support": "full", "save-load-delay": save_load}
+        if notes:
+            ## Something was slow, but not the combination that justifies making
+            ## every write on this server sleep.
+            value["behaviour"] = "; ".join(notes)
+        self.set_feature("write-delay", value)
 
 
 class CheckMutable(Check):

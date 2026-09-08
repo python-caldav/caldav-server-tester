@@ -1,5 +1,14 @@
 import copy
 import logging
+import time
+
+from caldav.lib.error import DAVError
+
+## How much of a configured write-delay an observation may take up before the
+## configured value is called into question.  A server measured at 9s against a
+## 10s setting is not comfortably covered - the setting was somebody's estimate,
+## and the next run on a busier day is the one that breaks.
+DELAY_MARGIN_RATIO = 0.85
 
 
 class Check:
@@ -39,6 +48,8 @@ class Check:
                 logging.error("Unexpected feature type %r for feature %r", feat_type, feature)
             return
 
+        self._check_observed_delay(feature, fs)
+
         value_str = fs.is_supported(feature, str)
 
         ## Fragile support is ... fragile and should be ignored
@@ -73,6 +84,101 @@ class Check:
                 breakpoint()
             else:
                 raise ValueError(f"Unknown debug_mode {self.checker.debug_mode!r}")
+
+    def _check_observed_delay(self, feature, fs):
+        """Complain when a measured delay outgrows the configured one.
+
+        A `write-delay` in a server profile is a number written by hand, and the
+        only way to learn that it is too small is to measure the server.  Any
+        probe that records a `delay` therefore gets it compared against what the
+        profile asks a client to sleep, and the complaint goes out through the
+        same debug_mode machinery as any other unmet expectation.
+
+        Deliberately placed above the fragile/unknown early return below: that
+        return exists because a fragile *support level* is not worth comparing,
+        which says nothing about a timing observation carried alongside it.
+        """
+        observed = fs.is_supported(feature, dict)
+        if not isinstance(observed, dict):
+            return
+        delay = observed.get("delay") or 0
+        if not delay:
+            return
+
+        write_delay = self.expected_features.is_supported("write-delay", dict)
+        configured = write_delay.get("delay", 0) if write_delay.get("behaviour") == "delay" else 0
+
+        if not configured:
+            complaint = f"{feature}: observed delay of ~{delay}s, but no write-delay is configured for this server"
+        elif observed.get("delay-is-lower-bound"):
+            ## The probe stopped waiting, so the server is slower than this - by
+            ## an unknown amount, which no ratio can be computed against.
+            complaint = (
+                f"{feature}: observed delay is at least ~{delay}s, longer than the probe waited, "
+                f"against a configured write-delay of {configured}s"
+            )
+        elif delay / configured > DELAY_MARGIN_RATIO:
+            complaint = (
+                f"{feature}: observed delay of ~{delay}s takes up more than "
+                f"{DELAY_MARGIN_RATIO:.0%} of the configured write-delay of {configured}s"
+            )
+        else:
+            return
+
+        if self.checker.debug_mode == "assert":
+            raise AssertionError(complaint)
+        if self.checker.debug_mode == "pdb":
+            logging.error(complaint)
+            breakpoint()
+        else:
+            logging.error(complaint)
+
+    @staticmethod
+    def _calendar_is_accessible(cal) -> bool:
+        """Probe whether a calendar is accessible by calling events().
+
+        Returns True if events() succeeds, False if the server returns any DAV
+        error (404 Not Found, 403 Forbidden, 500 Internal Server Error, etc.).
+        """
+        try:
+            cal.events()
+            return True
+        except DAVError:
+            return False
+
+    def _poll_calendar(self, cal_id=None, cal=None, until_accessible=True, timeout=10):
+        """Poll a calendar until it materialises (or disappears).
+
+        Returns ``(cal_or_None, waited_seconds)`` - the calendar when it is
+        accessible at the end of the poll, ``None`` when it is not, either way
+        with the number of seconds spent waiting.
+
+        Some servers process writes asynchronously (Infomaniak/SabreDAV):
+        MKCALENDAR and DELETE both return before the change is queryable, so a
+        newly created collection 404s for a few seconds and a deleted one keeps
+        answering for a few seconds.  Anything that creates or deletes a calendar
+        and immediately uses the result has to wait here - otherwise it both
+        mis-probes the server AND leaks the calendar (it does get created
+        server-side; we just never wait around to use or delete it).
+
+        Pass ``cal_id`` to re-resolve the calendar on every iteration (right when
+        waiting for a collection to appear under a known id), or ``cal`` to poll
+        an object we already hold - a calendar handed back by make_calendar()
+        need not live at the requested cal_id at all (Zimbra returns an opaque
+        cal://0/NNN URL; see create-calendar.stable-url), so re-resolving it
+        would poll the wrong URL.
+
+        Exactly one accessibility probe is issued per iteration.
+        """
+        assert (cal_id is None) != (cal is None), "pass exactly one of cal_id / cal"
+        waited = 0
+        while True:
+            probe = cal if cal is not None else self.checker.principal.calendar(cal_id=cal_id)
+            accessible = self._calendar_is_accessible(probe)
+            if accessible == until_accessible or waited >= timeout:
+                return (probe if accessible else None), waited
+            time.sleep(1)
+            waited += 1
 
     def feature_check_result(self, feature, return_type=bool):
         """The value we've found for the feature through checking -

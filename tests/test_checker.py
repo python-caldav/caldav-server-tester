@@ -626,14 +626,22 @@ class TestWriteDelay:
         client.request("https://example.com/caldav/x", "PUT")
         mock_sleep.assert_not_called()
 
-    def test_write_delay_is_reported_as_observed_quirk(self) -> None:
+    def test_construction_alone_claims_no_observation(self) -> None:
+        """Reporting the delay is CheckWriteDelay's job, not the constructor's.
+
+        The constructor installs the sleep, but recording "this server has a
+        write delay" is an observation, and observations belong to the check
+        that made one - CheckWriteDelay measures it, and falls back to
+        reporting the configured value where it cannot (see
+        tests/test_write_delay_probe.py).  Recording it here would also make
+        the feature look already-checked to the machinery that verifies every
+        declared feature was probed.
+        """
         client = self._client(delay=10)
         checker = ServerQuirkChecker(client)
-        observed = checker.features_checked.is_supported("write-delay", dict)
-        assert observed.get("support") == "quirk"
-        assert observed.get("delay") == 10
-        text = checker.report(return_what=str)
-        assert "write-delay" in text
+        assert "write-delay" not in checker.features_checked.dotted_feature_set_list()
+        ## ... but the sleep is installed all the same
+        assert client._write_delay == 10
 
     @patch("caldav_server_tester.checker.time.sleep")
     def test_also_wraps_extra_clients(self, mock_sleep) -> None:
@@ -758,3 +766,84 @@ class TestPurgeProbeCalendars:
 
         assert removed == 1
         good.delete.assert_called_once()
+
+
+class TestWriteDelaySuspension:
+    """A probe that measures the server's own delay must not be smoothed over.
+
+    Every other check wants the configured write-delay honoured, so a
+    read-back sees settled data.  The probes that exist to *measure* the delay
+    want the opposite: with the sleep in place the calendar is always there by
+    the time the poll runs, the observed delay is 0, and the checker reports
+    "full" for the two features the delay was configured because of.
+    """
+
+    def _client(self, delay=None):
+        client = Mock()
+        features = FeatureSet()
+        if delay is not None:
+            features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": delay}}, collapse=False)
+        client.features = features
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        client.request = Mock(name="request", return_value="response")
+        return client
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_suspends_and_restores_the_delay(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        checker = ServerQuirkChecker(client)
+
+        with checker.without_write_delay():
+            client.request("https://example.com/caldav/x", "PUT")
+            mock_sleep.assert_not_called()
+
+        client.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_restores_the_delay_after_an_exception(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        checker = ServerQuirkChecker(client)
+
+        with pytest.raises(ValueError):
+            with checker.without_write_delay():
+                raise ValueError("a probe blew up")
+
+        client.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_suspends_extra_clients_too(self, mock_sleep) -> None:
+        client = self._client(delay=10)
+        extra = self._client(delay=10)
+        checker = ServerQuirkChecker(client, extra_clients=[extra])
+
+        with checker.without_write_delay():
+            extra.request("https://example.com/caldav/x", "PUT")
+            mock_sleep.assert_not_called()
+
+        extra.request("https://example.com/caldav/x", "PUT")
+        mock_sleep.assert_called_once_with(10)
+
+    def test_is_a_no_op_without_a_configured_delay(self) -> None:
+        client = self._client(delay=None)
+        checker = ServerQuirkChecker(client)
+        assert checker.configured_write_delay == 0
+        with checker.without_write_delay():
+            pass
+
+    def test_configured_delay_is_readable(self) -> None:
+        checker = ServerQuirkChecker(self._client(delay=16))
+        assert checker.configured_write_delay == 16
+
+    def test_poll_timeout_covers_the_configured_delay(self) -> None:
+        """A 10s poll cannot observe a 16s delay.
+
+        With the delay suspended the probe sees the server's raw behaviour, so
+        the poll has to be willing to wait longer than the delay someone
+        configured - otherwise suspending it turns Infomaniak from "delayed
+        creation" into "creation does not work".
+        """
+        assert ServerQuirkChecker(self._client(delay=16)).delay_probe_timeout >= 16
+        assert ServerQuirkChecker(self._client(delay=None)).delay_probe_timeout == 10

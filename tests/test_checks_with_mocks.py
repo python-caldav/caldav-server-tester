@@ -1343,3 +1343,277 @@ class TestCleanupDoesNotDeleteUserData:
         csc_obj.delete.assert_called_once()
         real_event.delete.assert_not_called()
         real_journal.delete.assert_not_called()
+
+
+class TestDelayedDeleteIsAQuirk:
+    """A measured write delay is a quirk, not fragile.
+
+    "fragile" means slightly non-deterministic - it sometimes works and
+    sometimes not.  Once we have established that the calendar IS deleted and
+    only the timing varies, the behaviour is deterministic and the verdict is
+    "quirk": supported, but the client has to handle it specially.  The
+    distinction matters beyond the wording, since only 'quirk' counts as
+    positive in FeatureSet (_POSITIVE_STATUSES) - a fragile verdict makes
+    is_supported("delete-calendar") False and silently skips the
+    free-namespace probe.
+    """
+
+    def _checker(self) -> tuple[ServerQuirkChecker, Mock]:
+        client = Mock()
+        client.features = FeatureSet()
+        checker = ServerQuirkChecker(client, debug_mode=None)
+        checker.principal = Mock()
+        checker._checks_run.add(CheckGetCurrentUserPrincipal)
+        ## _probe_make_delete settles this before calling _try_make_calendar, and
+        ## the delete verdict reads it: a server that auto-creates a calendar on
+        ## access cannot be probed for deletion at all.  Without it the feature
+        ## inherits "full" from create-calendar and the delete branch is skipped.
+        checker._features_checked.set_feature("create-calendar.auto", False)
+        return checker, checker.principal
+
+    def test_delayed_deletion_is_quirk_with_observed_delay(self, monkeypatch) -> None:
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: None)
+
+        ## Creation is immediate; after the DELETE the calendar keeps answering
+        ## for three more probes before it finally 404s.  The first of those is
+        ## the "was it deleted?" check, so the poll itself waits two seconds.
+        state = {"n": 0, "deleted": False}
+
+        def events():
+            if not state["deleted"]:
+                return []
+            state["n"] += 1
+            if state["n"] > 3:
+                raise NotFoundError("gone at last")
+            return []
+
+        cal = Mock()
+        cal.events.side_effect = events
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+
+        check = CheckMakeDeleteCalendar(checker)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: state.__setitem__("deleted", True))
+        check._try_make_calendar(cal_id="x")
+
+        observed = checker.features_checked.is_supported("delete-calendar", dict)
+        assert observed["support"] == "quirk"
+        assert "delayed deletion" in observed["behaviour"]
+        assert observed["delay"] == 2
+        ## quirk is a positive status, so the free-namespace probe is no longer
+        ## silently skipped on such servers
+        assert checker.features_checked.is_supported("delete-calendar") is True
+
+    def test_trashbin_is_still_unknown(self, monkeypatch) -> None:
+        """A calendar that never disappears is not a delay - verdict unchanged."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: None)
+
+        cal = Mock()
+        cal.events.return_value = []
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+
+        CheckMakeDeleteCalendar(checker)._try_make_calendar(cal_id="x")
+
+        observed = checker.features_checked.is_supported("delete-calendar", dict)
+        assert observed["support"] == "unknown"
+        assert "trashbin" in observed["behaviour"]
+
+    def test_delete_exception_that_clears_is_a_measured_quirk(self, monkeypatch) -> None:
+        """Cyrus/Nextcloud: "deleting a recently created calendar fails".
+
+        The first DELETE raises, a later one succeeds.  That is the same
+        asynchronous-write shape, so measure how long it takes instead of
+        flatly sleeping 10s and retrying once.
+        """
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+
+        attempts = {"n": 0}
+
+        def raw_delete(_self):
+            attempts["n"] += 1
+            if attempts["n"] <= 2:
+                raise DAVError("too soon after creation")
+
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", raw_delete)
+
+        cal = Mock()
+        cal.events.return_value = []
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+
+        CheckMakeDeleteCalendar(checker)._try_make_calendar(cal_id="x")
+
+        observed = checker.features_checked.is_supported("delete-calendar", dict)
+        assert observed["support"] == "quirk"
+        assert observed["delay"] == 2
+        assert "recently created" in observed["behaviour"]
+
+    def test_delete_that_never_succeeds_is_unsupported(self, monkeypatch) -> None:
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+
+        def raw_delete(_self):
+            raise DAVError("never works")
+
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", raw_delete)
+
+        cal = Mock()
+        cal.events.return_value = []
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+
+        CheckMakeDeleteCalendar(checker)._try_make_calendar(cal_id="x")
+
+        assert checker.features_checked.is_supported("delete-calendar", str) == "unsupported"
+
+
+class TestCalendarProbeSuspendsWriteDelay:
+    """CheckMakeDeleteCalendar measures the delay, so it must not enjoy it."""
+
+    def test_probe_runs_with_the_configured_delay_suspended(self, monkeypatch) -> None:
+        import caldav_server_tester.checks as checks_mod
+
+        client = Mock()
+        features = FeatureSet()
+        features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": 16}}, collapse=False)
+        client.features = features
+        client.request = Mock(return_value="response")
+        checker = ServerQuirkChecker(client, debug_mode=None)
+        checker.principal = Mock()
+        checker._checks_run.add(CheckGetCurrentUserPrincipal)
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: None)
+
+        cal = Mock()
+        cal.events.return_value = []
+        checker.principal.calendar.return_value = cal
+        checker.principal.make_calendar.return_value = cal
+        checker.principal.calendars.return_value = [cal]
+
+        seen = []
+        original = checks_mod.CheckMakeDeleteCalendar._probe_make_delete
+
+        def spy(self):
+            seen.append(client._write_delay)
+            return original(self)
+
+        monkeypatch.setattr(checks_mod.CheckMakeDeleteCalendar, "_probe_make_delete", spy)
+        CheckMakeDeleteCalendar(checker)._run_check()
+
+        assert seen == [0]  ## suspended while probing ...
+        assert client._write_delay == 16  ## ... and restored afterwards
+
+    def test_poll_timeout_outwaits_the_configured_delay(self) -> None:
+        """Otherwise suspending the delay reports a slow server as a broken one."""
+        client = Mock()
+        features = FeatureSet()
+        features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": 16}}, collapse=False)
+        client.features = features
+        client.request = Mock(return_value="response")
+        assert ServerQuirkChecker(client, debug_mode=None).delay_probe_timeout == 32
+
+
+class TestLeftoverCalendarEvidence:
+    """A calendar left behind by a previous run is evidence about this one.
+
+    The probe waits a bounded time for MKCALENDAR to take effect.  When that
+    runs out the honest reading is ambiguous: either creation does not work, or
+    it works and is slower than we waited.  A calendar sitting there under our
+    own stable cal_id settles it - a previous run created it, gave up waiting,
+    and never came back to delete it, so the calendar did materialise, just too
+    late to be seen.  Without this the run reports create-calendar as
+    unsupported and leaks yet another orphan.
+    """
+
+    def _checker(self) -> tuple[ServerQuirkChecker, Mock]:
+        client = Mock()
+        client.features = FeatureSet()
+        client.request = Mock(return_value="response")
+        checker = ServerQuirkChecker(client, debug_mode=None)
+        checker.principal = Mock()
+        checker._checks_run.add(CheckGetCurrentUserPrincipal)
+        return checker, checker.principal
+
+    @staticmethod
+    def _never_materialises(preexisting: bool) -> Mock:
+        """A calendar that answers only until the probe wipes it."""
+        state = {"wiped": not preexisting}
+
+        def events():
+            if state["wiped"]:
+                raise NotFoundError("Node could not be found")
+            return []
+
+        cal = Mock()
+        cal.events.side_effect = events
+        cal.delete.side_effect = lambda: state.__setitem__("wiped", True)
+        return cal
+
+    def test_leftover_makes_it_a_delayed_creation_quirk(self, monkeypatch) -> None:
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+
+        cal = self._never_materialises(preexisting=True)
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+        principal.calendars.return_value = [cal]
+
+        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+
+        observed = checker.features_checked.is_supported("create-calendar", dict)
+        assert observed["support"] == "quirk"
+        assert "delayed creation" in observed["behaviour"]
+        assert "previous run" in observed["behaviour"]
+        ## The delete question cannot be answered when the calendar never showed
+        ## up, but it must not be answered *wrongly* either.
+        assert checker.features_checked.is_supported("delete-calendar", str) == "unknown"
+
+    def test_no_leftover_still_means_unsupported(self, monkeypatch) -> None:
+        """Without the evidence, a calendar that never appears is unsupported."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+
+        cal = self._never_materialises(preexisting=False)
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+        principal.calendars.return_value = [cal]
+
+        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+
+        assert checker.features_checked.is_supported("create-calendar", str) == "unsupported"
+
+    def test_leftover_with_a_working_creation_changes_nothing(self, monkeypatch) -> None:
+        """A leftover only means a previous run crashed if creation works now."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: None)
+
+        cal = Mock()
+        cal.events.return_value = []
+        principal.calendar.return_value = cal
+        principal.make_calendar.return_value = cal
+        principal.calendars.return_value = [cal]
+
+        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+
+        assert checker.features_checked.is_supported("create-calendar", str) == "full"

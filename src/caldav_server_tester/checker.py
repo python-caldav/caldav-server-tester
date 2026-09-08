@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import inspect
 import logging
@@ -135,17 +136,53 @@ class ServerQuirkChecker:
         ## silently smoothing over the fragility a naive client would hit.
         write_delay_config = self._client_obj.features.is_supported("write-delay", return_type=dict)
         write_delay = write_delay_config.get("delay", 0) if write_delay_config.get("behaviour") == "delay" else 0
+        self.configured_write_delay = write_delay
+        ## The observed value is set by CheckWriteDelay, which measures it - and
+        ## falls back to reporting this configured value where it cannot.  It is
+        ## deliberately not recorded here: an observation belongs to the check
+        ## that made it, and recording it up front would make the feature look
+        ## already-checked to the machinery that verifies every declared feature
+        ## was probed.
         if write_delay:
             for client in (self._client_obj, *self._extra_clients):
                 _install_write_delay(client, write_delay)
-            self._features_checked.set_feature(
-                "write-delay",
-                {
-                    "support": "quirk",
-                    "behaviour": f"writes processed asynchronously; waiting ~{write_delay}s after every write",
-                    "delay": write_delay,
-                },
-            )
+
+    @property
+    def delay_probe_timeout(self):
+        """How long a probe measuring the server's own write delay should wait.
+
+        With the configured delay suspended (see without_write_delay) the probe
+        sees the server's raw behaviour, so it has to be willing to wait longer
+        than whoever wrote the profile decided a client should wait.  A 10s poll
+        cannot observe a 16s delay: suspending the delay would turn Infomaniak
+        from "delayed creation" into "creation does not work".
+        """
+        return max(10, 2 * self.configured_write_delay)
+
+    @contextlib.contextmanager
+    def without_write_delay(self):
+        """Run a block with the configured write-delay suspended.
+
+        Every ordinary check wants the delay honoured, so its read-backs see
+        settled data.  The probes that exist to *measure* the delay want the
+        opposite: with the sleep in place the calendar has always materialised
+        by the time the poll runs, the observed delay is 0, and the run reports
+        "full" for exactly the features the delay was configured because of.
+
+        Suspension is a value change, not an unwrapping - the wrapper reads the
+        delay off the client on every request - so it costs nothing and nests
+        harmlessly.  Extra (scheduling) clients live on the same asynchronous
+        server and are suspended along with the main one.
+        """
+        clients = [self._client_obj, *self._extra_clients]
+        saved = [getattr(client, "_write_delay", 0) for client in clients]
+        try:
+            for client in clients:
+                client._write_delay = 0
+            yield
+        finally:
+            for client, delay in zip(clients, saved):
+                client._write_delay = delay
 
     def check_all(self):
         classes = [
