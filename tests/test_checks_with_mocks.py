@@ -370,7 +370,7 @@ class TestCheckMakeDeleteCalendar:
                   distinction.  If False the canonical segment equals the cal_id
                   (normal server) -> stable.
         name_sticks: if False, the display name given at creation is not applied.
-        get_displayname_raises: if True, the direct get_display_name() call on the
+        get_displayname_raises: if True, the direct DAV:displayname read on the
                   calendar object raises an exception (simulating no PROPFIND support).
         make_calendar_raises: if True, creating the probe calendar raises a DAVError
                   (e.g. a server that needs mkcol, or refuses a name= at creation).
@@ -414,6 +414,7 @@ class TestCheckMakeDeleteCalendar:
             direct_cal_mock.events.side_effect = DAVError("cal_id not found")
         if get_displayname_raises:
             direct_cal_mock.get_display_name.side_effect = Exception("not supported")
+            direct_cal_mock.get_property.side_effect = DAVError("PROPFIND refused")
         else:
             direct_cal_mock.get_display_name.return_value = "some-name"
         principal.calendar.return_value = direct_cal_mock
@@ -432,6 +433,7 @@ class TestCheckMakeDeleteCalendar:
                     # A server with no PROPFIND displayname support cannot be
                     # found by display name either - model that consistently.
                     c.get_display_name.side_effect = Exception("not supported")
+                    c.get_property.side_effect = DAVError("PROPFIND refused")
                 else:
                     c.get_display_name.return_value = created["name"]
                 cals.append(c)
@@ -489,10 +491,14 @@ class TestCheckMakeDeleteCalendar:
         assert checker.features_checked.is_supported("propfind.displayname")
 
     def test_get_displayname_unsupported(self) -> None:
-        """Server raises on get_display_name() — propfind.displayname is unsupported."""
+        """The server raises on the PROPFIND — that is ungraceful, not unsupported.
+
+        It answered, with an error the client can catch; "unsupported" would
+        claim it silently ignored us.
+        """
         checker, client, principal = self.create_checker_with_principal()
         self._run_displayname_probe(checker, principal, relocate=False, get_displayname_raises=True)
-        assert not checker.features_checked.is_supported("propfind.displayname")
+        assert checker.features_checked.is_supported("propfind.displayname", str) == "ungraceful"
 
     def test_set_displayname_probe_calendar_creation_fails(self) -> None:
         """If the probe calendar can't be created (e.g. Infomaniak), the probe

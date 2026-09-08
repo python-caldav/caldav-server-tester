@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
-from caldav.elements import ical
+from caldav.elements import dav, ical
 from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
 from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
@@ -567,7 +567,7 @@ class CheckMakeDeleteCalendar(Check):
         else:
             existing = self._find_existing_calendar()
             if existing is not None:
-                self._probe_propfind_displayname(existing)
+                self._probe_propfind_displayname(existing, name_was_set=False)
             else:
                 self.set_feature(
                     "propfind.displayname",
@@ -724,24 +724,46 @@ class CheckMakeDeleteCalendar(Check):
         """
         return self.checker._features_checked.is_supported("propfind.displayname", str) in ("full", "quirk")
 
-    def _probe_propfind_displayname(self, cal):
+    def _probe_propfind_displayname(self, cal, name_was_set=True):
         """Probe ``propfind.displayname`` against an existing calendar collection.
 
         Reading the ``DAV:displayname`` property is an ordinary PROPFIND on any
         collection - it does not require us to have created the calendar - so we
         can determine this even on servers that refuse calendar creation.
+
+        ``name_was_set`` says whether *we* put a display name on this collection.
+        On the fallback path we probe an arbitrary calendar of the user's, which
+        may simply not have one - reading that back as "broken" would blame the
+        server for the absence of a property nobody set.
         """
         try:
-            fetched = cal.get_display_name()
-        except Exception:
-            self.set_feature("propfind.displayname", False)
+            ## Not get_display_name(): it reads with use_cached=True and may
+            ## answer from the cache without issuing the PROPFIND this feature
+            ## is about.
+            fetched = cal.get_property(dav.DisplayName(), use_cached=False)
+        except DAVError as e:
+            ## The server answered, with an error.  Catchable, so "ungraceful".
+            self.set_feature("propfind.displayname", {"support": "ungraceful", "behaviour": str(e)})
+            return
+        except Exception as e:
+            ## A dropped connection or a client-side failure says nothing about
+            ## whether the server supports the property.
+            self.set_feature("propfind.displayname", {"support": "unknown", "behaviour": str(e)})
             return
         if fetched is not None:
             self.set_feature("propfind.displayname", True)
-        else:
+        elif name_was_set:
             self.set_feature(
                 "propfind.displayname",
                 {"support": "broken", "behaviour": "PROPFIND returns no displayname value"},
+            )
+        else:
+            self.set_feature(
+                "propfind.displayname",
+                {
+                    "support": "unknown",
+                    "behaviour": "the calendar probed has no display name set, so nothing could be read back",
+                },
             )
 
     def _find_existing_calendar(self):
@@ -826,6 +848,17 @@ class CheckMakeDeleteCalendar(Check):
                     pass
             return None
 
+        def _calendar_urls():
+            """Canonical URLs of every calendar the principal lists, or None.
+
+            None means the listing itself failed - which is not evidence about
+            any URL, and must not be read as "no other URL exists".
+            """
+            try:
+                return {str(c.url).rstrip("/") for c in self.checker.principal.calendars()}
+            except Exception:
+                return None
+
         def _cleanup():
             try:
                 self.checker.principal.calendar(cal_id=cal_id).delete()
@@ -855,9 +888,13 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("create-calendar.stable-url", unknown)
             existing = self._find_existing_calendar()
             if existing is not None:
-                self._probe_propfind_displayname(existing)
+                self._probe_propfind_displayname(existing, name_was_set=False)
             else:
                 self.set_feature("propfind.displayname", unknown)
+
+        ## Snapshot the collection list before creating, so a relocated calendar
+        ## can be identified by its arrival even when the display name is no help.
+        before_urls = _calendar_urls()
 
         try:
             self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
@@ -884,12 +921,22 @@ class CheckMakeDeleteCalendar(Check):
             ## materialised, or the display name did not stick.
             if probe_cal is None:
                 _fallback_displayname("probe calendar did not become queryable")
+                ## set-displayname is genuinely unprobed, but stable-url is not:
+                ## the calendar was created and the requested cal_id does not
+                ## resolve, which is what an unstable URL looks like from here.
+                self.set_feature(
+                    "create-calendar.stable-url",
+                    {
+                        "support": "unsupported",
+                        "behaviour": "the calendar was created, but the requested cal_id never became reachable",
+                    },
+                )
                 _cleanup()
                 return
-            ## cal_id is reachable but the name is not retained: set-displayname
-            ## is unsupported.  No relocation was triggered (Zimbra/OX only move
-            ## the URL when a name sticks), so the calendar sits at the requested
-            ## cal_id - the URL is stable.
+            ## cal_id is reachable but the name is not retained, so the name is
+            ## no route to the canonical URL.  Rather than inferring stability
+            ## from two named servers' habits, look for a collection that arrived
+            ## since the snapshot: that is where the server actually put it.
             self._probe_propfind_displayname(probe_cal)
             if self._displayname_verdict_is_measurable():
                 self.set_feature("create-calendar.set-displayname", False)
@@ -903,7 +950,21 @@ class CheckMakeDeleteCalendar(Check):
                         "behaviour": "DAV:displayname is not readable on this server, so the name could not be verified",
                     },
                 )
-            self.set_feature("create-calendar.stable-url", True)
+            after_urls = _calendar_urls()
+            arrived = (after_urls - before_urls) if (after_urls is not None and before_urls is not None) else set()
+            relocated = [u for u in arrived if u.rsplit("/", 1)[-1] != cal_id]
+            if relocated:
+                self.set_feature(
+                    "create-calendar.stable-url",
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"the calendar was created at a different URL ({relocated[0]})",
+                    },
+                )
+            else:
+                ## Reachable at the requested cal_id, and nothing indicates it is
+                ## served anywhere else.  That is the stable case.
+                self.set_feature("create-calendar.stable-url", True)
             _cleanup()
             return
 
