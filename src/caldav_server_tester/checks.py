@@ -142,7 +142,12 @@ def url_object(cal, uid, obj_class=None):
     ## Quote the UID exactly as the library does when it PUTs an object
     ## (_generate_url -> _quote_uid), or this "direct URL" addresses a resource
     ## that is not there for any UID containing a character needing escaping.
-    return obj_class(cal.client, url=cal.url.join(_quote_uid(uid) + ".ics"), parent=cal)
+    ## _quote_uid branches on at_spelling_to_mint(features), so the features must
+    ## be passed or the two spellings diverge: the library PUTs to the literal
+    ## "@" URL while this builds the "%40" one, on exactly the servers the
+    ## url.encode-at probes exist for.
+    features = cal.client.features if cal.client is not None else None
+    return obj_class(cal.client, url=cal.url.join(_quote_uid(uid, features) + ".ics"), parent=cal)
 
 
 def resolve_cu_address(principal):
