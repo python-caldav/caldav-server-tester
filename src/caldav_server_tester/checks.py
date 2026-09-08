@@ -319,13 +319,65 @@ class CheckWellKnown(Check):
             self.set_feature("well-known", {"support": "unknown", "behaviour": f"request failed: {e}"})
             return
 
+        def points_at_caldav(target):
+            """Does an OPTIONS on `target` advertise calendar-access?
+
+            Returns True, False, or None when the question could not be put.
+            RFC 4791 section 5.1 requires a CalDAV server to advertise
+            ``calendar-access`` in the DAV: response header, so this is what
+            tells a real discovery endpoint from a login page or an SPA that
+            answers 200 for every path.
+            """
+            try:
+                probe = self.client.session.request("OPTIONS", target, allow_redirects=True, timeout=10)
+            except Exception:
+                return None
+            return "calendar-access" in probe.headers.get("DAV", "").lower()
+
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("Location", "")
-            self.set_feature("well-known", {"support": "full", "behaviour": f"redirects to {location}"})
+            if not location:
+                self.set_feature(
+                    "well-known",
+                    {"support": "unsupported", "behaviour": f"{response.status_code} with no Location header"},
+                )
+                return
+            target = urllib.parse.urljoin(well_known_url, location)
+            verdict = points_at_caldav(target)
+            if verdict is None:
+                self.set_feature(
+                    "well-known",
+                    {"support": "unknown", "behaviour": f"redirects to {location}, which could not be reached"},
+                )
+            elif verdict:
+                self.set_feature("well-known", {"support": "full", "behaviour": f"redirects to {location}"})
+            else:
+                self.set_feature(
+                    "well-known",
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"redirects to {location}, which does not advertise calendar-access",
+                    },
+                )
         elif response.status_code == 200:
-            self.set_feature(
-                "well-known", {"support": "full", "behaviour": "returns 200 OK directly at /.well-known/caldav"}
-            )
+            verdict = points_at_caldav(well_known_url)
+            if verdict is None:
+                self.set_feature(
+                    "well-known",
+                    {"support": "unknown", "behaviour": "200 OK, but the endpoint could not be re-probed"},
+                )
+            elif verdict:
+                self.set_feature(
+                    "well-known", {"support": "full", "behaviour": "returns 200 OK directly at /.well-known/caldav"}
+                )
+            else:
+                self.set_feature(
+                    "well-known",
+                    {
+                        "support": "unsupported",
+                        "behaviour": "200 OK at /.well-known/caldav, but it does not advertise calendar-access",
+                    },
+                )
         elif response.status_code == 404:
             self.set_feature("well-known", False)
         else:

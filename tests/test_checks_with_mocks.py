@@ -1133,14 +1133,24 @@ class TestCheckIsNotDefined:
 class TestCheckWellKnown:
     """Test CheckWellKnown with mocked HTTP responses"""
 
-    def create_checker_with_mock_client(self, url: str = "https://caldav.example.com/dav/") -> tuple:
+    def create_checker_with_mock_client(
+        self, url: str = "https://caldav.example.com/dav/", dav_header: str = "1, 2, 3, calendar-access"
+    ) -> tuple:
+        """``dav_header`` is what an OPTIONS on the discovery target answers with.
+
+        The default advertises calendar-access, i.e. discovery really landed on
+        a CalDAV server; pass something else for a target that does not.
+        """
         client = Mock()
         client.features = FeatureSet()
         client.url = url
+        options = Mock()
+        options.headers = {"DAV": dav_header}
+        client.session.request.return_value = options
         checker = ServerQuirkChecker(client, debug_mode=None)
         return checker, client
 
-    def test_redirect_sets_feature_full(self) -> None:
+    def test_redirect_to_a_caldav_server_is_full(self) -> None:
         checker, client = self.create_checker_with_mock_client()
         mock_response = Mock()
         mock_response.status_code = 301
@@ -1152,7 +1162,31 @@ class TestCheckWellKnown:
         result = checker.features_checked.is_supported("well-known", str)
         assert result == "full"
 
-    def test_200_sets_feature_full(self) -> None:
+    def test_redirect_to_something_that_is_not_caldav_is_unsupported(self) -> None:
+        """A front-end that sends unknown paths to /login answers the GET with a
+        redirect too - discovery that lands there has not worked."""
+        checker, client = self.create_checker_with_mock_client(dav_header="1, 2")
+        mock_response = Mock()
+        mock_response.status_code = 302
+        mock_response.headers = {"Location": "/login"}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unsupported"
+
+    def test_redirect_without_a_location_is_unsupported(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        mock_response = Mock()
+        mock_response.status_code = 301
+        mock_response.headers = {}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unsupported"
+
+    def test_200_from_a_caldav_server_is_full(self) -> None:
         checker, client = self.create_checker_with_mock_client()
         mock_response = Mock()
         mock_response.status_code = 200
@@ -1162,6 +1196,30 @@ class TestCheckWellKnown:
         CheckWellKnown(checker).run_check()
 
         assert checker.features_checked.is_supported("well-known", str) == "full"
+
+    def test_200_from_something_that_is_not_caldav_is_unsupported(self) -> None:
+        """An SPA serving index.html for every path answers 200 here."""
+        checker, client = self.create_checker_with_mock_client(dav_header="")
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        client.session.get.return_value = mock_response
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unsupported"
+
+    def test_target_that_cannot_be_reached_is_unknown(self) -> None:
+        checker, client = self.create_checker_with_mock_client()
+        mock_response = Mock()
+        mock_response.status_code = 301
+        mock_response.headers = {"Location": "/dav/"}
+        client.session.get.return_value = mock_response
+        client.session.request.side_effect = Exception("Connection refused")
+
+        CheckWellKnown(checker).run_check()
+
+        assert checker.features_checked.is_supported("well-known", str) == "unknown"
 
     def test_404_sets_feature_unsupported(self) -> None:
         checker, client = self.create_checker_with_mock_client()
