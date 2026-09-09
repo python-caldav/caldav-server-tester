@@ -198,3 +198,23 @@ server answered rather than refused), while 5xx, a lost connection and
 rate-limiting are `unknown`.  Then every handler in the file goes through it.
 Worth its own round, and it will move recorded verdicts on servers that were
 merely unwell during a run.
+
+# One standard for placeholder URLs in fixtures and docstrings
+
+Test fixtures and docstrings invent a host whenever they need a URL, and every
+new invention is a link the `lychee` pre-push hook tries to resolve and then
+fails on.  `.lycheeignore` has three such hosts in it already
+(`https://host/`, `https://x/dav/`, `http://localhost:5232/`) and grew two more
+in September 2026 (`http://dav/`, `https://h/`) — one of them only after a push
+was refused with the commits already approved.
+
+Standardise on `example.com`, which RFC 2606 §3 reserves for exactly this and
+which link checkers know not to chase, and the ignore list stops growing.
+`.invalid` (RFC 2606 §2) would also work and reads more explicitly as
+unresolvable, but `example.com` is the more familiar convention and the point is
+to have *one*.
+
+The work is a sweep of `tests/` and the docstrings in
+`src/caldav_server_tester/`, plus dropping the placeholder entries from
+`.lycheeignore`.  Nothing depends on the current hostnames — they are never
+connected to — so it is a rename and a test run.
