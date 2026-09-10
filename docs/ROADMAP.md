@@ -113,6 +113,13 @@ always reports and always cleans up, and the `url.encode-at` probe.
    its definition silently records nothing.  Estimates below include the library
    side of the change; they do *not* include library work that would be needed
    for its own sake (see the Risks section on where the boundary sits).
+
+   That is a dependency, not an order of work.  Nothing is put in stone on the
+   library side first: an item is developed on **corresponding branches in both
+   repositories at once**, because probing real servers is what reveals that a
+   feature was defined wrongly, and the per-server feature matrix can only be
+   filled in once the probe exists and has been run.  The order applies to the
+   *releases*, not to the commits - caldav first, then the tool.
 2. **A wrong verdict is worse than no verdict.**  `unknown` is a legitimate,
    deliverable result.  Several fixes in v1.3.0 exist because a probe guessed
    where it should have abstained - `delete-calendar.free-namespace` inferred
@@ -222,7 +229,7 @@ likely to differ from each other come first.
 | 3.2 ETags and conditional requests | Probes for etag stability across reads, etag change on write, weak vs strong etags, `If-None-Match` on GET and on PUT-as-create, and collection etags | 5 | |
 | 3.3 RFC 3744 - WebDAV ACL | Probes for `DAV:acl` and `current-user-privilege-set` reporting, and for whether a granted privilege is actually enforced | 5 | |
 | 3.4 draft-pot-caldav-sharing-01 | Probes for calendar sharing: invite, reply, the shared-calendar properties, and what a sharee actually sees | 4 | |
-| 3.5 RFC 7986 - new iCalendar properties | Probes for whether the server preserves `COLOR`, `IMAGE`, `CONFERENCE`, `NAME` and `REFRESH-INTERVAL` through a save/load round-trip - and for the calendar-level `calendar-color`/`calendar-order` properties already defined but unprobed | 3 | |
+| 3.5 RFC 7986 - new iCalendar properties | Probes for whether `COLOR`, `IMAGE`, `CONFERENCE` and the new parameters survive a save/load round-trip on a VEVENT, with control probes for an `X-` property and an unregistered one; research on what happens to the calendar-level properties (`NAME`, `SOURCE`, `REFRESH-INTERVAL`, `UID`, ...) on the `VCALENDAR` wrapper, and whatever keys that justifies; and the `VCALENDAR`-`UID`-as-identity peculiarity behind caldav `7326ba2`.  Fleshed out below | 3 | |
 | 3.6 RFC 7953 - VAVAILABILITY | Probes for storing a `VAVAILABILITY` component and for whether the server honours it in a free-busy query | 3 | |
 | 3.7 RFC 5689, RFC 8607, RFC 4331 | Extended MKCOL (create a calendar with properties in one request), managed attachments (`POST` with `add-member`, attachment lifecycle), and a research-only verdict on quota reporting | 4 | |
 
@@ -246,6 +253,166 @@ left in place and reporting `unknown` rather than `unsupported` - and the
 unspent hours move to 1.1 or to Phase 4.  Managed attachments (3.7) is the most
 likely candidate; ACL (3.3) the least, since ACL predates CalDAV and several
 servers ship it.
+
+### 3.5 in detail: RFC 7986
+
+This is the one Phase 3 item that has been through a planning round.  The notes
+below record what was decided and what still has to be researched, so the three
+hours are not spent rediscovering it.
+
+**What the RFC defines.**  New properties: `NAME` (VCALENDAR, multiple, one per
+`LANGUAGE`), `REFRESH-INTERVAL` (VCALENDAR, `VALUE=DURATION`), `SOURCE`
+(VCALENDAR, `VALUE=URI`), `COLOR` (VCALENDAR and the components, a CSS3 colour
+name), `IMAGE` (VCALENDAR and the components, `VALUE=URI` or `VALUE=BINARY`,
+media type `image/*`, multiple), `CONFERENCE` (VEVENT and VTODO only,
+`VALUE=URI`, multiple).  Properties extended to VCALENDAR: `DESCRIPTION`, `UID`,
+`LAST-MODIFIED`, `URL`, `CATEGORIES`.  New parameters: `DISPLAY` on `IMAGE`
+(BADGE - the default - GRAPHIC, FULLSIZE, THUMBNAIL), `EMAIL` on `ORGANIZER` and
+`ATTENDEE`, `FEATURE` on `CONFERENCE` (AUDIO, CHAT, FEED, MODERATOR, PHONE,
+SCREEN, VIDEO), `LABEL` on `CONFERENCE` and `IMAGE`.
+
+**What already exists.**  `CheckCalendarProperties` probes `calendar-color`,
+`calendar-color.hex` and `calendar-order` - the Apple/Mozilla *WebDAV* collection
+properties, which are not RFC 7986 and are no longer part of this item.
+`CheckRelatedTo` is the template every probe below follows: PUT a hand-written
+`VCALENDAR`, load it, count what came back, grade it, delete in a `finally`.
+
+**Feature naming.**  Optimise for leaving the maximum amount of configuration
+implicit: a hand-maintained per-server list of which iCalendar properties a
+server keeps is exactly what should not be built.  Almost every server will
+round-trip either all or none of the new component-level properties, while the
+VCALENDAR level is a genuinely separate question - so the split is by *where the
+property sits*, not by which property it is:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `save-load.event.rfc7986` | the RFC 7986 properties and parameters survive a round-trip on a VEVENT | `full` |
+| `save-load.event.rfc7986.image.binary` | split out only if a real server keeps some and drops others | - |
+| `save-load.event.x-property` | an `X-`prefixed property and an `X-` parameter survive | `full` |
+| `save-load.event.any-property` | a *non*-`X-` unregistered property survives (invalid iCalendar; a server is within its rights to drop it) | `unknown` |
+| `save-load.vcalendar` | grouping node; `full`, not probed - it is not clear what `unsupported` would even mean | `full` |
+| `save-load.vcalendar.rfc7986` | the calendar-level properties survive a round-trip on the wrapper | see below |
+| `save-load.vcalendar.x-property` / `.any-property` | the same two control probes at the wrapper level | as above |
+
+`X-` properties are *standard* (RFC 5545 §3.8.8.2): a server dropping one is
+breaking a rule, which is why that key defaults to `full` and a bare
+`CSC-PROBE:` does not.  Both are worth having, and both are worth having at both
+levels - a server may parse the wrapper and pass the component through verbatim,
+or the reverse.  VTODO, VJOURNAL, VALARM and VTIMEZONE are deliberately not
+probed; the component-level answer is not expected to vary by component type,
+and if it does, that is a finding for a later item rather than eight more keys.
+
+This breaks with the existing `save-load.icalendar.related-to`, which is an
+RFC 5545 component property sitting under an `icalendar` node.  **The rename to
+`save-load.event.related-to` should ride with item 1.3**, which is already doing
+a coordinated cross-repository rename and knows how to land one.
+
+**Defaults.**  RFC 7986 is an established standard, so `full` is the right
+default for its keys - the argument for `fragile` on `calendar-color` was that a
+non-standard extension should not clutter the matrix, and it does not apply
+here.  `save-load.event.any-property` is the oddball and defaults to `unknown`.
+Note that `unknown` reads as `False` through `is_supported(..., bool)`, so a
+skip-style gate in the caldav test suite abstains correctly - but a test that
+asserts the *negative* branch would not.  Verify that before relying on it.
+
+**Probe design.**
+
+* Grade generously on formatting.  `COLOR:BLACK` coming back as `black`, `Black`
+  or `#000000` is `full`; the tool is measuring whether the datum survived, not
+  how it was spelled.  Use a non-default `DISPLAY` value so a dropped default is
+  never mistaken for a dropped parameter.
+* `IMAGE;VALUE=BINARY` gets an 8x8 image, not a 1x1.  A server whose limit
+  excludes an 8x8 GIF does not meaningfully support inline images, and probing
+  `max-resource-size` (RFC 4791 §5.2.5) properly is out of scope here - which
+  also means a failure at this size should be reported as such rather than
+  silently graded as "no IMAGE support".
+* **Read the object back both by GET and by REPORT.**  A server that stores the
+  bytes verbatim can still regenerate `calendar-data` inside a
+  `calendar-multiget`/`calendar-query` response from a parsed model and drop
+  what it does not understand only there - and a client that finds its events by
+  searching would never see what it saved.  A divergence is `broken` with a
+  `behaviour` note.
+* If the property survives but its parameters do not, that is `fragile` with a
+  note, and a candidate for splitting a subkey out later - not a reason to
+  define the subkeys up front.
+
+**The VCALENDAR level: research before probes.**  A `VCALENDAR` in CalDAV is a
+recurrence set, not a calendar, so the calendar-level properties are being
+carried by something they were not designed for.  Four questions, in the order
+they should be answered against the docker test servers:
+
+1. Does any server *populate* these fields in what it returns - a `NAME` or
+   `COLOR` synthesised from the collection's own properties?
+2. Do they survive a PUT round-trip?
+3. Is there a mapping between the iCalendar properties and the WebDAV collection
+   properties - `NAME` ↔ `DAV:displayname`, `DESCRIPTION` ↔
+   `CALDAV:calendar-description`, `COLOR` ↔ the Apple `calendar-color`, `UID` ↔
+   the `cal_id`?  **No RFC defines such a mapping**, but the de-facto set exists:
+   for *subscribed* calendars sabre/dav (and therefore Baikal) stores exactly
+   `source`, `displayname`, `refreshrate`, `calendarorder` and `calendarcolor`
+   side by side - `{http://calendarserver.org/ns/}source` and `refreshrate`
+   being the WebDAV analogues of RFC 7986's `SOURCE` and `REFRESH-INTERVAL`.
+   Whether any server bridges the two representations is worth an hour of
+   looking, and the answer is a paragraph in the report either way.
+4. RFC 4791 §9.7 roots `comp-filter` at `VCALENDAR`, so a `prop-filter` on a
+   calendar-level property is expressible.  If the properties survive or are
+   populated, filtering on them can be probed - but that lands in item 4.3, not
+   here.
+
+Only after 1-3 is it clear how many keys `save-load.vcalendar.rfc7986` needs and
+what its default should be.  As many as the evidence demands, and no more.
+
+**The VCALENDAR `UID` trap.**  caldav commit `7326ba2` ("fix: no random UID on
+the VCALENDAR wrapper") is the most valuable single input to this item, and it
+is not a round-trip question.  `icalendar.Calendar.new()` adds an RFC 7986
+calendar-level `UID`; **Stalwart takes that UID to be the identity of the
+calendar object resource**, so a second save of the same object arrived carrying
+a fresh UID and was rejected with `412 no-uid-conflict`.  The library now builds
+the wrapper without one, which makes this a latent trap rather than a live bug -
+invisible to every existing probe and to every test, waiting for the next caller
+that builds its own wrapper.  It needs research before it needs a feature key:
+
+* Where does the server store that UID, and which of the two UIDs does it report
+  back?
+* Can one calendar hold two objects whose *component* UIDs differ but whose
+  wrapper UIDs collide, or the reverse?
+* Is Stalwart reading the first `UID` it meets in the stream, or specifically the
+  calendar-level one?
+
+Then a `server-peculiarity` key - `save.vcalendar-uid-is-identity` or similar -
+so the library can be told rather than having to remember.  Stalwart is in the
+caldav repository's `tests/docker-test-servers/`, so this is reproducible
+locally.
+
+**`CATEGORIES`, answered.**  Multiple `CATEGORIES` lines in a VEVENT were
+already legal under RFC 5545 §3.6.1, which lists `categories` among the
+properties that "MAY occur more than once"; the comma-separated form in §3.8.1.2
+is an additional convenience, not a restriction.  What RFC 7986 §5.6 added is
+`CATEGORIES` *at the VCALENDAR level*, where multiple properties are unioned.
+The interesting question that remains is whether a server's `text-match` finds a
+category that sits on the second line, and that belongs to `search.text.category`
+in item 4.3.
+
+**Other RFCs introducing calendar properties**, for the record: RFC 4791 §5.2
+(`calendar-description`, `calendar-timezone`, `supported-calendar-component-set`,
+`supported-calendar-data`, `max-resource-size`, the min/max date-time and
+instance limits), RFC 6638 (the `schedule-*` properties), RFC 6578
+(`sync-token`), RFC 4331 (quota), RFC 5397 (`current-user-principal`), RFC 3744
+(ACL), RFC 8607 (`managed-attachments-server-URL`), RFC 7809
+(`CALDAV:calendar-timezone-id`, `CALDAV:timezone-service-set`), and
+draft-pot-caldav-sharing-01 (the sharing properties).  Non-standard but widely
+implemented: `{http://apple.com/ns/ical/}calendar-color` and `calendar-order`,
+and the `{http://calendarserver.org/ns/}` set (`getctag`, `source`,
+`refreshrate`, `subscribed-strip-*`).  Most of these already have their own
+roadmap item; none of them defines an iCalendar-to-WebDAV mapping.
+
+**What the three hours buy.**  The component-level probe with its two control
+probes, the GET-vs-REPORT axis, the VCALENDAR-level research and whatever keys
+it justifies, and the `UID` peculiarity.  Deliberately deferred: filtering on
+calendar-level properties (item 4.3), per-property subkeys (only on evidence),
+and the full iCalendar-to-WebDAV mapping survey - which may well turn out to be
+worth more than the round-trip probes, and would then be raised as its own item
+rather than squeezed in here.
 
 ---
 
@@ -325,7 +492,7 @@ now sit in work the flat list did not name.
 | draft-pot-caldav-sharing-01 | 8 | 4 | Unchanged in ambition, but re-estimated as one probe family rather than a subsystem - and discounted for the real chance that no reachable server implements the draft, in which case the deliverable is the finding |
 | RFC 3744 | 5 | 5 | Unchanged |
 | RFC 7953 | 5 | 3 | Two probes (store a VAVAILABILITY; see whether free-busy honours it), on top of free-busy infrastructure that already exists |
-| RFC 7986 | 4 | 3 | Mostly a save/load round-trip over properties, on fixtures that already exist.  It also picks up `calendar-color` and `calendar-order`, which were already defined in the database |
+| RFC 7986 | 4 | 3 | Mostly a save/load round-trip over properties, on fixtures that already exist.  The `calendar-color`/`calendar-order` half of the original estimate is gone - those are Apple WebDAV collection properties rather than RFC 7986, and `CheckCalendarProperties` already probes them.  What replaced it is the `VCALENDAR` level: research first, keys afterwards (see [3.5 in detail](#35-in-detail-rfc-7986)) |
 | RFC 5689 | 4 | 4 | Merged with RFC 8607 and RFC 4331 into one line for the three smaller extensions |
 | RFC 8607 | 4 | ↑ | " |
 | RFC 4331 (research only) | 2 | ↑ | " |
@@ -377,9 +544,10 @@ a future maintainer knows the evidence is not reproducible.
 ### The two-repository split
 
 Nothing in this roadmap can ship from this repository alone.  Every feature needs
-its definition in `caldav/compatibility_hints.py` first, the two releases go out
-in lock-step, and two items (1.3 and 2.3) are outright broken if the halves land
-out of order.
+its definition in `caldav/compatibility_hints.py`, the two releases go out in
+lock-step - caldav first - and two items (1.3 and 2.3) are outright broken if the
+halves land out of order.  The development itself happens on corresponding
+branches in both repositories at once; see guiding constraint 1.
 
 There is also a budget boundary here.  `compatibility_hints.py` has known problems
 of its own - it carries a TODO saying it should be split into three files, another
