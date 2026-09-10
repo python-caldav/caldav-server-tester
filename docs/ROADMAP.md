@@ -648,5 +648,3 @@ funding, though the first priority will always be to get food on the table.
 - [`USAGE.md`](../USAGE.md) - all CLI options, output formats, and how to contribute a server profile
 - [`CHANGELOG.md`](../CHANGELOG.md) - the v1.3.0 baseline is the `[Unreleased]` section
 - [`docs/TODO.md`](TODO.md) - the `lookup.*` taxonomy discussion behind item 1.3
-- [`docs/code-review-2026-06-11.md`](code-review-2026-06-11.md) - the review behind items 1.2 and 5.1, with fix status tracked
-- [`docs/code-review-2026-03-13.md`](code-review-2026-03-13.md) - the earlier review
