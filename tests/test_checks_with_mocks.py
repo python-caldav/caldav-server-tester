@@ -1346,16 +1346,14 @@ class TestCleanupDoesNotDeleteUserData:
 
 
 class TestDelayedDeleteIsAQuirk:
-    """A measured write delay is a quirk, not fragile.
+    """A delete that only takes a while is a quirk, not fragile.
 
-    "fragile" means slightly non-deterministic - it sometimes works and
-    sometimes not.  Once we have established that the calendar IS deleted and
-    only the timing varies, the behaviour is deterministic and the verdict is
-    "quirk": supported, but the client has to handle it specially.  The
-    distinction matters beyond the wording, since only 'quirk' counts as
-    positive in FeatureSet (_POSITIVE_STATUSES) - a fragile verdict makes
-    is_supported("delete-calendar") False and silently skips the
-    free-namespace probe.
+    A "quirk" delete goes through on the one DELETE that was sent and only the
+    wait varies; "fragile" is for an outcome that is not deterministic at all.
+    Only 'quirk' counts as positive in FeatureSet (_POSITIVE_STATUSES), so a
+    fragile verdict makes is_supported("delete-calendar") False - the
+    free-namespace probe therefore asks with accept_fragile=True rather than
+    self-skipping.
     """
 
     def _checker(self) -> tuple[ServerQuirkChecker, Mock]:
@@ -1427,12 +1425,14 @@ class TestDelayedDeleteIsAQuirk:
         assert observed["support"] == "unknown"
         assert "trashbin" in observed["behaviour"]
 
-    def test_delete_exception_that_clears_is_a_measured_quirk(self, monkeypatch) -> None:
+    def test_delete_exception_that_clears_is_a_measured_fragility(self, monkeypatch) -> None:
         """Cyrus/Nextcloud: "deleting a recently created calendar fails".
 
-        The first DELETE raises, a later one succeeds.  That is the same
-        asynchronous-write shape, so measure how long it takes instead of
-        flatly sleeping 10s and retrying once.
+        The first DELETE raises, a later one succeeds.  Measure how long that
+        takes instead of flatly sleeping 10s and retrying once - and grade it
+        'fragile', not 'quirk': the outcome is not deterministic, where a quirk
+        goes through on the one request that was sent.  See
+        tests/test_delete_after_recreate.py.
         """
         import caldav_server_tester.checks as checks_mod
 
@@ -1456,7 +1456,7 @@ class TestDelayedDeleteIsAQuirk:
         CheckMakeDeleteCalendar(checker)._try_make_calendar(cal_id="x")
 
         observed = checker.features_checked.is_supported("delete-calendar", dict)
-        assert observed["support"] == "quirk"
+        assert observed["support"] == "fragile"
         assert observed["delay"] == 2
         assert "recently created" in observed["behaviour"]
 

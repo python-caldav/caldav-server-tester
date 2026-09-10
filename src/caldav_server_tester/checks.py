@@ -15,7 +15,7 @@ from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutErr
 from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
 
-from .checks_base import Check
+from .checks_base import Check, is_worse
 
 utc = timezone.utc
 
@@ -496,9 +496,8 @@ class CheckMakeDeleteCalendar(Check):
             pass
 
         ## create the calendar
-        try:
-            cal = self.checker.principal.make_calendar(cal_id=cal_id, **kwargs)
-        except DAVError:
+        cal, attempts, error = self.make_calendar_with_retries(cal_id, **kwargs)
+        if cal is None:
             ## calendar creation created an exception.  Maybe the calendar exists?
             cal = self.checker.principal.calendar(cal_id=cal_id)
             if not self._calendar_is_accessible(cal):
@@ -519,7 +518,19 @@ class CheckMakeDeleteCalendar(Check):
                 self._make_timed_out = True
                 return False
             calmade = True
-            if waited:
+            if attempts > 1:
+                ## Creation failed and then worked, with nothing done in
+                ## between: non-deterministic, which is what "fragile" says -
+                ## and it says no more than that.  The cause may be a timing
+                ## window, a cap on how many calendars an account may have, or
+                ## something deterministic nobody has probed for yet (a cal_id
+                ## length limit, say).  A client can only try a few times and
+                ## hope, which is what _make_calendar_with_retries did.
+                behaviour = f"creating a calendar failed {attempts - 1} time(s) before it succeeded ({error})"
+                if waited:
+                    behaviour += f", and was not queryable until ~{waited}s after that"
+                self.set_feature("create-calendar", {"support": "fragile", "behaviour": behaviour})
+            elif waited:
                 ## Supported, but the client must poll/wait for the calendar to
                 ## materialise — a quirk (is_supported(bool) stays True so the
                 ## downstream checks still run), not plain "full".
@@ -532,82 +543,132 @@ class CheckMakeDeleteCalendar(Check):
 
         assert cal
 
+        self.set_feature("delete-calendar", self._probe_delete(cal, cal_id))
+        return calmade
+
+    ## What the calendar being deleted was, for the behaviour texts.  The two
+    ## situations grade the same way but are worth telling apart in the report:
+    ## the second is the one a client provokes by tearing a calendar down and
+    ## making it again, and it is the only one Cyrus fails.
+    FRESHLY_CREATED = "a recently created calendar"
+    RE_CREATED = "a calendar re-created on a just-deleted id"
+
+    def _probe_delete(self, cal, cal_id, context=FRESHLY_CREATED):
+        """DELETE a calendar and grade what the server made of it.
+
+        Returns a value for the ``delete-calendar`` feature - ``True`` for a
+        server that just deletes it, otherwise a dict.  Used for both the
+        ordinary delete probe and the re-created one, so that the two cannot
+        drift apart in their grading.
+        """
         try:
             ## Use DAVObject.delete directly to bypass Calendar.delete()
             ## workarounds - we want to test the server's raw DELETE behavior
             DAVObject.delete(cal)
-            cal = self.checker.principal.calendar(cal_id=cal_id)
-            if not self._calendar_is_accessible(cal):
-                cal = None
-            ## Delete throw no exceptions, but was the calendar deleted?
-            if not cal or self.checker.features_checked.is_supported("create-calendar.auto"):
-                self.set_feature("delete-calendar")
-                ## Calendar probably deleted OK.
-                ## (in the case of non_existing_calendar_found, we should add
-                ## some events to the calendar, delete the calendar and make
-                ## sure no events are found on a new calendar with same ID)
-            else:
-                ## Calendar not deleted yet.  The server may delete it
-                ## asynchronously, so poll for up to ~10s rather than flatly
-                ## sleeping the whole time — most async deletes finish well under
-                ## that, and the final verdict is the same either way.
-                cal, waited = self._poll_calendar(
-                    cal_id=cal_id, until_accessible=False, timeout=self.checker.delay_probe_timeout
-                )
-                if cal is not None:
-                    ## Calendar not deleted, but no exception thrown.
-                    ## Perhaps it's a "move to thrashbin"-regime on the server
-                    self.set_feature(
-                        "delete-calendar",
-                        {"support": "unknown", "behaviour": "move to trashbin?"},
-                    )
-                else:
-                    ## Calendar was deleted, it just took some time.  That is a
-                    ## quirk, not "fragile": fragile means it sometimes works and
-                    ## sometimes not, while here it deterministically works and
-                    ## only the length of the wait varies.  The distinction is
-                    ## not just wording - only 'quirk' counts as a positive
-                    ## status, so a fragile verdict would make
-                    ## is_supported("delete-calendar") False and silently skip
-                    ## the free-namespace probe below.
-                    self.set_feature(
-                        "delete-calendar",
-                        {
-                            "support": "quirk",
-                            "behaviour": f"delayed deletion (still queryable for ~{waited}s)",
-                            "delay": waited,
-                        },
-                    )
-                    return calmade
-            return calmade
         except DAVError as e:
-            ## The DELETE itself raised.  On Cyrus and Nextcloud this is
-            ## "deleting a recently created calendar fails" - the same
-            ## asynchronous-write shape, the server just reports it rather than
-            ## quietly ignoring it - so retry once a second and measure how long
-            ## it takes, instead of flatly sleeping 10s and retrying once.
-            waited = 0
-            while True:
-                time.sleep(1)
-                waited += 1
-                try:
-                    DAVObject.delete(cal)
-                except DAVError as e2:
-                    if waited >= self.checker.delay_probe_timeout:
-                        self.set_feature("delete-calendar", False)
-                        return calmade
-                    continue
-                self.set_feature(
-                    "delete-calendar",
-                    {
-                        "support": "quirk",
+            return self._grade_failing_delete(cal, cal_id, e, context)
+
+        ## Delete throw no exceptions, but was the calendar deleted?
+        gone = self._calendar_gone(cal)
+        if gone is None:
+            ## Nothing observable on a server that auto-creates a calendar on
+            ## access, and the long-standing reading is to take a clean DELETE
+            ## at its word there.  The honest answer needs the probe the
+            ## comment below has been proposing: put objects in the calendar,
+            ## delete it, and see whether they come back with it.
+            return True
+        if gone:
+            ## Calendar probably deleted OK.
+            ## (in the case of non_existing_calendar_found, we should add
+            ## some events to the calendar, delete the calendar and make
+            ## sure no events are found on a new calendar with same ID)
+            return True
+
+        ## Calendar not deleted yet.  The server may delete it
+        ## asynchronously, so poll for up to ~10s rather than flatly
+        ## sleeping the whole time — most async deletes finish well under
+        ## that, and the final verdict is the same either way.
+        probe, waited = self._poll_calendar(cal=cal, until_accessible=False, timeout=self.checker.delay_probe_timeout)
+        if probe is not None:
+            ## Calendar not deleted, but no exception thrown.
+            ## Perhaps it's a "move to thrashbin"-regime on the server
+            return {"support": "unknown", "behaviour": "move to trashbin?"}
+        ## Calendar was deleted, it just took some time.  That is a quirk, not
+        ## "fragile": the client's single DELETE was enough and only the length
+        ## of the wait varies, where fragile means the request has to go out
+        ## again (see _grade_failing_delete).
+        return {
+            "support": "quirk",
+            "behaviour": f"delayed deletion (still queryable for ~{waited}s)",
+            "delay": waited,
+        }
+
+    def _grade_failing_delete(self, cal, cal_id, error, context):
+        """The DELETE raised - find out whether it did anything anyway.
+
+        An error is not evidence that the calendar is still there: a server may
+        report one and carry the deletion out regardless, and re-issuing the
+        DELETE against it then just collects 404s until the probe gives up and
+        calls deletion unsupported.  So look before retrying, and keep looking
+        between the retries - a delete that lands late is the same thing
+        happening slowly.
+        """
+        waited = 0
+        while True:
+            gone = self._calendar_gone(cal)
+            if gone:
+                ## Deleted after all.  The client cannot tell that from the
+                ## response, so it has to catch the error and check - which is
+                ## what "ungraceful" means.
+                behaviour = f"deleting {context} answers an error, but the calendar is deleted ({error})"
+                verdict = {"support": "ungraceful", "behaviour": behaviour}
+                if waited:
+                    verdict["delay"] = waited
+                return verdict
+            if waited >= self.checker.delay_probe_timeout:
+                if gone is None:
+                    ## Nothing was observed either way, so nothing is claimed.
+                    return {
+                        "support": "unknown",
                         "behaviour": (
-                            f"deleting a recently created calendar raises for ~{waited}s before it succeeds ({e})"
+                            f"deleting {context} keeps answering an error, and this server auto-creates "
+                            f"calendars on access, so whether the calendar went away cannot be seen ({error})"
                         ),
-                        "delay": waited,
-                    },
-                )
-                return calmade
+                    }
+                return False
+            time.sleep(1)
+            waited += 1
+            try:
+                DAVObject.delete(cal)
+            except DAVError:
+                continue
+            ## A retry did it, so the outcome is non-deterministic - which is
+            ## what "fragile" says, and all it says: asking again a few times is
+            ## what a client can do about it, not a diagnosis of why it failed.
+            ## "quirk" would be the wrong word here, since a quirk goes through
+            ## on the one request that was sent.
+            return {
+                "support": "fragile",
+                "behaviour": f"deleting {context} raises for ~{waited}s before it succeeds ({error})",
+                "delay": waited,
+            }
+
+    def _calendar_gone(self, cal):
+        """Is this calendar gone?  ``None`` where the server cannot say.
+
+        Asks the calendar object we are holding rather than re-deriving a URL
+        from the cal_id: a server that relocates a collection on creation
+        (Zimbra, OX - see create-calendar.stable-url) keeps at best an alias
+        there, so the cal_id answers a different question than the one asked.
+
+        ``None`` is the answer on a server that auto-creates a calendar on
+        access, where every lookup succeeds and "still there" is therefore not
+        an observation.  Callers must not read that as "still there" - which is
+        why this returns three values and not two.
+        """
+        if self.checker.features_checked.is_supported("create-calendar.auto"):
+            return None
+        return not self._calendar_is_accessible(cal)
 
     def _run_check(self):
         ## This check is where the server's own write delay is measured, so it
@@ -624,7 +685,7 @@ class CheckMakeDeleteCalendar(Check):
         ## PROPFIND that works on any existing calendar and has no checked parent
         ## to collapse under, so we must always probe it - against the freshly
         ## created probe calendar when we can, against an existing one otherwise.
-        if self.checker.features_checked.is_supported("create-calendar"):
+        if self.takes_effect("create-calendar"):
             self._check_set_displayname()
         else:
             existing = self._find_existing_calendar()
@@ -656,14 +717,21 @@ class CheckMakeDeleteCalendar(Check):
         """
         kwargs = {} if method is None else {"method": method}
         feature = "delete-calendar.free-namespace"
-        if not self.checker.features_checked.is_supported("delete-calendar"):
+        ## takes_effect, not is_supported: neither a fragile delete nor an
+        ## ungraceful one is evidence that deletion is unavailable - the
+        ## calendar did go away - so the namespace question is still worth
+        ## asking, and a re-creation that fails is reported as unknown below
+        ## anyway.  Without this the probe self-skipped on every server graded
+        ## fragile, which used to be an argument for grading a retryable delete
+        ## 'quirk' instead of describing it accurately.
+        if not self.takes_effect("delete-calendar"):
             self.set_feature(feature, {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"})
             return
 
         waited = 0
         while True:
             try:
-                self.checker.principal.make_calendar(cal_id=cal_id, **kwargs)
+                cal = self.checker.principal.make_calendar(cal_id=cal_id, **kwargs)
             except DAVError as e:
                 last_error = e
             else:
@@ -671,7 +739,7 @@ class CheckMakeDeleteCalendar(Check):
                 ## processes the delete asynchronously.  Either way the client
                 ## can re-use the id.
                 self.set_feature(feature, True)
-                self._discard_calendar(cal_id)
+                self._probe_delete_after_recreate(cal, cal_id, **kwargs)
                 return
             if waited >= timeout:
                 break
@@ -679,9 +747,11 @@ class CheckMakeDeleteCalendar(Check):
             waited += 1
 
         fresh_id = "testcalendar-" + str(uuid.uuid4())
-        try:
-            self.checker.principal.make_calendar(cal_id=fresh_id, **kwargs)
-        except DAVError:
+        ## With the retries: this control is what decides between "the name is
+        ## still reserved" and "this server is refusing creations for some
+        ## unrelated reason", so a single unlucky attempt must not settle it.
+        control, _attempts, _error = self.make_calendar_with_retries(fresh_id, **kwargs)
+        if control is None:
             self.set_feature(
                 feature,
                 {
@@ -693,12 +763,99 @@ class CheckMakeDeleteCalendar(Check):
             self._discard_calendar(fresh_id)
             self.set_feature(feature, False)
 
-    def _discard_calendar(self, cal_id):
-        """Throw away a calendar that was created only to answer a probe."""
-        try:
-            DAVObject.delete(self.checker.principal.calendar(cal_id=cal_id))
-        except Exception:
-            pass
+    def _probe_delete_after_recreate(self, cal, cal_id, **kwargs):
+        """Can a calendar re-created on a just-deleted id be deleted again?
+
+        This is the shape a client hits routinely - a test suite tearing its
+        calendar down and making it again, a user who deletes a calendar and
+        re-adds it - and it is *not* what the ordinary delete probe measures,
+        where the id had never been in use.  Cyrus answers 500 to this DELETE
+        for about a second while the previous delete settles, and deletes a
+        fresh id cleanly every time.
+
+        The distinction used to be invisible, and worse than invisible: the
+        probe wipes its fixed cal_id before creating it, so it fell into this
+        case whenever a previous run had left a calendar behind, and the same
+        command graded the same server 'quirk' one run and 'full' the next.
+
+        ``cal`` is the re-created calendar the free-namespace probe is already
+        holding, so the first attempt needs no calendar of its own; each
+        further attempt costs one create/delete pair.  A verdict is recorded
+        only where it is worse news than what the ordinary probe found - see
+        record_worse - so this probe can never make a server look better than
+        it was measured to be.
+        """
+        timeout = self.checker.delay_probe_timeout
+        for attempt in range(self.RETRY_ATTEMPTS):
+            if attempt:
+                cal, attempts, error = self.make_calendar_with_retries(cal_id, **kwargs)
+                if cal is None:
+                    ## Re-creation stopped working; free-namespace has already
+                    ## answered that question, and this probe has no verdict.
+                    return
+                if attempts > 1:
+                    ## Creating it took more than one ask, which is a fragility
+                    ## of creation and would otherwise go unreported: the
+                    ## ordinary create probe has finished by now.
+                    self.record_worse(
+                        "create-calendar",
+                        {
+                            "support": "fragile",
+                            "behaviour": f"creating a calendar failed {attempts - 1} time(s) before it succeeded ({error})",
+                        },
+                    )
+            ## The collection has to be there before its deletion can be
+            ## probed: on an asynchronous server a calendar that is merely not
+            ## published yet looks exactly like one a failing DELETE removed.
+            settled, _waited = self._poll_calendar(cal=cal, timeout=timeout)
+            if settled is None:
+                ## Never turned up.  Not this probe's question - but it may yet
+                ## turn up after we stop watching, so do not walk away from it.
+                self._discard_calendar(cal_id, cal=cal)
+                return
+            verdict = self._probe_delete(settled, cal_id, context=self.RE_CREATED)
+            if verdict is True:
+                continue
+            if verdict is False:
+                ## Not "unsupported": the ordinary probe just watched this
+                ## server delete a fresh calendar.  What is unreliable is
+                ## re-using the name, and that is a fragility, not an absence.
+                ## The delay is a lower bound - the probe stopped waiting, the
+                ## server did not stop failing.
+                verdict = {
+                    "support": "fragile",
+                    "behaviour": f"deleting {self.RE_CREATED} kept failing for the ~{timeout}s it was retried",
+                    "delay": timeout,
+                    "delay-is-lower-bound": True,
+                }
+            self.record_worse("delete-calendar", verdict)
+            self._discard_calendar(cal_id, cal=settled)
+            return
+
+    def _discard_calendar(self, cal_id, cal=None):
+        """Throw away a calendar that was created only to answer a probe.
+
+        Pass ``cal`` whenever the caller is holding the calendar
+        ``make_calendar()`` returned: a server that relocates a collection on
+        creation (Zimbra, OX - see create-calendar.stable-url) keeps at best an
+        alias at the requested cal_id, so re-deriving the URL from it can miss
+        the very calendar this is meant to remove.
+
+        Retries, because on a server with Cyrus's re-creation window the first
+        DELETE of a just-created probe calendar is the one that fails - and a
+        swallowed failure here leaks a calendar that makes the *next* run probe
+        a different situation than this one did.
+        """
+        for attempt in range(self.RETRY_ATTEMPTS):
+            cal = cal if cal is not None else self.checker.principal.calendar(cal_id=cal_id)
+            if not self._calendar_is_accessible(cal):
+                return
+            try:
+                DAVObject.delete(cal)
+                return
+            except Exception:
+                if attempt + 1 < self.RETRY_ATTEMPTS:
+                    time.sleep(1)
 
     def _probe_make_delete(self):
         try:
@@ -720,7 +877,6 @@ class CheckMakeDeleteCalendar(Check):
         except Exception:
             self.set_feature("get-current-user-principal.has-calendar", False)
 
-        _unknown_del = {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"}
         ## _try_make_calendar creates the fixed cal_id and deletes it again, so
         ## re-creating that same id afterwards is what tells us whether the
         ## delete freed the namespace - see _probe_free_namespace.  (This used to
@@ -784,13 +940,22 @@ class CheckMakeDeleteCalendar(Check):
             return
         makeret = self._try_make_calendar(cal_id=unique_id, method="mkcol")
         if makeret:
-            self.set_feature("create-calendar", {"support": "quirk", "behaviour": "mkcol-required"})
             ## The fixed cal_id has only ever been tried with MKCALENDAR, which
             ## on this server fails by construction - so its failure says
             ## nothing about the namespace.  Create and delete it with MKCOL
             ## and ask the question properly.
-            if not self.checker.features_checked.is_supported("delete-calendar"):
-                self.set_feature("delete-calendar.free-namespace", _unknown_del)
+            ##
+            ## The delete-calendar gate is not a duplicate of the one inside
+            ## _probe_free_namespace, however alike they read: this one is what
+            ## stops the probe creating yet another calendar on a server that
+            ## has just demonstrated it will not delete one.  Both ask the same
+            ## question through takes_effect, so the rule lives in one place
+            ## even though it is applied in two.
+            if not self.takes_effect("delete-calendar"):
+                self.set_feature(
+                    "delete-calendar.free-namespace",
+                    {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"},
+                )
             elif self._try_make_calendar(cal_id=self.MKDEL_CAL_ID, method="mkcol"):
                 self._probe_free_namespace(self.MKDEL_CAL_ID, method="mkcol")
             else:
@@ -801,6 +966,20 @@ class CheckMakeDeleteCalendar(Check):
                         "behaviour": "cannot test, the probe cal_id could not be created with MKCOL either",
                     },
                 )
+            ## Recorded last, because every _try_make_calendar above records a
+            ## create-calendar verdict of its own and set_feature merges: a
+            ## plain "full" landing on top of this node would leave
+            ## quirk+"mkcol-required" as full+"mkcol-required", and the library
+            ## selects MKCOL for exactly quirk+"mkcol-required" (see
+            ## caldav.collection) - so it would go back to sending MKCALENDAR
+            ## at a server that answers 405 to it.  Any worse support one of
+            ## those probes found is kept; the behaviour text is what matters
+            ## here and it has to survive either way.
+            support = self.checker.features_checked.is_supported("create-calendar", str)
+            self.set_feature(
+                "create-calendar",
+                {"support": support if is_worse(support, "quirk") else "quirk", "behaviour": "mkcol-required"},
+            )
         else:
             self.set_feature("create-calendar", False)
             self.set_feature(
@@ -994,9 +1173,8 @@ class CheckMakeDeleteCalendar(Check):
         ## can be identified by its arrival even when the display name is no help.
         before_urls = _calendar_urls()
 
-        try:
-            self.checker.principal.make_calendar(cal_id=cal_id, name=unique_name)
-        except DAVError:
+        probe, _attempts, _error = self.make_calendar_with_retries(cal_id=cal_id, name=unique_name)
+        if probe is None:
             ## Couldn't create the probe calendar (e.g. a server that needs mkcol
             ## or refuses a name= at creation).
             _fallback_displayname("could not create probe calendar")
@@ -1139,12 +1317,21 @@ class PrepareCalendar(Check):
             ## lives under our cal_id, not when the user pointed us at it by name.
             self.checker.calendar_was_created = not user_specified
         except Exception:
-            if not self.checker.features_checked.is_supported("create-calendar"):
+            ## takes_effect, not is_supported: a creation graded fragile or
+            ## ungraceful does create calendars, and aborting the whole run on
+            ## it would report "this server cannot create calendars" about a
+            ## server that can - see checks_base.takes_effect.
+            if not self.takes_effect("create-calendar"):
                 raise RuntimeError(
                     "Server does not support calendar creation and no existing test calendar was found. "
                     "Specify a calendar to use with --caldav-calendar <display-name>."
                 )
-            calendar = self.checker.principal.make_calendar(cal_id=cal_id, name=name)
+            ## With the retries: this is the caller a fragile creation used to
+            ## abort the run in, and surviving one unlucky MKCALENDAR is the
+            ## whole point of grading a server fragile rather than unsupported.
+            calendar, _attempts, error = self.make_calendar_with_retries(cal_id=cal_id, name=name)
+            if calendar is None:
+                raise error if error is not None else RuntimeError(f"could not create the test calendar {cal_id}")
             self.checker.calendar_was_created = True
             ## Some servers (Infomaniak/SabreDAV) create calendars asynchronously:
             ## the collection 404s for a few seconds after MKCALENDAR returns.
@@ -5201,7 +5388,10 @@ class CheckSchedulingInboxDelivery(Check):
 
         ## Use a temporary calendar if possible, fall back to the shared checker calendar
         probe_cal_id = "csc-inbox-delivery-probe"
-        use_temp_calendar = self.feature_checked("create-calendar") and self.feature_checked("delete-calendar")
+        ## takes_effect, like every other gate of this shape: a throwaway
+        ## calendar is still the right thing to use on a server whose
+        ## create/delete is merely unreliable or rude.
+        use_temp_calendar = self.takes_effect("create-calendar") and self.takes_effect("delete-calendar")
         if use_temp_calendar:
             try:
                 probe_calendar = principal.make_calendar(cal_id=probe_cal_id, name=probe_cal_id)

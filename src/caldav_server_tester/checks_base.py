@@ -10,6 +10,45 @@ from caldav.lib.error import DAVError
 ## and the next run on a busier day is the one that breaks.
 DELAY_MARGIN_RATIO = 0.85
 
+## Support levels that say the operation *does* happen, however badly.
+## `is_supported()` is True for full and quirk only, and `accept_fragile=True`
+## widens it to fragile; neither covers "ungraceful", which means the server
+## reports an error and does the thing anyway.  A gate asking "is this still
+## worth probing / may we still delete what we made?" wants this question, not
+## the plain boolean - a probe that grades a server honestly and thereby
+## switches off the probes below it is worse than one that never looked.
+EFFECTIVE_STATUSES = frozenset({"full", "quirk", "fragile", "ungraceful"})
+
+## Verdicts from worst to best, for deciding whether a second look at the same
+## feature is bad enough news to overwrite the first.  "fragile" ranks below
+## "ungraceful" deliberately: an error the client gets every single time can be
+## caught every single time, where an operation that works four times out of
+## five is the harder thing to write against - and "fragile" is the one level
+## caldav's Calendar.delete() reads to switch its retry loop on, so ranking it
+## as the milder of the two would suppress the observation that actually
+## changes what a client does.  "unknown" is not on the scale at all: it is the
+## absence of an observation, and is handled separately in is_worse.
+SUPPORT_SEVERITY = ("unsupported", "broken", "fragile", "ungraceful", "quirk", "full")
+
+
+def takes_effect(features, feature) -> bool:
+    """Does `feature` happen on this server, even if unreliably or rudely?"""
+    return features.is_supported(feature, str) in EFFECTIVE_STATUSES
+
+
+def is_worse(candidate, current) -> bool:
+    """Is the `candidate` support level worse news than `current`?
+
+    "unknown" is not a grade but the lack of one, so it is not compared on the
+    scale: any real observation displaces it, and it never displaces a real
+    observation.  A level neither on the scale nor "unknown" is left alone.
+    """
+    if current == "unknown":
+        return candidate in SUPPORT_SEVERITY
+    if candidate not in SUPPORT_SEVERITY or current not in SUPPORT_SEVERITY:
+        return False
+    return SUPPORT_SEVERITY.index(candidate) < SUPPORT_SEVERITY.index(current)
+
 
 class Check:
     """
@@ -132,6 +171,90 @@ class Check:
             breakpoint()
         else:
             logging.error(complaint)
+
+    def takes_effect(self, feature) -> bool:
+        """Does the server do `feature`, however unreliably or rudely?
+
+        See `takes_effect()` - this is the observed feature set's answer, which
+        is what every gate inside a check means.
+        """
+        return takes_effect(self.checker.features_checked, feature)
+
+    def record_worse(self, feature, verdict) -> bool:
+        """Record `verdict` only if it is worse than what is already recorded.
+
+        For a probe that takes a second look at a feature some earlier probe
+        has already graded: the second look is there to catch bad news, and
+        must not overwrite a harder verdict with an easier one, nor keep the
+        `delay` measured alongside the verdict it displaces.
+
+        That second part is why the old node is dropped first: `set_feature`
+        *merges* into whatever is already there, so a key the new verdict does
+        not carry survives - most damagingly a `delay`, which then belongs to
+        an observation that is no longer recorded and gets compared against the
+        configured write-delay as if it were this one's.  The library offers no
+        way to replace a node, hence the reach into it here.
+        """
+        candidate = verdict.get("support", "full") if isinstance(verdict, dict) else "full"
+        if not is_worse(candidate, self.checker.features_checked.is_supported(feature, str)):
+            return False
+        self.checker._features_checked._server_features.pop(feature, None)
+        self.set_feature(feature, verdict)
+        return True
+
+    ## How many times a request that may be flaky is asked before the answer is
+    ## taken at face value.  Cyrus fails "delete a calendar re-created on a
+    ## just-deleted id" 17 times in 20, so one attempt is not enough to clear a
+    ## server; three brings a miss below a percent at the price of three
+    ## create/delete pairs on a server that has nothing wrong with it.
+    RETRY_ATTEMPTS = 3
+
+    def make_calendar_with_retries(self, cal_id, **kwargs):
+        """Create a calendar, trying a few times before giving up.
+
+        Returns ``(cal_or_None, attempts_made, last_error)``.  A creation that
+        fails and then works on the next ask is a fragility worth reporting
+        rather than a failure worth acting on, and one attempt cannot tell the
+        two apart - so ask a few times, the way a client has to.
+
+        Lives on Check rather than on the probe that measures create-calendar,
+        because every caller that creates a calendar has to survive a server
+        the probe grades fragile - the run is aborted by the *caller* that
+        cannot, not by the grading.
+
+        Only a refusal that could plausibly go the other way next time is
+        retried - see _worth_retrying.
+        """
+        error = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                return self.checker.principal.make_calendar(cal_id=cal_id, **kwargs), attempt, error
+            except DAVError as e:
+                error = e
+                if attempt == self.RETRY_ATTEMPTS or not self._worth_retrying(e):
+                    return None, attempt, error
+                time.sleep(1)
+        return None, self.RETRY_ATTEMPTS, error
+
+    @staticmethod
+    def _worth_retrying(error) -> bool:
+        """Could this refusal plausibly go the other way on the next ask?
+
+        A 5xx is the server having a bad moment, and 408/429 say as much
+        outright.  A 4xx says the request itself is wrong - a read-only account
+        answers 403 as often as you like, and 405 means the method is not the
+        one this server wants.  An error carrying no status at all never
+        reached the network: the library refuses a creation by itself when the
+        profile says the server cannot do it.
+
+        The exceptions carry no status code of their own - the library formats
+        the whole response into a string and hands it over as the exception's
+        ``url`` - so the status line is read off the front of that.
+        """
+        status = str(getattr(error, "url", "") or "").split(" ", 1)[0]
+        if not status.isdigit():
+            return False
+        return status.startswith("5") or status in ("408", "429")
 
     @staticmethod
     def _calendar_is_accessible(cal) -> bool:

@@ -9,7 +9,7 @@ import caldav
 from caldav.compatibility_hints import FeatureSet
 
 from . import checks
-from .checks_base import Check
+from .checks_base import Check, takes_effect
 
 ## HTTP methods that change server state.  A write-delay server settles each of
 ## these asynchronously, so the checker sleeps after every such request.
@@ -277,16 +277,40 @@ class ServerQuirkChecker:
         ## PrepareCalendar ever running, so this part is guarded but the probe
         ## sweep below always runs.
         if hasattr(self, "calendar"):
-            can_delete_calendars = self.features_checked.is_supported(
-                "create-calendar"
-            ) and self.features_checked.is_supported("delete-calendar")
+            ## takes_effect, not is_supported: a delete graded fragile or
+            ## ungraceful is unreliable or rude, not unavailable.  Refusing to
+            ## even try is how probe calendars pile up - and a leftover
+            ## calendar makes the next run's delete probe measure a re-created
+            ## id rather than a fresh one, which is a different question with a
+            ## different answer.
+            can_delete_calendars = takes_effect(self.features_checked, "create-calendar") and takes_effect(
+                self.features_checked, "delete-calendar"
+            )
             ## Default to False (the safe choice) when PrepareCalendar didn't record
             ## ownership: never delete a calendar we can't prove we created.
             calendar_was_created = getattr(self, "calendar_was_created", False)
 
             purge_targets = []
+
+            def delete_or_purge(target):
+                """Delete a calendar this tool made, or fall back to purging it.
+
+                Calendar.delete() decides whether to retry from the server
+                *profile*, not from what this run observed, so a server just
+                measured as fragile can still raise straight out of the call.
+                An exception escaping here would skip the probe-calendar sweep
+                at the end of cleanup() - the pile-up this whole method exists
+                to prevent - so one calendar that will not go costs that
+                calendar and nothing more.
+                """
+                try:
+                    target.delete()
+                except Exception as e:
+                    logging.warning("Could not delete the calendar %s (%s); purging its objects instead", target, e)
+                    purge_targets.append(target)
+
             if can_delete_calendars and calendar_was_created:
-                self.calendar.delete()
+                delete_or_purge(self.calendar)
             else:
                 purge_targets.append(self.calendar)
 
@@ -296,7 +320,7 @@ class ServerQuirkChecker:
                 if sibling is self.calendar:
                     continue
                 if can_delete_calendars:
-                    sibling.delete()
+                    delete_or_purge(sibling)
                 else:
                     purge_targets.append(sibling)
 
