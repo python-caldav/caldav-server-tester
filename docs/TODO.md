@@ -103,7 +103,9 @@ right answer for the save-load side if the redesign is ever budgeted.
 
 * When setting `search.time-range.open.start: False`, the whole `search.time-range.open`-tree collapses to False?  This is wrong.  `search.time-range.open` is not an independent feature, but should collapse to unsupported only when `search.time-range.open.*` has been checked and found to be unsupported.
 
-* For Bedework, in the related-to-check - add a new related-to property, save, load and there is an error.  Try to fetch the traceback and investigate.
+* For Bedework, in the related-to-check - add a new related-to property, save, load and there is an error.  Try to fetch the traceback and investigate.  (Bedework 5.0.0, 2026-09-12: the first `RELATED-TO` line survives a save/load round-trip and every later one is stripped - the same behaviour `bedework_3_10_3` records, so this is not a 3.x leftover.)
+
+* `create-calendar`'s `empty-207` behaviour is recorded in `bedework_5_0_0` but cannot be **probed**.  Bedework answers a property-less, successful `MKCALENDAR` with a multistatus whose `DAV:response` carries neither a `DAV:status` nor a `DAV:propstat` (RFC4918 section 13 requires one or the other).  The CalDAV library now reads that as the success it is, so `CheckMakeDeleteCalendar` sees an ordinary creation and reports `full` - which is the one permanent `--diff` line against the profile.  Detecting it needs the raw MKCALENDAR response, and `make_calendar()` does not hand it back.
 
 
 ## Broken xandikos compatibility test
