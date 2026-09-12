@@ -91,6 +91,37 @@ ENCODE_AT_PROPFIND_BODY = (
 )
 
 
+## What the report calls a creation answered by a status-less multistatus.
+## Kept as a constant because the same string is what the server profiles
+## record (caldav.compatibility_hints, bedework_5_0_0), and a --diff between
+## the two is only readable while they spell it the same way.
+EMPTY_207_BEHAVIOUR = "empty-207"
+
+
+def is_statusless_multistatus(response) -> bool:
+    """Does this 207 report nothing whatsoever about what it did?
+
+    RFC 4918 section 13 requires every ``DAV:response`` to carry either a
+    ``DAV:status`` or at least one ``DAV:propstat``.  Bedework 5 answers a
+    property-less MKCALENDAR with a multistatus whose single response holds
+    nothing but the href of the collection it created, which says neither that
+    the creation succeeded nor that it failed.  The library reads it as the
+    success it turns out to be, so the only place the violation is visible is
+    the raw response.
+
+    A body with several responses is not this shape even if one of them is
+    status-less: the answer as a whole then does report something, and
+    whatever is going on there is not what Bedework does.
+    """
+    if getattr(response, "status", None) != 207 or getattr(response, "tree", None) is None:
+        return False
+    responses = response.tree.findall(".//" + dav.Response.tag)
+    if len(responses) != 1:
+        return False
+    bare = responses[0]
+    return bare.find(dav.Status.tag) is None and bare.find(dav.PropStat.tag) is None
+
+
 class EncodeAtObservation(NamedTuple):
     """What one axis of the ``url.encode-at`` probe managed to observe.
 
@@ -475,6 +506,12 @@ class CheckMakeDeleteCalendar(Check):
     ## recognises it (see checker.PROBE_CALENDAR_PREFIXES).
     MKDEL_CAL_ID = "caldav-server-checker-mkdel-test"
 
+    @staticmethod
+    def _with_empty_207(behaviour, empty_207) -> str:
+        """Append the empty-207 note to a behaviour text that has a worse
+        thing to say first.  Two observations, one free-text field."""
+        return f"{behaviour}; {EMPTY_207_BEHAVIOUR}" if empty_207 else behaviour
+
     def _try_make_calendar(self, cal_id, **kwargs):
         """
         Does some attempts on creating and deleting calendars, and sets some
@@ -495,8 +532,13 @@ class CheckMakeDeleteCalendar(Check):
         except Exception:
             pass
 
-        ## create the calendar
-        cal, attempts, error = self.make_calendar_with_retries(cal_id, **kwargs)
+        ## create the calendar.  The raw creation responses are kept because
+        ## the answer itself can be a quirk the library has to paper over -
+        ## see is_statusless_multistatus() - and make_calendar() hands back
+        ## the calendar, not what the server said while making it.
+        with self.checker.record_responses(("MKCALENDAR", "MKCOL")) as creation_responses:
+            cal, attempts, error = self.make_calendar_with_retries(cal_id, **kwargs)
+        empty_207 = any(is_statusless_multistatus(r) for r in creation_responses)
         if cal is None:
             ## calendar creation created an exception.  Maybe the calendar exists?
             cal = self.checker.principal.calendar(cal_id=cal_id)
@@ -529,15 +571,25 @@ class CheckMakeDeleteCalendar(Check):
                 behaviour = f"creating a calendar failed {attempts - 1} time(s) before it succeeded ({error})"
                 if waited:
                     behaviour += f", and was not queryable until ~{waited}s after that"
-                self.set_feature("create-calendar", {"support": "fragile", "behaviour": behaviour})
+                self.set_feature(
+                    "create-calendar", {"support": "fragile", "behaviour": self._with_empty_207(behaviour, empty_207)}
+                )
             elif waited:
                 ## Supported, but the client must poll/wait for the calendar to
                 ## materialise — a quirk (is_supported(bool) stays True so the
                 ## downstream checks still run), not plain "full".
+                behaviour = f"delayed creation (not queryable until ~{waited}s)"
                 self.set_feature(
                     "create-calendar",
-                    {"support": "quirk", "behaviour": f"delayed creation (not queryable until ~{waited}s)"},
+                    {"support": "quirk", "behaviour": self._with_empty_207(behaviour, empty_207)},
                 )
+            elif empty_207:
+                ## The creation worked and the calendar is there; all that is
+                ## wrong is what the server said about it.  "quirk" rather than
+                ## "full" so the report carries the violation, and rather than
+                ## anything worse because a client using this library never
+                ## notices it.
+                self.set_feature("create-calendar", {"support": "quirk", "behaviour": EMPTY_207_BEHAVIOUR})
             else:
                 self.set_feature("create-calendar")
 

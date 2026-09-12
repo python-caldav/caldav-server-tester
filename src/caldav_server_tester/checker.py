@@ -160,6 +160,41 @@ class ServerQuirkChecker:
         return max(10, 2 * self.configured_write_delay)
 
     @contextlib.contextmanager
+    def record_responses(self, methods):
+        """Collect the raw responses to requests using one of ``methods``.
+
+        The library hands a probe the object it made and throws the response
+        away, so a probe that has to grade what the server *answered* - rather
+        than what it ended up doing - has to catch it on the way past.  Yields
+        a list that fills up as the requests go out.
+
+        Wraps the same ``client.request`` the write-delay wrapper does, and
+        restores whatever was there before, so the two nest in either order.
+        Only the main client is recorded: everything that creates a calendar
+        goes through ``checker.principal``, which belongs to it.
+        """
+        client = self._client_obj
+        captured = []
+        original = client.request
+        had_own_request = "request" in getattr(client, "__dict__", {})
+        wanted = {m.upper() for m in methods}
+
+        def recording_request(url, method="GET", *args, **kwargs):
+            response = original(url, method, *args, **kwargs)
+            if str(method).upper() in wanted:
+                captured.append(response)
+            return response
+
+        client.request = recording_request
+        try:
+            yield captured
+        finally:
+            if had_own_request:
+                client.request = original
+            else:
+                client.__dict__.pop("request", None)
+
+    @contextlib.contextmanager
     def without_write_delay(self):
         """Run a block with the configured write-delay suspended.
 
