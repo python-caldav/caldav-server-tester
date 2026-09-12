@@ -771,7 +771,10 @@ class CheckMakeDeleteCalendar(Check):
         re-adds it - and it is *not* what the ordinary delete probe measures,
         where the id had never been in use.  Cyrus answers 500 to this DELETE
         for about a second while the previous delete settles, and deletes a
-        fresh id cleanly every time.
+        fresh id cleanly every time - its delayed-delete path stamps the
+        DELETED.* mailbox name with a whole-second timestamp, so two deletes
+        of one name inside the same second collide:
+        https://github.com/cyrusimap/cyrus-imapd/issues/6383
 
         The distinction used to be invisible, and worse than invisible: the
         probe wipes its fixed cal_id before creating it, so it fell into this
