@@ -1441,11 +1441,21 @@ class PrepareCalendar(Check):
         relative month/day offsets are unchanged from when the fixtures lived in
         year 2000, so every fixture-dependent check keeps the same arithmetic -
         only the year differs.
+
+        A server that cannot store a VTODO anywhere gets the task fixtures
+        skipped, with save-load.todo graded and its children left to collapse
+        under it; everything else is provisioned as usual.
         """
         base = self.checker.fixture_base_year
+        ## Some servers have nowhere to put a VTODO at all: Bedework 5 answers
+        ## "200 ok" for supported-calendar-component-set on MKCALENDAR,
+        ## extended MKCOL and PROPPATCH alike and then ignores it, so every
+        ## calendar a client can create is VEVENT-only and a VTODO PUT into it
+        ## is 403.  _prepare_task_calendar then grades save-load.todo, the
+        ## children collapse under that verdict, and the task fixtures below are
+        ## skipped - events and journals are unaffected, and used to go
+        ## unmeasured along with them.
         todo_ok = self._prepare_task_calendar(cal_id, name, add_if_not_existing)
-        if not todo_ok:
-            return False
 
         self._prepare_journal_calendar(cal_id, name, add_if_not_existing)
 
@@ -1507,35 +1517,40 @@ class PrepareCalendar(Check):
             duration=timedelta(hours=1),
         )
 
-        task_with_due = add_if_not_existing(
-            Todo,
-            summary="task with a due date",
-            uid="csc_simple_task2",
-            due=date(base, 1, 8),
-        )
+        ## Every task fixture is skipped when there is nowhere to store a VTODO;
+        ## see todo_ok above.  A check that consumes them has nothing to find,
+        ## so what it would grade has to collapse under an ungood todo verdict
+        ## rather than be read off an empty search.
+        if todo_ok:
+            task_with_due = add_if_not_existing(
+                Todo,
+                summary="task with a due date",
+                uid="csc_simple_task2",
+                due=date(base, 1, 8),
+            )
 
-        task_with_dtstart_and_due = add_if_not_existing(
-            Todo,
-            summary="task with a dtstart time and due time",
-            uid="csc_simple_task3",
-            dtstart=datetime(base, 1, 9, 12, 0, 0, tzinfo=utc),
-            due=datetime(base, 1, 9, 13, 0, 0, tzinfo=utc),
-        )
+            task_with_dtstart_and_due = add_if_not_existing(
+                Todo,
+                summary="task with a dtstart time and due time",
+                uid="csc_simple_task3",
+                dtstart=datetime(base, 1, 9, 12, 0, 0, tzinfo=utc),
+                due=datetime(base, 1, 9, 13, 0, 0, tzinfo=utc),
+            )
 
-        ## Task with DTSTART + DURATION (no DUE): used by CheckOpenTimeRangeSearch
-        ## for two tests:
-        ## 1. Duration overlap: DTSTART=<base>-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
-        ##    Searches overlapping the interval [12:00, 14:00] should return this task.
-        ##    RFC4791 section 9.9: VTODO overlaps [start, end] if DTSTART+DURATION > start.
-        ## 2. Open-start filtering: DTSTART=<base>-01-18 is after end=<base>-01-15, so this
-        ##    task must NOT be returned by an end-only search with end=<base>-01-15.
-        add_if_not_existing(
-            Todo,
-            summary="task with dtstart and duration (no due)",
-            uid="csc_task_with_duration",
-            dtstart=datetime(base, 1, 18, 12, 0, 0, tzinfo=utc),
-            duration=timedelta(hours=2),
-        )
+            ## Task with DTSTART + DURATION (no DUE): used by CheckOpenTimeRangeSearch
+            ## for two tests:
+            ## 1. Duration overlap: DTSTART=<base>-01-18T12:00Z, DURATION=PT2H → ends at 14:00Z.
+            ##    Searches overlapping the interval [12:00, 14:00] should return this task.
+            ##    RFC4791 section 9.9: VTODO overlaps [start, end] if DTSTART+DURATION > start.
+            ## 2. Open-start filtering: DTSTART=<base>-01-18 is after end=<base>-01-15, so this
+            ##    task must NOT be returned by an end-only search with end=<base>-01-15.
+            add_if_not_existing(
+                Todo,
+                summary="task with dtstart and duration (no due)",
+                uid="csc_task_with_duration",
+                dtstart=datetime(base, 1, 18, 12, 0, 0, tzinfo=utc),
+                duration=timedelta(hours=2),
+            )
 
         ## TODO: there are more variants to be tested - dtstart date and due date,
         ## only duration, no time spec at all, ...
@@ -1600,24 +1615,25 @@ END:VCALENDAR""",
         count = rrule and rrule.get("COUNT")
         self.set_feature("save-load.event.recurrences.count", count == [3])
 
-        try:
-            recurring_task = add_if_not_existing(
-                Todo,
-                summary="monthly recurring task",
-                uid="csc_monthly_recurring_task",
-                rrule={"FREQ": "MONTHLY"},
-                dtstart=datetime(base, 1, 12, 12, 0, 0, tzinfo=utc),
-                due=datetime(base, 1, 12, 13, 0, 0, tzinfo=utc),
-            )
-            recurring_task.load()
-            self.set_feature("save-load.todo.recurrences")
-        except DAVError:
-            self.set_feature("save-load.todo.recurrences", "ungraceful")
+        if todo_ok:
+            try:
+                recurring_task = add_if_not_existing(
+                    Todo,
+                    summary="monthly recurring task",
+                    uid="csc_monthly_recurring_task",
+                    rrule={"FREQ": "MONTHLY"},
+                    dtstart=datetime(base, 1, 12, 12, 0, 0, tzinfo=utc),
+                    due=datetime(base, 1, 12, 13, 0, 0, tzinfo=utc),
+                )
+                recurring_task.load()
+                self.set_feature("save-load.todo.recurrences")
+            except DAVError:
+                self.set_feature("save-load.todo.recurrences", "ungraceful")
 
-        try:
-            task_with_rrule_and_count = add_if_not_existing(
-                Todo,
-                f"""BEGIN:VCALENDAR
+            try:
+                task_with_rrule_and_count = add_if_not_existing(
+                    Todo,
+                    f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Example Corp.//CalDAV Client//EN
 BEGIN:VTODO
@@ -1632,14 +1648,14 @@ CATEGORIES:CHORE
 PRIORITY:3
 END:VTODO
 END:VCALENDAR""",
-            )
-            task_with_rrule_and_count.load()
-            component = task_with_rrule_and_count.component
-            rrule = component.get("RRULE", None)
-            count = rrule and rrule.get("COUNT")
-            self.set_feature("save-load.todo.recurrences.count", count == [3])
-        except DAVError:
-            self.set_feature("save-load.todo.recurrences.count", "ungraceful")
+                )
+                task_with_rrule_and_count.load()
+                component = task_with_rrule_and_count.component
+                rrule = component.get("RRULE", None)
+                count = rrule and rrule.get("COUNT")
+                self.set_feature("save-load.todo.recurrences.count", count == [3])
+            except DAVError:
+                self.set_feature("save-load.todo.recurrences.count", "ungraceful")
 
         try:
             recurring_event_with_exception = add_if_not_existing(
@@ -1732,8 +1748,6 @@ END:VCALENDAR""",
             pass
 
         self._create_olddate_probes()
-
-        return True
 
     def _create_olddate_probes(self):
         """Create the persistent year-2000 probe objects.
@@ -2731,8 +2745,7 @@ END:VCALENDAR""",
                 existing.load()
                 return existing
 
-        if not self._create_test_events(calendar, cal_id, name, add_if_not_existing):
-            return
+        self._create_test_events(calendar, cal_id, name, add_if_not_existing)
 
         self._delete_stale_fixtures(object_by_uid)
         if not self.checker.calendar.events():
@@ -3795,18 +3808,22 @@ class CheckSearch(Check):
         except (AuthorizationError, DAVError):
             self.set_feature("search.time-range.event.old-dates", "ungraceful")
 
-        try:
-            tasks = tasklist.search(
-                start=datetime(2000, 1, 9, tzinfo=utc),
-                end=datetime(2000, 1, 10, tzinfo=utc),
-                todo=True,
-                include_completed=True,
-                post_filter=False,
-            )
-            old_todo_ok = _found(tasks, OLDDATE_TASK_UID) and not _found(tasks, "csc_simple_task3")
-            self.set_feature("search.time-range.todo.old-dates", old_todo_ok)
-        except (AuthorizationError, DAVError):
-            self.set_feature("search.time-range.todo.old-dates", "ungraceful")
+        ## Where todo time-range search is ungood there is nothing to build on -
+        ## on a server that stores no VTODO this search finds nothing whatever
+        ## the dates - so old-dates collapses under that verdict.
+        if not self.feature_ungood("search.time-range.todo"):
+            try:
+                tasks = tasklist.search(
+                    start=datetime(2000, 1, 9, tzinfo=utc),
+                    end=datetime(2000, 1, 10, tzinfo=utc),
+                    todo=True,
+                    include_completed=True,
+                    post_filter=False,
+                )
+                old_todo_ok = _found(tasks, OLDDATE_TASK_UID) and not _found(tasks, "csc_simple_task3")
+                self.set_feature("search.time-range.todo.old-dates", old_todo_ok)
+            except (AuthorizationError, DAVError):
+                self.set_feature("search.time-range.todo.old-dates", "ungraceful")
 
         ## search.text.category
         try:

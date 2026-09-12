@@ -867,6 +867,26 @@ class TestCheckSearch:
         # Should set feature to unsupported
         assert not checker.features_checked.is_supported("search.time-range.event")
 
+    def test_todo_old_dates_collapse_under_an_ungood_todo_time_range(self) -> None:
+        """A server that will not store the recent-task probe has no todo
+        time-range verdict to build on, and an old-dates search finding nothing
+        there is no evidence about old dates."""
+        from caldav.lib.error import AuthorizationError
+
+        checker, calendar, tasklist = self.create_checker_with_prepared_calendar()
+        calendar.search.return_value = [Mock()]
+        tasklist.save_object.side_effect = AuthorizationError(reason="Forbidden")
+        tasklist.search.return_value = []
+
+        check = CheckSearch(checker)
+        check.run_check()
+
+        assert checker.features_checked.is_supported("search.time-range.todo", str) == "ungraceful"
+        ## Absent, or filled in as unknown by run_check's handler when the mock
+        ## trips something later - never a verdict read off the empty search.
+        node = checker.features_checked._server_features.get("search.time-range.todo.old-dates")
+        assert node is None or node.get("support") == "unknown"
+
     def test_search_time_range_todo_success(self) -> None:
         """Successful time-range todo search sets feature to True"""
         checker, calendar, tasklist = self.create_checker_with_prepared_calendar()
