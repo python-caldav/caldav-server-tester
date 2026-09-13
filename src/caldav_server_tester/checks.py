@@ -3570,6 +3570,124 @@ class CheckIfMatchOptional(Check):
                 pass
 
 
+## RFC 9110 section 8.8.3: entity-tag = [ "W/" ] DQUOTE *etagc DQUOTE
+ENTITY_TAG = re.compile(r'(W/)?"[^"]*"')
+
+
+class CheckPutEtag(Check):
+    """
+    Checks the ETag header a PUT answers with, and whether a conditional PUT
+    carrying it is accepted; then whether If-Match: * is honoured.
+
+    Bedework 5 percent-encodes the quotes in its PUT response (``%22...%22``,
+    where a GET gives the quoted form) and refuses the encoded form in If-Match
+    with 412.  The CalDAV library decodes that shape, so save() hides it and
+    the probe reads the raw response.  RFC 9110 section 13.1.1 has
+    ``If-Match: *`` match any existing representation; Bedework answers it
+    with 412 as well.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save.etag", "save-load.mutable.if-match-wildcard"}
+
+    def _run_check(self) -> None:
+        url = str(self.checker.calendar.url.join("csc_put_etag.ics"))
+        year = self.checker.fixture_base_year
+        ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//put-etag probe//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:csc_put_etag\r\n"
+            f"DTSTAMP:{year}0120T120000Z\r\n"
+            f"DTSTART:{year}0120T120000Z\r\n"
+            f"DTEND:{year}0120T130000Z\r\n"
+            "SUMMARY:put-etag probe\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        created = self._put(url, ical)
+        if not self._ok(created):
+            for feature in self.features_to_be_checked:
+                self.set_feature(feature, None)
+            return
+        try:
+            self._grade_etag(url, ical, created.headers.get("Etag"))
+            wildcard = self._put(url, ical, "*")
+            if wildcard is None:
+                self.set_feature("save-load.mutable.if-match-wildcard", None)
+            elif self._ok(wildcard):
+                self.set_feature("save-load.mutable.if-match-wildcard")
+            elif wildcard.status == 412:
+                self.set_feature("save-load.mutable.if-match-wildcard", False)
+            elif wildcard.status >= 500:
+                ## The server having a bad moment, not an answer about If-Match: *.
+                self.set_feature("save-load.mutable.if-match-wildcard", None)
+            else:
+                self.set_feature(
+                    "save-load.mutable.if-match-wildcard",
+                    {"support": "unsupported", "behaviour": f"If-Match: * answered {wildcard.status}"},
+                )
+        finally:
+            try:
+                self.client.delete(url)
+            except Exception:
+                pass
+
+    def _grade_etag(self, url, ical, etag) -> None:
+        if not etag:
+            ## RFC 9110 lets a PUT response leave it out; nothing to grade.
+            self.set_feature("save.etag", None)
+            return
+        if ENTITY_TAG.fullmatch(etag):
+            replay = self._put(url, ical, etag)
+            if self._ok(replay):
+                self.set_feature("save.etag")
+            elif etag.startswith("W/") and replay is not None and replay.status == 412:
+                ## RFC 9110 section 13.1.1 compares If-Match strongly, so a weak
+                ## etag can never match: the 412 is the server following the RFC.
+                self.set_feature(
+                    "save.etag",
+                    {
+                        "support": "full",
+                        "behaviour": f"weak etag {etag}, which If-Match cannot match (RFC 9110 section 13.1.1)",
+                    },
+                )
+            else:
+                answer = replay.status if replay is not None else "an error"
+                self.set_feature(
+                    "save.etag",
+                    {"support": "broken", "behaviour": f"the PUT etag {etag} is refused in If-Match ({answer})"},
+                )
+            return
+        if etag.startswith(("%22", "W/%22")):
+            ## Not an entity-tag RFC 9110 allows, but the CalDAV library decodes
+            ## a leading %22, so where the decoded form is taken back a client
+            ## gets a working etag: a quirk.  Refused decoded too, nothing helps.
+            if self._ok(self._put(url, ical, unquote(etag))):
+                self.set_feature("save.etag", {"support": "quirk", "behaviour": "percent-encoded"})
+            else:
+                self.set_feature(
+                    "save.etag",
+                    {"support": "broken", "behaviour": "percent-encoded; the decoded etag is refused in If-Match too"},
+                )
+            return
+        self.set_feature("save.etag", {"support": "broken", "behaviour": f"malformed etag {etag!r}"})
+
+    def _put(self, url, ical, if_match=None):
+        headers = {"Content-Type": "text/calendar; charset=utf-8"}
+        if if_match is not None:
+            headers["If-Match"] = if_match
+        try:
+            return self.client.put(url, ical, headers)
+        except (DAVError, AuthorizationError):
+            return None
+
+    @staticmethod
+    def _ok(response) -> bool:
+        return response is not None and 200 <= response.status < 300
+
+
 class CheckAttendeePartstat(Check):
     """
     Checks whether an attendee's PARTSTAT can be modified via a direct PUT.
