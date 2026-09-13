@@ -74,7 +74,7 @@ in the descriptions.
 
 (Discussion 2026-09-08, not acted on.)
 
-The `write-delay` peculiarity is a flat sleep after every write, and the
+The `delay` of `synchronous-write` is a flat sleep after every write, and the
 alternative considered was: continue immediately whenever the read-back meets
 expectations, and wait-and-reprobe only when it does not.  That is the better
 shape in principle - it costs nothing on a synchronous server and adapts to a
@@ -91,7 +91,7 @@ Two things stopped it from being done here:
   absent", so they would have to wait the full timeout on every run - putting
   the arbitrary delay on the *conformant* servers rather than the broken ones.
 
-What was done instead: the delays are measured and reported (`CheckWriteDelay`,
+What was done instead: the delays are measured and reported (`CheckSynchronousWrite`,
 and the `delay` key on `create-calendar` / `delete-calendar`), an observation
 that outgrows the configured value is warned about, and the configured value
 stays something a human writes into the profile.  Read-back retry remains the

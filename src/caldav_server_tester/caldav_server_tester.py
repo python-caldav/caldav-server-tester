@@ -223,7 +223,7 @@ def _check_server(
         ## An explicit --caldav-features overrides the registry server's own
         ## feature set.  Without this the flag would be silently dropped on the
         ## --name/registry path (it is only honoured on the explicit-config path
-        ## via get_davclient), so e.g. a write-delay peculiarity could never be
+        ## via get_davclient), so e.g. a synchronous-write delay could never be
         ## activated for a registered server without editing its config.
         if features is not None:
             from caldav.compatibility_hints import FeatureSet

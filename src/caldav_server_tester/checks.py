@@ -32,7 +32,7 @@ TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
 OLDDATE_EVENT_UID = "csc_olddate_event"
 OLDDATE_TASK_UID = "csc_olddate_task"
 
-## The write-delay probe writes and removes this one within the run; the csc_
+## The synchronous-write probe writes and removes this one within the run; the csc_
 ## prefix keeps it inside the cleanup sweep should the run die in between.
 WRITE_DELAY_UID = "csc_write_delay_probe"
 
@@ -2485,7 +2485,7 @@ END:VCALENDAR""",
         where the object was stored successfully.  A bare PROPFIND on ``%40``
         used to decide it where nothing could be stored, which made a
         conformant server (nothing has been created at ``%40``, so it 404s)
-        and a merely slow one (the ``create-calendar`` write-delay quirk this
+        and a merely slow one (the ``create-calendar`` delayed-creation quirk this
         suite already probes) come out ``encoded: unsupported``.
 
         A write that said nothing either way - a 5xx, a dropped connection -
@@ -3230,15 +3230,16 @@ class CheckNonExistingResource(Check):
             )
 
 
-class CheckWriteDelay(Check):
-    """How long after a write does the server need before the change is readable?
+class CheckSynchronousWrite(Check):
+    """Is a write observable once the server has answered it with success?
 
     Servers like Infomaniak/SabreDAV process writes asynchronously: a PUT
     returns before the object can be read back.  The CalDAV library's answer is
-    the ``write-delay`` peculiarity - sleep after every write - but that value
-    has to be put into a server profile by hand, and until somebody measures it
-    the tester mis-probes the server instead of reporting it as slow.  This
-    check makes the delay an observation rather than only a setting.
+    ``synchronous-write`` declared unsupported with a ``delay`` - sleep after
+    every write - but that value has to be put into a server profile by hand,
+    and until somebody measures it the tester mis-probes the server instead of
+    reporting it as slow.  This check makes it an observation rather than only
+    a setting.
 
     It PUTs one object and times how long it takes to become readable *by direct
     GET*.  Not by search: a search read-back would re-measure ``search-cache``,
@@ -3247,16 +3248,17 @@ class CheckWriteDelay(Check):
     fails, so a synchronous server pays one extra GET and no waiting at all.
 
     The verdict then combines that with the delays the calendar create/delete
-    probe measured.  A blanket post-write sleep is only the right prescription
-    when *object writes* are affected: a server that merely creates collections
-    asynchronously would have every PUT slowed down for nothing.  So a delay on
-    save-load together with one on calendar creation recommends ``write-delay``,
-    while a calendar delay on its own is recorded in the behaviour text and left
-    at ``full``.
+    probe measured.  Any of them makes writes ``unsupported``, but a blanket
+    post-write sleep is only the right prescription when *object writes* are
+    affected: a server that merely creates collections asynchronously would
+    have every PUT slowed down for nothing.  So a delayed save-load records a
+    ``delay``, while a calendar delay on its own is recorded without one.
+    ``fragile`` - asynchronous, but too fast to catch - is never reported: one
+    probe cannot tell it from ``full``.
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"write-delay"}
+    features_to_be_checked = {"synchronous-write"}
 
     def _configured(self):
         """The delay the server profile asks a client to sleep, or 0."""
@@ -3271,12 +3273,12 @@ class CheckWriteDelay(Check):
         """
         configured = self._configured()
         if not configured:
-            self.set_feature("write-delay", {"support": "unknown", "behaviour": why})
+            self.set_feature("synchronous-write", {"support": "unknown", "behaviour": why})
             return
         self.set_feature(
-            "write-delay",
+            "synchronous-write",
             {
-                "support": "quirk",
+                "support": self.checker.expected_features.is_supported("synchronous-write", str),
                 "behaviour": f"writes processed asynchronously; waiting ~{configured}s after every write",
                 "delay": configured,
                 "note": f"passed through from the server profile, not probed ({why})",
@@ -3298,7 +3300,7 @@ class CheckWriteDelay(Check):
         try:
             cal.save_object(
                 Event,
-                summary="write-delay probe",
+                summary="synchronous-write probe",
                 uid=WRITE_DELAY_UID,
                 dtstart=datetime(base, 1, 1, 9, 0, 0, tzinfo=utc),
                 dtend=datetime(base, 1, 1, 10, 0, 0, tzinfo=utc),
@@ -3354,15 +3356,14 @@ class CheckWriteDelay(Check):
         if delete:
             notes.append(f"delete-calendar takes ~{delete}s")
 
-        if save_load and create:
-            ## Both an object write and a collection write are delayed - the
-            ## server is asynchronous across the board, which is what a blanket
-            ## post-write sleep is for.
+        if save_load:
+            ## An object write is not observable on return, which is what a
+            ## blanket post-write sleep is for.
             self.set_feature(
-                "write-delay",
+                "synchronous-write",
                 {
-                    "support": "quirk",
-                    "behaviour": "; ".join(notes) + " - consider configuring write-delay for this server",
+                    "support": "unsupported",
+                    "behaviour": "; ".join(notes) + " - consider configuring a delay for this server",
                     "delay": max(save_load, create, delete),
                     "save-load-delay": save_load,
                 },
@@ -3371,10 +3372,11 @@ class CheckWriteDelay(Check):
 
         value = {"support": "full", "save-load-delay": save_load}
         if notes:
-            ## Something was slow, but not the combination that justifies making
-            ## every write on this server sleep.
+            ## Collection writes are asynchronous, but object writes are not -
+            ## no reason to make every PUT on this server sleep.
+            value["support"] = "unsupported"
             value["behaviour"] = "; ".join(notes)
-        self.set_feature("write-delay", value)
+        self.set_feature("synchronous-write", value)
 
 
 class CheckMutable(Check):

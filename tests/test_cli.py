@@ -147,7 +147,7 @@ class TestCliNameFallback:
 
         Previously the flag was silently dropped for --name/registry servers
         (honoured only on the explicit-config path via get_davclient), so a
-        peculiarity like write-delay could not be activated without editing the
+        write delay (synchronous-write) could not be activated without editing the
         registry server's config.
         """
         runner = CliRunner()

@@ -395,7 +395,7 @@ class TestTheCollectionAxis:
         created there yet.  That is the same 404 a missing collection gives,
         and it was recorded as ``encoded: unsupported``.  Creating a calendar
         at '%40' separates the two, exactly as it does thirty lines further
-        down; a server that merely creates asynchronously (the write-delay
+        down; a server that merely creates asynchronously (the delayed-creation
         quirk this suite already probes) tripped it with no fault at all.
         """
         checker = _make_checker()

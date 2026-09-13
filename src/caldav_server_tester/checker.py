@@ -6,12 +6,12 @@ import re
 import time
 
 import caldav
-from caldav.compatibility_hints import FeatureSet
+from caldav.compatibility_hints import FeatureSet, write_delay
 
 from . import checks
 from .checks_base import Check, takes_effect
 
-## HTTP methods that change server state.  A write-delay server settles each of
+## HTTP methods that change server state.  A server without synchronous-write settles each of
 ## these asynchronously, so the checker sleeps after every such request.
 WRITE_HTTP_METHODS = frozenset({"PUT", "DELETE", "MKCALENDAR", "MKCOL", "PROPPATCH", "MOVE", "COPY", "POST"})
 
@@ -127,25 +127,23 @@ class ServerQuirkChecker:
 
         Calendar._search_delay = delay
 
-        ## Handle write-delay if configured.  Unlike search-cache (which wraps the
+        ## Handle the post-write delay of a server without synchronous-write.
+        ## Unlike search-cache (which wraps the
         ## library-owned Calendar class), every write goes through the client's
         ## request(), which this checker owns - so wrap that per client, covering
         ## the main connection and any extra (scheduling) accounts on the same
-        ## asynchronous server.  Reflect it into the observed feature set so the
-        ## report still flags "this server needs a write delay" rather than
-        ## silently smoothing over the fragility a naive client would hit.
-        write_delay_config = self._client_obj.features.is_supported("write-delay", return_type=dict)
-        write_delay = write_delay_config.get("delay", 0) if write_delay_config.get("behaviour") == "delay" else 0
-        self.configured_write_delay = write_delay
-        ## The observed value is set by CheckWriteDelay, which measures it - and
+        ## asynchronous server.
+        configured = write_delay(self._client_obj.features)
+        self.configured_write_delay = configured
+        ## The observed value is set by CheckSynchronousWrite, which measures it - and
         ## falls back to reporting this configured value where it cannot.  It is
         ## deliberately not recorded here: an observation belongs to the check
         ## that made it, and recording it up front would make the feature look
         ## already-checked to the machinery that verifies every declared feature
         ## was probed.
-        if write_delay:
+        if configured:
             for client in (self._client_obj, *self._extra_clients):
-                _install_write_delay(client, write_delay)
+                _install_write_delay(client, configured)
 
     @property
     def delay_probe_timeout(self):
@@ -168,7 +166,7 @@ class ServerQuirkChecker:
         than what it ended up doing - has to catch it on the way past.  Yields
         a list that fills up as the requests go out.
 
-        Wraps the same ``client.request`` the write-delay wrapper does, and
+        Wraps the same ``client.request`` the write delay wrapper does, and
         restores whatever was there before, so the two nest in either order.
         Only the main client is recorded: everything that creates a calendar
         goes through ``checker.principal``, which belongs to it.
@@ -196,7 +194,7 @@ class ServerQuirkChecker:
 
     @contextlib.contextmanager
     def without_write_delay(self):
-        """Run a block with the configured write-delay suspended.
+        """Run a block with the configured write delay suspended.
 
         Every ordinary check wants the delay honoured, so its read-backs see
         settled data.  The probes that exist to *measure* the delay want the

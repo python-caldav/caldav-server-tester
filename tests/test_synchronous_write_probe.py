@@ -1,8 +1,8 @@
-"""CheckWriteDelay - measuring the server's own write delay.
+"""CheckSynchronousWrite - measuring the server's own write delay.
 
 Servers like Infomaniak/SabreDAV process writes asynchronously: a PUT returns
-before the object is readable back.  The library's answer is the `write-delay`
-peculiarity, a flat sleep after every write - but that value has to be written
+before the object is readable back.  The library's answer is `synchronous-write`
+declared unsupported with a `delay`, a flat sleep after every write - but that value has to be written
 into a profile by hand, which means somebody has to measure it first, and until
 they do the tester mis-probes the server rather than reporting it as slow.
 
@@ -20,7 +20,7 @@ from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import NotFoundError
 
 from caldav_server_tester.checker import ServerQuirkChecker
-from caldav_server_tester.checks import CheckWriteDelay, PrepareCalendar
+from caldav_server_tester.checks import CheckSynchronousWrite, PrepareCalendar
 
 
 def _checker(monkeypatch, configured=None) -> ServerQuirkChecker:
@@ -30,7 +30,7 @@ def _checker(monkeypatch, configured=None) -> ServerQuirkChecker:
     client = Mock()
     features = FeatureSet()
     if configured is not None:
-        features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": configured}}, collapse=False)
+        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False)
     client.features = features
     client.request = Mock(return_value="response")
     checker = ServerQuirkChecker(client, debug_mode=None)
@@ -61,8 +61,8 @@ def _readback(monkeypatch, fail_times: int) -> dict:
 
 
 def _run(checker) -> dict:
-    CheckWriteDelay(checker)._run_check()
-    return checker.features_checked.is_supported("write-delay", dict)
+    CheckSynchronousWrite(checker)._run_check()
+    return checker.features_checked.is_supported("synchronous-write", dict)
 
 
 class TestSaveLoadDelayMeasurement:
@@ -111,7 +111,7 @@ class TestSaveLoadDelayMeasurement:
 
 
 class TestAggregateVerdict:
-    """ "Delays everywhere" is what justifies a write-delay configuration."""
+    """Any delayed write is asynchronous; a delayed object write justifies a sleep."""
 
     def _with_calendar_delays(self, checker, create=None, delete=None) -> None:
         if create is not None:
@@ -123,19 +123,29 @@ class TestAggregateVerdict:
                 "delete-calendar", {"support": "quirk", "behaviour": "delayed deletion", "delay": delete}
             )
 
-    def test_delays_on_creation_and_save_load_recommend_write_delay(self, monkeypatch) -> None:
+    def test_delays_on_creation_and_save_load_recommend_a_delay(self, monkeypatch) -> None:
         checker = _checker(monkeypatch)
         self._with_calendar_delays(checker, create=6, delete=4)
         _readback(monkeypatch, fail_times=8)
 
         observed = _run(checker)
 
-        assert observed["support"] == "quirk"
+        assert observed["support"] == "unsupported"
         assert observed["delay"] == 8  ## the longest delay seen anywhere
-        assert "write-delay" in observed["behaviour"]
+        assert "consider configuring a delay" in observed["behaviour"]
 
-    def test_a_delayed_creation_alone_does_not_recommend_it(self, monkeypatch) -> None:
-        """Asynchronous collection creation is not asynchronous writes.
+    def test_a_delayed_save_load_alone_recommends_a_delay(self, monkeypatch) -> None:
+        """An object not readable on return is what the post-write sleep is for."""
+        checker = _checker(monkeypatch)
+        _readback(monkeypatch, fail_times=3)
+
+        observed = _run(checker)
+
+        assert observed["support"] == "unsupported"
+        assert observed["delay"] == 3
+
+    def test_a_delayed_creation_alone_records_no_delay(self, monkeypatch) -> None:
+        """Asynchronous collection creation is asynchronous, but not a reason to sleep.
 
         A blanket post-write sleep would be the wrong prescription: it would
         slow every PUT on a server whose PUTs are perfectly synchronous.
@@ -146,17 +156,19 @@ class TestAggregateVerdict:
 
         observed = _run(checker)
 
-        assert observed["support"] == "full"
+        assert observed["support"] == "unsupported"
+        assert "delay" not in observed
         assert "create-calendar" in observed["behaviour"]
 
-    def test_a_delayed_deletion_alone_does_not_recommend_it(self, monkeypatch) -> None:
+    def test_a_delayed_deletion_alone_records_no_delay(self, monkeypatch) -> None:
         checker = _checker(monkeypatch)
         self._with_calendar_delays(checker, delete=4)
         _readback(monkeypatch, fail_times=0)
 
         observed = _run(checker)
 
-        assert observed["support"] == "full"
+        assert observed["support"] == "unsupported"
+        assert "delay" not in observed
 
     def test_nothing_delayed_is_plain_full(self, monkeypatch) -> None:
         checker = _checker(monkeypatch)
@@ -176,6 +188,6 @@ class TestConfiguredValueIsStillReported:
 
         observed = _run(checker)
 
-        assert observed["support"] == "quirk"
+        assert observed["support"] == "unsupported"
         assert observed["delay"] == 16
         assert "not probed" in observed["note"]

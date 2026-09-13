@@ -457,7 +457,7 @@ class TestPollCalendar:
 class TestObservedDelayWarning:
     """An observed delay is checked against the configured one.
 
-    A write-delay in a server profile is a number somebody wrote by hand, and
+    A synchronous-write delay in a server profile is a number somebody wrote by hand, and
     the only way to find out it is too small is to measure the server.  Once a
     probe records how long the server actually took, set_feature compares it
     with what the profile asks a client to sleep and complains through the same
@@ -473,7 +473,9 @@ class TestObservedDelayWarning:
         check = Check(checker)
         expected = FeatureSet()
         if configured is not None:
-            expected.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": configured}}, collapse=False)
+            expected.copyFeatureSet(
+                {"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False
+            )
         check.expected_features = expected
         return check
 
@@ -501,7 +503,7 @@ class TestObservedDelayWarning:
         with caplog.at_level(logging.ERROR):
             check.set_feature("create-calendar", self._delayed(3))
         assert "observed delay" in caplog.text
-        assert "no write-delay is configured" in caplog.text
+        assert "no synchronous-write delay is configured" in caplog.text
 
     def test_a_lower_bound_always_warns(self, caplog) -> None:
         """The probe gave up waiting, so the real delay is longer than this."""
@@ -513,8 +515,25 @@ class TestObservedDelayWarning:
     def test_a_zero_delay_says_nothing(self, caplog) -> None:
         check = self._check(configured=10)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("write-delay", {"support": "full", "save-load-delay": 0, "delay": 0})
+            check.set_feature("synchronous-write", {"support": "full", "save-load-delay": 0, "delay": 0})
         assert "observed delay" not in caplog.text
+
+    def test_timing_keys_are_not_an_unexpected_observation(self, caplog) -> None:
+        """A measured delay never equals the configured one to the second.
+
+        The delay has its own comparison; the verdict comparison must not also
+        report every run as unexpected because of it.
+        """
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("synchronous-write", {"support": "unsupported", "delay": 3, "save-load-delay": 3})
+        assert "unexpected" not in caplog.text
+
+    def test_the_verdict_is_still_compared(self, caplog) -> None:
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("synchronous-write", {"support": "full", "save-load-delay": 0})
+        assert "unexpected for synchronous-write" in caplog.text
 
     def test_silent_when_debug_mode_is_off(self, caplog) -> None:
         check = self._check(configured=None, debug_mode=None)

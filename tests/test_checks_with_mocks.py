@@ -1509,7 +1509,7 @@ class TestCalendarProbeSuspendsWriteDelay:
 
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": 16}}, collapse=False)
+        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
         client.features = features
         client.request = Mock(return_value="response")
         checker = ServerQuirkChecker(client, debug_mode=None)
@@ -1541,7 +1541,7 @@ class TestCalendarProbeSuspendsWriteDelay:
         """Otherwise suspending the delay reports a slow server as a broken one."""
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": 16}}, collapse=False)
+        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
         client.features = features
         client.request = Mock(return_value="response")
         assert ServerQuirkChecker(client, debug_mode=None).delay_probe_timeout == 32

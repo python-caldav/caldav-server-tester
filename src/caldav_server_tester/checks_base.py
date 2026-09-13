@@ -2,9 +2,15 @@ import copy
 import logging
 import time
 
+from caldav.compatibility_hints import write_delay
 from caldav.lib.error import DAVError
 
-## How much of a configured write-delay an observation may take up before the
+## Keys that record timing rather than a verdict.  Left out when an observation
+## is compared with the profile: a measured delay is never exactly the number
+## somebody configured, and _check_observed_delay compares the two properly.
+TIMING_KEYS = ("delay", "save-load-delay", "delay-is-lower-bound", "note")
+
+## How much of a configured write delay an observation may take up before the
 ## configured value is called into question.  A server measured at 9s against a
 ## 10s setting is not comfortably covered - the setting was somebody's estimate,
 ## and the next run on a busier day is the one that breaks.
@@ -104,9 +110,9 @@ class Check:
         observed_ = fs.is_supported(feature, dict)
         observed = copy.deepcopy(observed_)
 
-        ## Strip all free-text information from both observed and expected
+        ## Strip all free-text and timing information from both observed and expected
         for stripdict in observed, expected:
-            for y in ("behaviour", "description"):
+            for y in ("behaviour", "description", *TIMING_KEYS):
                 if y in stripdict:
                     stripdict.pop(y)
 
@@ -127,7 +133,7 @@ class Check:
     def _check_observed_delay(self, feature, fs):
         """Complain when a measured delay outgrows the configured one.
 
-        A `write-delay` in a server profile is a number written by hand, and the
+        The `delay` of `synchronous-write` in a server profile is a number written by hand, and the
         only way to learn that it is too small is to measure the server.  Any
         probe that records a `delay` therefore gets it compared against what the
         profile asks a client to sleep, and the complaint goes out through the
@@ -144,22 +150,23 @@ class Check:
         if not delay:
             return
 
-        write_delay = self.expected_features.is_supported("write-delay", dict)
-        configured = write_delay.get("delay", 0) if write_delay.get("behaviour") == "delay" else 0
+        configured = write_delay(self.expected_features)
 
         if not configured:
-            complaint = f"{feature}: observed delay of ~{delay}s, but no write-delay is configured for this server"
+            complaint = (
+                f"{feature}: observed delay of ~{delay}s, but no synchronous-write delay is configured for this server"
+            )
         elif observed.get("delay-is-lower-bound"):
             ## The probe stopped waiting, so the server is slower than this - by
             ## an unknown amount, which no ratio can be computed against.
             complaint = (
                 f"{feature}: observed delay is at least ~{delay}s, longer than the probe waited, "
-                f"against a configured write-delay of {configured}s"
+                f"against a configured write delay of {configured}s"
             )
         elif delay / configured > DELAY_MARGIN_RATIO:
             complaint = (
                 f"{feature}: observed delay of ~{delay}s takes up more than "
-                f"{DELAY_MARGIN_RATIO:.0%} of the configured write-delay of {configured}s"
+                f"{DELAY_MARGIN_RATIO:.0%} of the configured write delay of {configured}s"
             )
         else:
             return
@@ -192,7 +199,7 @@ class Check:
         *merges* into whatever is already there, so a key the new verdict does
         not carry survives - most damagingly a `delay`, which then belongs to
         an observation that is no longer recorded and gets compared against the
-        configured write-delay as if it were this one's.  The library offers no
+        configured write delay as if it were this one's.  The library offers no
         way to replace a node, hence the reach into it here.
         """
         candidate = verdict.get("support", "full") if isinstance(verdict, dict) else "full"

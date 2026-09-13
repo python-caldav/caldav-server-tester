@@ -554,7 +554,7 @@ class TestPurgeErrorReporting:
 
 
 class TestWriteDelay:
-    """write-delay peculiarity: sleep after every write request.
+    """synchronous-write unsupported with a delay: sleep after every write request.
 
     Some servers (Infomaniak/SabreDAV) process writes asynchronously, so the
     checker must wait after each PUT/DELETE/MKCALENDAR/... before relying on the
@@ -566,7 +566,7 @@ class TestWriteDelay:
         client = Mock()
         features = FeatureSet()
         if delay is not None:
-            features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": delay}}, collapse=False)
+            features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
         client.features = features
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
@@ -611,15 +611,15 @@ class TestWriteDelay:
         client = self._client(delay=None)
         original = client.request
         ServerQuirkChecker(client)
-        ## request must be left untouched when the server has no write-delay
+        ## request must be left untouched when the server has no write delay
         assert client.request is original
         client.request("https://example.com/caldav/x", "PUT")
         mock_sleep.assert_not_called()
 
     @patch("caldav_server_tester.checker.time.sleep")
-    def test_no_delay_when_behaviour_not_delay(self, mock_sleep) -> None:
+    def test_no_delay_when_writes_are_synchronous(self, mock_sleep) -> None:
         client = self._client()
-        client.features.copyFeatureSet({"write-delay": {"behaviour": "normal"}}, collapse=False)
+        client.features.copyFeatureSet({"synchronous-write": {"support": "full", "delay": 10}}, collapse=False)
         original = client.request
         ServerQuirkChecker(client)
         assert client.request is original
@@ -627,19 +627,19 @@ class TestWriteDelay:
         mock_sleep.assert_not_called()
 
     def test_construction_alone_claims_no_observation(self) -> None:
-        """Reporting the delay is CheckWriteDelay's job, not the constructor's.
+        """Reporting the delay is CheckSynchronousWrite's job, not the constructor's.
 
         The constructor installs the sleep, but recording "this server has a
         write delay" is an observation, and observations belong to the check
-        that made one - CheckWriteDelay measures it, and falls back to
+        that made one - CheckSynchronousWrite measures it, and falls back to
         reporting the configured value where it cannot (see
-        tests/test_write_delay_probe.py).  Recording it here would also make
+        tests/test_synchronous_write_probe.py).  Recording it here would also make
         the feature look already-checked to the machinery that verifies every
         declared feature was probed.
         """
         client = self._client(delay=10)
         checker = ServerQuirkChecker(client)
-        assert "write-delay" not in checker.features_checked.dotted_feature_set_list()
+        assert "synchronous-write" not in checker.features_checked.dotted_feature_set_list()
         ## ... but the sleep is installed all the same
         assert client._write_delay == 10
 
@@ -771,7 +771,7 @@ class TestPurgeProbeCalendars:
 class TestWriteDelaySuspension:
     """A probe that measures the server's own delay must not be smoothed over.
 
-    Every other check wants the configured write-delay honoured, so a
+    Every other check wants the configured write delay honoured, so a
     read-back sees settled data.  The probes that exist to *measure* the delay
     want the opposite: with the sleep in place the calendar is always there by
     the time the poll runs, the observed delay is 0, and the checker reports
@@ -782,7 +782,7 @@ class TestWriteDelaySuspension:
         client = Mock()
         features = FeatureSet()
         if delay is not None:
-            features.copyFeatureSet({"write-delay": {"behaviour": "delay", "delay": delay}}, collapse=False)
+            features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
         client.features = features
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"

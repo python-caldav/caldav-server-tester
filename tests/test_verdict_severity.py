@@ -76,7 +76,7 @@ class TestRecordWorse:
 
         A timing claim belonging to an observation that has just been displaced
         is fed to _check_observed_delay and complained about against the
-        configured write-delay — a number nobody measured.
+        configured write delay — a number nobody measured.
         """
         check, checker = self._check()
         checker._features_checked.set_feature(
