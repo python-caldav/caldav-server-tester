@@ -10,6 +10,7 @@ client can catch it.  These pin the distinction at the three places the class
 can hit it.
 """
 
+import contextlib
 from datetime import datetime
 
 import pytest
@@ -65,6 +66,10 @@ class _FakeChecker:
         self.debug_mode = None
         self._client_obj = None
         self._checks_run = set()
+
+    @contextlib.contextmanager
+    def record_responses(self, methods):
+        yield []
 
 
 ## The ranges CheckRecurrenceSearch has to see answered to reach the far-future

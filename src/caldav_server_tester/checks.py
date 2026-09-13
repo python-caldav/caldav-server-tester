@@ -122,6 +122,33 @@ def is_statusless_multistatus(response) -> bool:
     return bare.find(dav.Status.tag) is None and bare.find(dav.PropStat.tag) is None
 
 
+## What the report calls expanded instances answered in DAV:responses of their
+## own under one href.  Spelled the same in bedework_5_0_0, for the same reason
+## as EMPTY_207_BEHAVIOUR.
+RESPONSE_PER_INSTANCE_BEHAVIOUR = (
+    "response-per-instance: each expanded instance comes in a DAV:response of its own, "
+    "all under the same href, in violation of RFC 4918 section 14.24"
+)
+
+
+def has_repeated_hrefs(response) -> bool:
+    """Does one href appear in more than one DAV:response of this multistatus?
+
+    RFC 4918 section 14.24 forbids it.  Bedework 5 answers an expanded
+    calendar-query with one response per recurrence instance, all under the
+    href of the resource; the library merges them, so only the raw response
+    shows it.
+    """
+    if getattr(response, "tree", None) is None:
+        return False
+    hrefs = [
+        (href.text or "").strip()
+        for r in response.tree.findall(".//" + dav.Response.tag)
+        if (href := r.find(dav.Href.tag)) is not None
+    ]
+    return len(hrefs) != len(set(hrefs))
+
+
 class EncodeAtObservation(NamedTuple):
     """What one axis of the ``url.encode-at`` probe managed to observe.
 
@@ -4776,99 +4803,124 @@ class CheckRecurrenceSearch(Check):
             server_expand=True,
             post_filter=False,
         )
-        self.set_feature(
-            "search.recurrences.expanded.event",
-            len(events) == 1 and events[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
+        ## Graded once, further down: set_feature() compares against the
+        ## expected profile on every call, so a "full" later turned "quirk"
+        ## would be logged as a mismatch.
+        expanded_event = len(events) == 1 and events[0].component["dtstart"] == datetime(
+            base, 2, 12, 12, 0, 0, tzinfo=utc
         )
-        if todo_testable:
-            ## The task calendar, not the event calendar: on servers that keep
-            ## tasks in a separate collection this search finds nothing in cal
-            ## and the feature is reported unsupported for no reason.
-            todos = tl.search(
-                start=datetime(base, 2, 12, tzinfo=utc),
-                end=datetime(base, 2, 13, tzinfo=utc),
-                todo=True,
-                server_expand=True,
-                post_filter=False,
-            )
-            self.set_feature(
-                "search.recurrences.expanded.todo",
-                len(todos) == 1 and todos[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
-            )
-        else:
-            ## Unmeasured for the same reason as the two above.
-            self.set_feature("search.recurrences.expanded.todo", "unknown")
-        exception = cal.search(
-            start=datetime(base, 2, 13, 11, tzinfo=utc),
-            end=datetime(base, 2, 13, 13, tzinfo=utc),
-            event=True,
-            server_expand=True,
-            post_filter=False,
-        )
-        self.set_feature(
-            "search.recurrences.expanded.exception",
-            len(exception) == 1
-            and exception[0].component["dtstart"] == datetime(base, 2, 13, 12, 0, 0, tzinfo=utc)
-            and exception[0].component["summary"] == "February recurrence with different summary"
-            and getattr(exception[0].component.get("RECURRENCE-ID"), "dt", None)
-            == datetime(base, 2, 13, 12, tzinfo=utc),
-        )
-
-        ## The exception above carries no SEQUENCE.  A second fixture
-        ## (csc_monthly_recurring_with_exception_seq, on the 14th) is identical but
-        ## carries SEQUENCE on both components, as real-world clients always do.
-        ## Some servers (Stalwart) suppress the exception-overridden occurrence
-        ## during server-side expand only when SEQUENCE is absent; with SEQUENCE
-        ## present they return both the original occurrence and the override.  If
-        ## the SEQUENCE-less variant worked but the SEQUENCE one does not, the
-        ## feature is fragile rather than fully supported.
-        if self.checker.features_checked.is_supported("search.recurrences.expanded.exception"):
-            seq_exception = cal.search(
-                start=datetime(base, 2, 14, 11, tzinfo=utc),
-                end=datetime(base, 2, 14, 13, tzinfo=utc),
+        expanded = {"support": "full" if expanded_event else "unsupported"}
+        ## Recorded in the finally: every search below can raise, and
+        ## run_check's handler would then write this measured verdict down
+        ## as unknown.
+        try:
+            if todo_testable:
+                ## The task calendar, not the event calendar: on servers that keep
+                ## tasks in a separate collection this search finds nothing in cal
+                ## and the feature is reported unsupported for no reason.
+                todos = tl.search(
+                    start=datetime(base, 2, 12, tzinfo=utc),
+                    end=datetime(base, 2, 13, tzinfo=utc),
+                    todo=True,
+                    server_expand=True,
+                    post_filter=False,
+                )
+                self.set_feature(
+                    "search.recurrences.expanded.todo",
+                    len(todos) == 1 and todos[0].component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc),
+                )
+            else:
+                ## Unmeasured for the same reason as the two above.
+                self.set_feature("search.recurrences.expanded.todo", "unknown")
+            exception = cal.search(
+                start=datetime(base, 2, 13, 11, tzinfo=utc),
+                end=datetime(base, 2, 13, 13, tzinfo=utc),
                 event=True,
                 server_expand=True,
                 post_filter=False,
             )
-            seq_ok = (
-                len(seq_exception) == 1
-                and seq_exception[0].component["dtstart"] == datetime(base, 2, 14, 12, 0, 0, tzinfo=utc)
-                and seq_exception[0].component["summary"] == "February recurrence with different summary (seq)"
-                and getattr(seq_exception[0].component.get("RECURRENCE-ID"), "dt", None)
-                == datetime(base, 2, 14, 12, tzinfo=utc)
+            self.set_feature(
+                "search.recurrences.expanded.exception",
+                len(exception) == 1
+                and exception[0].component["dtstart"] == datetime(base, 2, 13, 12, 0, 0, tzinfo=utc)
+                and exception[0].component["summary"] == "February recurrence with different summary"
+                and getattr(exception[0].component.get("RECURRENCE-ID"), "dt", None)
+                == datetime(base, 2, 13, 12, tzinfo=utc),
             )
-            if not seq_ok:
-                self.set_feature(
-                    "search.recurrences.expanded.exception",
-                    {
-                        "support": "fragile",
-                        "behaviour": "server-side expand fails to suppress the exception-overridden occurrence when SEQUENCE is present",
-                    },
-                )
 
-        ## RFC 4791 §9.6.5: non-initial expanded instances MUST include RECURRENCE-ID;
-        ## the initial instance MAY omit it.  Query a range covering both the regular
-        ## Feb 12 occurrence and the Feb 13 exception to detect servers that omit
-        ## RECURRENCE-ID on the initial instance, and annotate the expanded.event feature.
-        multi = cal.search(
-            start=datetime(base, 2, 12, tzinfo=utc),
-            end=datetime(base, 2, 14, tzinfo=utc),
-            event=True,
-            server_expand=True,
-            post_filter=False,
-        )
-        if len(multi) == 2:
-            initial = next(
-                (e for e in multi if e.component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc)),
-                None,
-            )
-            if initial is not None and getattr(initial.component.get("RECURRENCE-ID"), "dt", None) is None:
-                self.set_feature(
-                    "search.recurrences.expanded.event",
-                    {
-                        "behaviour": "initial occurrence lacks RECURRENCE-ID; RFC 4791 §9.6.5 permits this — clients must fall back to DTSTART"
-                    },
+            ## The exception above carries no SEQUENCE.  A second fixture
+            ## (csc_monthly_recurring_with_exception_seq, on the 14th) is identical but
+            ## carries SEQUENCE on both components, as real-world clients always do.
+            ## Some servers (Stalwart) suppress the exception-overridden occurrence
+            ## during server-side expand only when SEQUENCE is absent; with SEQUENCE
+            ## present they return both the original occurrence and the override.  If
+            ## the SEQUENCE-less variant worked but the SEQUENCE one does not, the
+            ## feature is fragile rather than fully supported.
+            if self.checker.features_checked.is_supported("search.recurrences.expanded.exception"):
+                seq_exception = cal.search(
+                    start=datetime(base, 2, 14, 11, tzinfo=utc),
+                    end=datetime(base, 2, 14, 13, tzinfo=utc),
+                    event=True,
+                    server_expand=True,
+                    post_filter=False,
                 )
+                seq_ok = (
+                    len(seq_exception) == 1
+                    and seq_exception[0].component["dtstart"] == datetime(base, 2, 14, 12, 0, 0, tzinfo=utc)
+                    and seq_exception[0].component["summary"] == "February recurrence with different summary (seq)"
+                    and getattr(seq_exception[0].component.get("RECURRENCE-ID"), "dt", None)
+                    == datetime(base, 2, 14, 12, tzinfo=utc)
+                )
+                if not seq_ok:
+                    self.set_feature(
+                        "search.recurrences.expanded.exception",
+                        {
+                            "support": "fragile",
+                            "behaviour": "server-side expand fails to suppress the exception-overridden occurrence when SEQUENCE is present",
+                        },
+                    )
+
+            ## RFC 4791 §9.6.5: non-initial expanded instances MUST include RECURRENCE-ID;
+            ## the initial instance MAY omit it.  Query a range covering both the regular
+            ## Feb 12 occurrence and the Feb 13 exception to detect servers that omit
+            ## RECURRENCE-ID on the initial instance, and annotate the expanded.event feature.
+            ## RFC 4791 section 7.8.3 answers every expanded instance of a resource
+            ## in one DAV:response; Bedework 5 answers one response per instance,
+            ## all under the same href.  The library merges those, so it is read off
+            ## the raw REPORT.  Feb 12 - Mar 13 holds two instances of the monthly
+            ## recurring event - the query below spans two resources with one
+            ## instance each, and so can never repeat an href.
+            with self.checker.record_responses(("REPORT",)) as reports:
+                try:
+                    cal.search(
+                        start=datetime(base, 2, 12, tzinfo=utc),
+                        end=datetime(base, 3, 13, tzinfo=utc),
+                        event=True,
+                        server_expand=True,
+                        post_filter=False,
+                    )
+                except (AuthorizationError, DAVError):
+                    pass
+            if expanded_event and any(has_repeated_hrefs(r) for r in reports):
+                expanded = {"support": "quirk", "behaviour": RESPONSE_PER_INSTANCE_BEHAVIOUR}
+
+            multi = cal.search(
+                start=datetime(base, 2, 12, tzinfo=utc),
+                end=datetime(base, 2, 14, tzinfo=utc),
+                event=True,
+                server_expand=True,
+                post_filter=False,
+            )
+            if len(multi) == 2:
+                initial = next(
+                    (e for e in multi if e.component["dtstart"] == datetime(base, 2, 12, 12, 0, 0, tzinfo=utc)),
+                    None,
+                )
+                if initial is not None and getattr(initial.component.get("RECURRENCE-ID"), "dt", None) is None:
+                    note = "initial occurrence lacks RECURRENCE-ID; RFC 4791 §9.6.5 permits this — clients must fall back to DTSTART"
+                    expanded["behaviour"] = "; ".join(filter(None, (expanded.get("behaviour"), note)))
+        finally:
+            self.set_feature("search.recurrences.expanded.event", expanded)
 
 
 class CheckCaseSensitiveSearch(Check):
