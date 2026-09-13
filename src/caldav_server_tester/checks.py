@@ -1324,6 +1324,213 @@ class CheckMakeDeleteCalendar(Check):
             _cleanup()
 
 
+class CheckSupportedComponentSet(Check):
+    """
+    Checks whether a calendar created with a component-set restriction really
+    is restricted.
+
+    RFC 4791 section 5.2.3 lets a client hand MKCALENDAR a
+    CALDAV:supported-calendar-component-set, and section 5.3.1 has a server
+    that cannot do what was asked answer 403 with a
+    CALDAV:supported-calendar-component-set precondition rather than create
+    something else.  A server may legitimately not report the property at all -
+    5.2.3 makes it optional, and an absent property means every component type
+    is welcome - so what the collection *advertises* cannot be the only
+    question asked.  The restriction is therefore measured twice over, from a
+    calendar the probe asks to be VTODO-only:
+
+      * advertised - does the created collection report the component set that
+        was requested?
+      * enforced - does it refuse a VEVENT, which the restriction excludes?
+
+    Either one is enough for "full", which is what the feature's own
+    description says ("the server both advertises (or enforces) the
+    restriction"); the behaviour note says so when only one of them holds.
+    Neither is "unsupported": the restriction was silently ignored and
+    wrong-type objects can be saved to the calendar.  A MKCALENDAR that is
+    refused only when it carries the component set is "ungraceful".
+
+    Bedework 5 is the server this was written for: the component set of a
+    Bedework collection is a function of its internal calType, which nothing in
+    CalDAV can select, so the property is accepted with a "200 ok" propstat and
+    the collection is VEVENT-only regardless.
+    """
+
+    depends_on = {CheckMakeDeleteCalendar}
+    features_to_be_checked = {"create-calendar.with-supported-component-types"}
+
+    FEATURE = "create-calendar.with-supported-component-types"
+
+    ## The cal_id the probe uses.  Prefixed so the cleanup sweep recognises it
+    ## (see checker.PROBE_CALENDAR_PREFIXES).
+    CAL_ID = "caldav-server-checker-compset-test"
+
+    ## What the probe calendar is asked to hold, and the component type that
+    ## restriction excludes.  VTODO rather than VJOURNAL because a server that
+    ## can only do one of them does VTODO (and save-load.todo is measured
+    ## anyway, so a failure here has a neighbour to be read against).
+    RESTRICTION = ["VTODO"]
+    WRONG_TYPE = "VEVENT"
+
+    def _run_check(self) -> None:
+        ## No calendar can be created, so there is nothing to restrict: the
+        ## feature collapses under create-calendar's own verdict, the way the
+        ## set-displayname features do.  takes_effect(), not is_supported():
+        ## a creation that is merely fragile or rude still produces a calendar
+        ## to look at.
+        if not self.takes_effect("create-calendar"):
+            return
+
+        ## A leftover from an interrupted run would answer the wrong question -
+        ## it may well be a calendar this probe created *unrestricted* as its
+        ## own control below.
+        self._delete_probe_calendar()
+        try:
+            self._probe()
+        finally:
+            self._delete_probe_calendar()
+
+    def _probe(self) -> None:
+        cal, _attempts, error = self.make_calendar_with_retries(
+            self.CAL_ID, supported_calendar_component_set=self.RESTRICTION
+        )
+        if cal is None:
+            self.set_feature(self.FEATURE, self._grade_refused_creation(error))
+            return
+
+        ## Some servers process MKCALENDAR asynchronously; poll on the calendar
+        ## object the library handed back rather than on the cal_id, which is
+        ## not the collection's address on a server that relocates it (see
+        ## create-calendar.stable-url).
+        cal, _waited = self._poll_calendar(cal=cal, timeout=self.checker.delay_probe_timeout)
+        if cal is None:
+            self.set_feature(
+                self.FEATURE,
+                {
+                    "support": "unknown",
+                    "behaviour": "the restricted calendar was accepted but never became queryable",
+                },
+            )
+            return
+
+        advertised = self._advertised(cal)
+        enforced = self._enforced(cal)
+        self.set_feature(self.FEATURE, self._grade(advertised, enforced))
+
+    def _grade_refused_creation(self, error):
+        """The MKCALENDAR carrying the component set was refused - by this
+        server, or only because of the component set?
+
+        The control is the same cal_id without the restriction: a server that
+        creates it then is refusing the component set specifically, which is
+        what "ungraceful" describes.  One that refuses either way is refusing
+        to create calendars for a reason of its own, and create-calendar is the
+        feature that gets to say so - nothing is claimed here.
+        """
+        control, _attempts, control_error = self.make_calendar_with_retries(self.CAL_ID)
+        if control is None:
+            return {
+                "support": "unknown",
+                "behaviour": f"cannot test, creating the probe calendar failed with and without the component set ({control_error})",
+            }
+        return {
+            "support": "ungraceful",
+            "behaviour": f"MKCALENDAR is refused when it carries a component set ({error})",
+        }
+
+    def _advertised(self, cal):
+        """What the created collection reports, or ``None`` when it cannot be read.
+
+        ``with_fallback=False``: the fallback answers with the RFC default set
+        for a server that reports nothing, which is the right answer for a
+        client and the wrong one for a probe - it would read as "advertises
+        everything" where nothing was advertised at all.
+        """
+        try:
+            return cal.get_supported_components(with_fallback=False)
+        except (DAVError, AuthorizationError):
+            return None
+
+    def _enforced(self, cal) -> bool | None:
+        """Does the collection refuse the component type the restriction excludes?
+
+        ``None`` when the save failed without a refusal: a 5xx, or an error
+        carrying no status, is the server having a bad moment and says nothing
+        about the restriction either way.
+        """
+        uid = f"csc_compset_{uuid.uuid4()}"
+        ## _base_year() rather than checker.fixture_base_year: that attribute is
+        ## set by PrepareCalendar, which this check does not depend on and may
+        ## well run after it.  Same year either way - both read this function.
+        year = _base_year()
+        try:
+            obj = cal.save_event(
+                dtstart=datetime(year, 1, 8, 10, 0, tzinfo=utc),
+                dtend=datetime(year, 1, 8, 11, 0, tzinfo=utc),
+                summary="component set probe",
+                uid=uid,
+            )
+        except AuthorizationError:
+            return True
+        except DAVError as exc:
+            status = dav_error_status(exc)
+            return True if status is not None and 400 <= status < 500 else None
+        ## It went in.  The calendar is deleted at the end of the check either
+        ## way, but a server that cannot delete a calendar would keep the
+        ## object, so take it out again.
+        try:
+            obj.delete()
+        except (DAVError, AuthorizationError):
+            logging.warning("Could not delete the %s the component-set probe saved (uid %s)", self.WRONG_TYPE, uid)
+        return False
+
+    def _grade(self, advertised, enforced):
+        """Grade the restriction from what the collection says and what it takes."""
+        asked = f"asked for {self.RESTRICTION}"
+        if advertised is None:
+            advertises = "its component set cannot be read"
+        elif not advertised:
+            advertises = "it advertises no component set"
+        else:
+            advertises = f"it advertises {sorted(advertised)}"
+        ## A restriction is advertised when nothing outside it is: a server
+        ## reporting a subset of what was asked for restricts at least as much.
+        restricted = bool(advertised) and not set(advertised) - set(self.RESTRICTION)
+
+        if restricted and enforced:
+            return True
+        if restricted and enforced is None:
+            return {
+                "support": "full",
+                "behaviour": f"the restriction is advertised; saving a {self.WRONG_TYPE} failed without a refusal, so enforcement was not tested",
+            }
+        if restricted:
+            return {
+                "support": "full",
+                "behaviour": f"the restriction is advertised but not enforced; a {self.WRONG_TYPE} can be saved to the calendar",
+            }
+        if enforced is None:
+            return {
+                "support": "unknown",
+                "behaviour": f"cannot test, {advertises} and saving a {self.WRONG_TYPE} failed without a refusal",
+            }
+        if enforced:
+            return {
+                "support": "full",
+                "behaviour": f"the restriction is enforced but not advertised ({advertises})",
+            }
+        return {
+            "support": "unsupported",
+            "behaviour": f"the restriction is ignored: {asked}, {advertises}, and a {self.WRONG_TYPE} can be saved to the calendar",
+        }
+
+    def _delete_probe_calendar(self) -> None:
+        try:
+            DAVObject.delete(self.checker.principal.calendar(cal_id=self.CAL_ID))
+        except Exception:
+            pass
+
+
 class PrepareCalendar(Check):
     """
     This "check" doesn't check anything, but ensures the calendar has some known events

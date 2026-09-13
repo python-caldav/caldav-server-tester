@@ -180,14 +180,16 @@ Two backlogs of the same shape, both of them bounded and countable: features the
 library *declares* but nothing measures, and quirks that predate the feature
 database entirely and still live in the old flat flag list.
 
-Nine features are defined in `compatibility_hints.py` and probed by nothing:
-`get-supported-components`, `create-calendar.with-supported-component-types`,
-`save-load.reuse-deleted-uid`, `save-load.todo.recurrences.thisandfuture`,
-`search.time-range.accurate`, `search.time-range.journal`,
-`search.text.category.substring`, `wrong-password-check` and
-`http.multiplexing`.  Every one of them is currently reported from its default
-rather than from evidence - which is exactly the failure mode constraint 2 is
-about, at nine known sites.
+Eight features are defined in `compatibility_hints.py` and probed by nothing:
+`get-supported-components`, `save-load.reuse-deleted-uid`,
+`save-load.todo.recurrences.thisandfuture`, `search.time-range.accurate`,
+`search.time-range.journal`, `search.text.category.substring`,
+`wrong-password-check` and `http.multiplexing`.  Every one of them is currently
+reported from its default rather than from evidence - which is exactly the
+failure mode constraint 2 is about, at eight known sites.  (There were nine when
+this was written; `create-calendar.with-supported-component-types` got its
+probe on 2026-09-13, after Bedework 5 turned out to ignore the component set -
+the first server where the default was wrong.)
 
 Nine legacy flags remain in `incompatibility_description`, all nine still read by
 the caldav library's own test suite: `dav_not_supported`,
@@ -501,7 +503,7 @@ now sit in work the flat list did not name.
 | Various other research and additional checks | 20 | 0 | Distributed, and named.  This is where the 42 hours came from: the twenty unspecified hours plus the twenty-two freed by re-estimating the half-built items above |
 | *(new)* Release v1.3.0 (1.0) | - | 4 | Not in the original list, and for a while not in this document either: the release was going to be donated to the grant.  It is now charged, and 1.1 was re-estimated from 8 to 4 to pay for it |
 | *(new)* Phase 1 - trustworthy verdicts (1.1-1.3) | - | 10 | The tool's verdicts configure a client library.  The v1.3.0 cycle found several probes reporting `full` for features the server did not have, all of them a year old.  Auditing that is worth more than another RFC |
-| *(new)* Phase 2 - defined but unprobed | - | 12 | Nine features are declared in the database and measured by nothing; nine legacy flags predate the database entirely.  Both backlogs are countable, and one of them is the only open issue in the tracker |
+| *(new)* Phase 2 - defined but unprobed | - | 12 | Eight features (nine when written) are declared in the database and measured by nothing; nine legacy flags predate the database entirely.  Both backlogs are countable, and one of them is the only open issue in the tracker |
 | *(new)* Phase 4 - `prop-filter`/`param-filter` depth (4.3) | - | 2 | Parameter filtering and multi-condition `prop-filter` composition.  Not in the original list: the two search lines it sits beside are the ones that were named, and this is the part of RFC 4791 §9.7 neither of them reaches |
 | *(new)* Phase 5 - QA of the checker | - | 14 | 51% coverage on the 4,700-line module that holds all the logic, and 32 of 116 functions with any type annotation.  An untested probe does not crash - it ships a wrong verdict |
 
