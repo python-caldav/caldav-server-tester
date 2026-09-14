@@ -3765,6 +3765,47 @@ class CheckAttendeePartstat(Check):
                 pass
 
 
+class CheckEventWithoutSummary(Check):
+    """
+    Checks whether a VEVENT without a SUMMARY can be stored.
+
+    RFC 5545 section 3.6.1 makes SUMMARY optional.  Bedework 5 refuses such an
+    event with 500 missingeventproperty; nothing else in the tester notices,
+    since every other probe gives its events a summary.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.event.no-summary"}
+
+    def _run_check(self) -> None:
+        cal = self.checker.calendar
+        start = datetime.now(tz=utc) + timedelta(days=30)
+        try:
+            ev = cal.add_event(uid="csc_no_summary", dtstart=start, dtend=start + timedelta(hours=1))
+        except (DAVError, AuthorizationError):
+            self.set_feature(
+                "save-load.event.no-summary",
+                {
+                    "support": "ungraceful",
+                    "behaviour": "a VEVENT without SUMMARY is refused, though RFC 5545 section 3.6.1 makes SUMMARY optional",
+                },
+            )
+            return
+        try:
+            ev.load()
+            self.set_feature("save-load.event.no-summary")
+        except NotFoundError:
+            self.set_feature(
+                "save-load.event.no-summary",
+                {"support": "unsupported", "behaviour": "a VEVENT without SUMMARY is accepted but not stored"},
+            )
+        finally:
+            try:
+                ev.delete()
+            except Exception:
+                pass
+
+
 class CheckRescheduleRecurrenceSeries(Check):
     """
     Checks whether the whole of a recurring event can be rescheduled - i.e. the
