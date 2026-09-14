@@ -80,5 +80,5 @@ repos:
    rev: lychee-v0.24.2
    hooks:
     - id: lychee
-      args: ["--no-progress", "--timeout", "10", "--cache", "--max-cache-age", "1d", "."]
+      args: ["--no-progress", "--timeout", "10", "--cache", "--max-cache-age", "1d", "--exclude-loopback", "."]
       stages: [pre-push]

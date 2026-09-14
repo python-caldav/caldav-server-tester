@@ -229,10 +229,12 @@ would not depend on that.
 
 Test fixtures and docstrings invent a host whenever they need a URL, and every
 new invention is a link the `lychee` pre-push hook tries to resolve and then
-fails on.  `.lycheeignore` has three such hosts in it already
-(`https://host/`, `https://x/dav/`, `http://localhost:5232/`) and grew two more
-in September 2026 (`http://dav/`, `https://h/`) — one of them only after a push
-was refused with the commits already approved.
+fails on.  `.lycheeignore` has two such hosts in it already
+(`https://host/`, `https://x/dav/`) and grew two more in September 2026
+(`http://dav/`, `https://h/`) — one of them only after a push was refused with
+the commits already approved.  Loopback URLs no longer count: the pre-push hook
+and the CI link check both run with `--exclude-loopback` since a
+`http://localhost/` fixture refused another push.
 
 Standardise on `example.com`, which RFC 2606 §3 reserves for exactly this and
 which link checkers know not to chase, and the ignore list stops growing.

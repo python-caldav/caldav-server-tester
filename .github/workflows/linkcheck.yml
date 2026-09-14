@@ -31,6 +31,7 @@ jobs:
           --max-retries 3
           --cache
           --max-cache-age 14d
+          --exclude-loopback
           .
     - name: Create Issue From File
       if: steps.lychee.outputs.exit_code != 0
