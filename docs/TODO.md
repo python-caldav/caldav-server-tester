@@ -201,6 +201,30 @@ rate-limiting are `unknown`.  Then every handler in the file goes through it.
 Worth its own round, and it will move recorded verdicts on servers that were
 merely unwell during a run.
 
+## `save-load.todo` on a server that stores a VTODO nowhere
+
+(Clean-context review 2026-09-14, filed rather than fixed.)
+
+`_prepare_task_calendar` records `save-load.todo` as `ungraceful` whenever the
+first task fixture cannot be saved.  That was written for a failed save on an
+otherwise working server; on Bedework 5, where no collection a client can
+create accepts a VTODO at all, "it works, but the client has to catch an error"
+is the wrong claim, and the `bedework_5_0_0` profile says `unknown`.  Decide
+whether such a server is `unsupported` (with a behaviour note) and tell the two
+cases apart in the probe.
+
+## Probe calendars deleted by `cal_id`
+
+(Clean-context review 2026-09-14, filed rather than fixed.)
+
+`CheckSupportedComponentSet._delete_probe_calendar` deletes
+`principal.calendar(cal_id=CAL_ID)`, although the check itself notes that the
+`cal_id` is not the collection's address on a server that relocates it.  The
+probe calendar has no display name either, so a prefix sweep may miss it too.
+No server is known to leak one - OX, the relocating server, also answers at the
+`cal_id` address - but deleting the calendar objects `make_calendar` returned
+would not depend on that.
+
 # One standard for placeholder URLs in fixtures and docstrings
 
 Test fixtures and docstrings invent a host whenever they need a URL, and every
