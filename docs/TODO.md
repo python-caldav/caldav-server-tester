@@ -225,6 +225,20 @@ No server is known to leak one - OX, the relocating server, also answers at the
 `cal_id` address - but deleting the calendar objects `make_calendar` returned
 would not depend on that.
 
+## A fragile retry window can hide an asynchronous delete
+
+(Clean-context review 2026-09-15, filed rather than fixed.)
+
+`asynchronous_delay()` ignores the `delay` of a fragile verdict, since there it
+is a retry window rather than a write delay.  But `record_worse` replaces the
+whole node: when the ordinary delete probe records `quirk` with a real
+asynchronous `delay` and the re-created-calendar probe then records `fragile`
+(Cyrus's shape), the asynchronous delay is gone, `CheckSynchronousWrite` sees
+none and grades `synchronous-write` `full`.  No server is known to be both.
+The fix is to record a fragile verdict's retry window under a key of its own
+(`retry-window`), keep `delay` for asynchronous processing only, and have
+`record_worse` carry a displaced `delay` over.
+
 # One standard for placeholder URLs in fixtures and docstrings
 
 Test fixtures and docstrings invent a host whenever they need a URL, and every

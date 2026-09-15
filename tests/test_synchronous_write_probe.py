@@ -170,6 +170,23 @@ class TestAggregateVerdict:
         assert observed["support"] == "unsupported"
         assert "delay" not in observed
 
+    def test_a_retried_deletion_is_not_asynchronous(self, monkeypatch) -> None:
+        """A fragile delay is how long the request kept failing, not a queue.
+
+        Cyrus answers 500 when a just-re-created calendar is deleted within the
+        same second, and a retry after ~1s works.  Nothing was written late.
+        """
+        checker = _checker(monkeypatch)
+        checker._features_checked.set_feature(
+            "delete-calendar", {"support": "fragile", "behaviour": "answers 500 for ~1s", "delay": 1}
+        )
+        _readback(monkeypatch, fail_times=0)
+
+        observed = _run(checker)
+
+        assert observed["support"] == "full"
+        assert "behaviour" not in observed
+
     def test_nothing_delayed_is_plain_full(self, monkeypatch) -> None:
         checker = _checker(monkeypatch)
         _readback(monkeypatch, fail_times=0)

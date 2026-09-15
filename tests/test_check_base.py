@@ -541,9 +541,27 @@ class TestObservedDelayWarning:
             check.set_feature("create-calendar", self._delayed(9))
         assert caplog.text == ""
 
-    def test_a_fragile_verdict_still_gets_the_delay_checked(self, caplog) -> None:
+    def test_a_fragile_delay_is_a_retry_window_not_a_write_delay(self, caplog) -> None:
+        """A fragile verdict's delay is how long a request had to be re-sent.
+
+        That says nothing about whether writes are processed asynchronously,
+        so there is nothing to compare with the configured write delay.
+        """
+        check = self._check(configured=None)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("delete-calendar", {"support": "fragile", "behaviour": "answers 500 for ~1s", "delay": 1})
+        assert "observed delay" not in caplog.text
+
+    def test_an_ungraceful_verdict_still_gets_the_delay_checked(self, caplog) -> None:
+        """Only a fragile verdict's delay is left out, not every non-positive one."""
+        check = self._check(configured=10)
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("delete-calendar", {"support": "ungraceful", "behaviour": "slow", "delay": 9})
+        assert "observed delay" in caplog.text
+
+    def test_an_unknown_verdict_still_gets_the_delay_checked(self, caplog) -> None:
         """The fragile/unknown early return must not swallow the comparison."""
         check = self._check(configured=10)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("delete-calendar", {"support": "fragile", "behaviour": "slow", "delay": 9})
+            check.set_feature("delete-calendar", {"support": "unknown", "behaviour": "slow", "delay": 9})
         assert "observed delay" in caplog.text

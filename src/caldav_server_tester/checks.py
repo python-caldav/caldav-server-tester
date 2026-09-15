@@ -15,7 +15,7 @@ from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutErr
 from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
 
-from .checks_base import Check, is_worse
+from .checks_base import Check, asynchronous_delay, is_worse
 
 utc = timezone.utc
 
@@ -3396,10 +3396,11 @@ class CheckSynchronousWrite(Check):
             self._passthrough("the probe object never became readable")
             return
 
-        ## What the calendar lifecycle probe measured, if it ran.
+        ## What the calendar lifecycle probe measured, if it ran.  A retried
+        ## request is not an asynchronous one, so fragile delays do not count.
         checked = self.checker.features_checked
-        create = checked.is_supported("create-calendar", dict).get("delay", 0)
-        delete = checked.is_supported("delete-calendar", dict).get("delay", 0)
+        create = asynchronous_delay(checked.is_supported("create-calendar", dict))
+        delete = asynchronous_delay(checked.is_supported("delete-calendar", dict))
 
         notes = []
         if save_load:

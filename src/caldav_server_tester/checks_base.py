@@ -16,6 +16,20 @@ TIMING_KEYS = ("delay", "save-load-delay", "delay-is-lower-bound", "note")
 ## and the next run on a busier day is the one that breaks.
 DELAY_MARGIN_RATIO = 0.85
 
+
+def asynchronous_delay(observed) -> int:
+    """The delay in an observed verdict that stands for asynchronous processing, or 0.
+
+    A fragile verdict's delay is a retry window: how long a request kept failing
+    before a re-sent one went through (Cyrus answers 500 for ~1s when a
+    just-re-created calendar is deleted).  That says nothing about when a
+    successful write becomes observable, so it is not a write delay.
+    """
+    if not isinstance(observed, dict) or observed.get("support") == "fragile":
+        return 0
+    return observed.get("delay") or 0
+
+
 ## Support levels that say the operation *does* happen, however badly.
 ## `is_supported()` is True for full and quirk only, and `accept_fragile=True`
 ## widens it to fragile; neither covers "ungraceful", which means the server
@@ -142,11 +156,11 @@ class Check:
         Deliberately placed above the fragile/unknown early return below: that
         return exists because a fragile *support level* is not worth comparing,
         which says nothing about a timing observation carried alongside it.
+        The delay of a fragile verdict itself is left out, though: see
+        asynchronous_delay().
         """
         observed = fs.is_supported(feature, dict)
-        if not isinstance(observed, dict):
-            return
-        delay = observed.get("delay") or 0
+        delay = asynchronous_delay(observed)
         if not delay:
             return
 
