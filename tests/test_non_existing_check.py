@@ -164,8 +164,8 @@ class TestCollectionProbe:
         assert features.is_supported(COLLECTION_FEATURE, str) == "unsupported"
         assert "ReportError" in features.is_supported(COLLECTION_FEATURE, dict)["behaviour"]
 
-    def test_a_5xx_is_unknown_rather_than_unsupported(self, monkeypatch) -> None:
-        """A 500 says the server broke, not that it answers the wrong error.
+    def test_a_gateway_or_overload_status_is_unknown_rather_than_unsupported(self, monkeypatch) -> None:
+        """A 503 says nothing about the server's error handling.
 
         This probe's verdict is copied into a server profile and read back as a
         statement about the server's error handling.  A momentary 503 must not
@@ -180,10 +180,21 @@ class TestCollectionProbe:
         assert observed["support"] == "unknown"
         assert "503" in observed["behaviour"]
 
-    def test_a_5xx_on_the_object_probe_is_unknown_too(self, monkeypatch) -> None:
+    def test_a_500_is_ungraceful(self, monkeypatch) -> None:
+        """A 500 for a lookup of something missing is a bug met, not a bad moment."""
+        features, _, _ = _run(
+            monkeypatch,
+            object_raises=NotFoundError("nope"),
+            collection_raises=ReportError("500 Internal Server Error"),
+        )
+        observed = features.is_supported(COLLECTION_FEATURE, dict)
+        assert observed["support"] == "ungraceful"
+        assert "500" in observed["behaviour"]
+
+    def test_a_500_on_the_object_probe_is_ungraceful_too(self, monkeypatch) -> None:
         features, _, _ = _run(monkeypatch, object_raises=ReportError("500 Internal Server Error"))
         observed = features.is_supported(OBJECT_FEATURE, dict)
-        assert observed["support"] == "unknown"
+        assert observed["support"] == "ungraceful"
         assert "500" in observed["behaviour"]
 
     def test_no_error_at_all_is_broken(self, monkeypatch) -> None:

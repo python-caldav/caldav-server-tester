@@ -169,16 +169,31 @@ def test_the_probe_calendar_is_deleted_again(monkeypatch, advertises, accepts) -
     assert CheckSupportedComponentSet.CAL_ID in server.deleted
 
 
-class FlakyComponentSetServer(ComponentSetServer):
-    """Fails the wrong-type save with a server error rather than a refusal."""
+class FailingComponentSetServer(ComponentSetServer):
+    """Fails the wrong-type save with ``status`` rather than a refusal."""
+
+    def __init__(self, status, **kwargs):
+        super().__init__(**kwargs)
+        self.status = status
 
     def _save_event(self, *args, **kwargs):
-        raise PutError("500 Internal Server Error")
+        raise PutError(f"{self.status} Server Error")
 
 
-def test_a_server_error_on_the_wrong_type_is_not_enforcement(monkeypatch) -> None:
-    """A 5xx says the server had a bad moment, not that it enforced anything."""
-    check = make_check(monkeypatch, FlakyComponentSetServer(advertises=[]))
+@pytest.mark.parametrize("advertises", [[], ["VTODO"]], ids=["unadvertised", "advertised"])
+def test_a_500_on_the_wrong_type_is_ungraceful(monkeypatch, advertises) -> None:
+    """A 500 is the server failing on the wrong type: enforcement, ungracefully."""
+    check = make_check(monkeypatch, FailingComponentSetServer(500, advertises=advertises))
+
+    check._run_check()
+
+    assert observed(check, str) == "ungraceful"
+    assert "500" in observed(check, dict)["behaviour"]
+
+
+def test_a_gateway_or_overload_status_on_the_wrong_type_is_not_enforcement(monkeypatch) -> None:
+    """A 503 says the server had a bad moment, not that it enforced anything."""
+    check = make_check(monkeypatch, FailingComponentSetServer(503, advertises=[]))
 
     check._run_check()
 

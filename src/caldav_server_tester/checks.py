@@ -1478,12 +1478,14 @@ class CheckSupportedComponentSet(Check):
         except (DAVError, AuthorizationError):
             return None
 
-    def _enforced(self, cal) -> bool | None:
+    def _enforced(self, cal) -> bool | int | None:
         """Does the collection refuse the component type the restriction excludes?
 
-        ``None`` when the save failed without a refusal: a 5xx, or an error
-        carrying no status, is the server having a bad moment and says nothing
-        about the restriction either way.
+        The status, rather than a bool, where the save failed with a 5xx the
+        server software is to blame for: that is enforcement, ungracefully.
+        ``None`` where it failed without saying anything - a 502-504, or an
+        error carrying no status - since that says nothing about the
+        restriction either way.
         """
         uid = f"csc_compset_{uuid.uuid4()}"
         ## _base_year() rather than checker.fixture_base_year: that attribute is
@@ -1501,7 +1503,9 @@ class CheckSupportedComponentSet(Check):
             return True
         except DAVError as exc:
             status = dav_error_status(exc)
-            return True if status is not None and 400 <= status < 500 else None
+            if status is not None and 400 <= status < 500:
+                return True
+            return status if is_server_failure(status) else None
         ## It went in.  The calendar is deleted at the end of the check either
         ## way, but a server that cannot delete a calendar would keep the
         ## object, so take it out again.
@@ -1524,6 +1528,11 @@ class CheckSupportedComponentSet(Check):
         ## reporting a subset of what was asked for restricts at least as much.
         restricted = bool(advertised) and not set(advertised) - set(self.RESTRICTION)
 
+        if enforced is not None and not isinstance(enforced, bool):
+            return {
+                "support": "ungraceful",
+                "behaviour": f"saving a {self.WRONG_TYPE} fails with {enforced} rather than a refusal; {advertises}",
+            }
         if restricted and enforced:
             return True
         if restricted and enforced is None:
@@ -3169,12 +3178,17 @@ class CheckNonExistingResource(Check):
 
     @staticmethod
     def _deviation_or_outage(exc, deviation):
-        """Classify a DAVError as a deviation from the RFC or as a bad minute.
+        """Classify a DAVError as a deviation from the RFC, a server failure, or a bad minute.
 
-        ``deviation`` is the behaviour text for the former, with ``{name}``
+        ``deviation`` is the behaviour text for the first, with ``{name}``
         standing in for the exception class.
         """
         status = dav_error_status(exc)
+        if is_server_failure(status):
+            return {
+                "support": "ungraceful",
+                "behaviour": f"the server answered {status} ({type(exc).__name__})",
+            }
         if status is not None and status >= 500:
             return {
                 "support": "unknown",
@@ -3885,18 +3899,35 @@ class CheckEventWithoutSummary(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {"save-load.event.no-summary"}
 
+    @staticmethod
+    def _graded_failure(exc, refused):
+        """``refused`` (with ``{answer}`` for the status) where the server
+        answered; unknown for a gateway, an overload, rate limiting or no answer,
+        which say nothing about SUMMARY and must not end up in a profile."""
+        if isinstance(exc, AuthorizationError):
+            ## Raised alike for 401 and 403, carrying the URL rather than the status.
+            answer = dav_error_status(exc) or "401/403"
+        else:
+            answer = dav_error_status(exc)
+            if answer is None or answer in TRANSIENT_STATUSES:
+                return {
+                    "support": "unknown",
+                    "behaviour": f"cannot test, the request failed without an answer from the server ({exc})",
+                }
+        return {"support": "ungraceful", "behaviour": refused.format(answer=answer)}
+
     def _run_check(self) -> None:
         cal = self.checker.calendar
         start = datetime.now(tz=utc) + timedelta(days=30)
         try:
             ev = cal.add_event(uid="csc_no_summary", dtstart=start, dtend=start + timedelta(hours=1))
-        except (DAVError, AuthorizationError):
+        except (DAVError, AuthorizationError) as exc:
             self.set_feature(
                 "save-load.event.no-summary",
-                {
-                    "support": "ungraceful",
-                    "behaviour": "a VEVENT without SUMMARY is refused, though RFC 5545 section 3.6.1 makes SUMMARY optional",
-                },
+                self._graded_failure(
+                    exc,
+                    "a VEVENT without SUMMARY is refused ({answer}), though RFC 5545 section 3.6.1 makes SUMMARY optional",
+                ),
             )
             return
         try:
@@ -3906,6 +3937,11 @@ class CheckEventWithoutSummary(Check):
             self.set_feature(
                 "save-load.event.no-summary",
                 {"support": "unsupported", "behaviour": "a VEVENT without SUMMARY is accepted but not stored"},
+            )
+        except (DAVError, AuthorizationError) as exc:
+            self.set_feature(
+                "save-load.event.no-summary",
+                self._graded_failure(exc, "a VEVENT without SUMMARY is accepted, but reading it back fails ({answer})"),
             )
         finally:
             try:
