@@ -50,7 +50,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 - `CheckRecurrenceSearch` now also probes a recurrence-with-exception event that carries `SEQUENCE` on both the master and the override (the new `csc_monthly_recurring_with_exception_seq` fixture), as real-world clients always do.  Some servers (verified: Stalwart) suppress the exception-overridden occurrence during server-side `CALDAV:expand` only when `SEQUENCE` is absent; with `SEQUENCE` present they return both the original occurrence and the override.  When the `SEQUENCE`-less variant works but the `SEQUENCE` one does not, `search.recurrences.expanded.exception` is reported `fragile` (the previous fixture, lacking `SEQUENCE`, never exposed this).
 
 ### Documentation
-- New [`docs/ROADMAP.md`](docs/ROADMAP.md): what the tool covers today (59 of 68 probeable features, 33 check classes), what the next funded period buys, and what is wanted but unfunded.
+- New [`docs/ROADMAP.md`](docs/ROADMAP.md): what the tool covers today (68 of 76 probeable features, 36 check classes), what the funded period buys measured from v1.2.0 with the progress made in this release ticked off, and what is wanted but unfunded.
 
 ### Fixed
 
