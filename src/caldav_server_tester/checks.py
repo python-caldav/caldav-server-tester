@@ -3122,6 +3122,18 @@ def dav_error_status(exc):
     return int(match.group(1))
 
 
+## A gateway in front of the server (502, 504), or the server saying it is
+## overloaded (503): no statement about the software behind it.  Any other 5xx
+## is that software failing on what a probe asked - almost always a bug met
+## rather than a bad moment - and is graded "ungraceful".
+TRANSIENT_STATUSES = frozenset({502, 503, 504})
+
+
+def is_server_failure(status) -> bool:
+    """A 5xx the server software is to blame for, rather than a gateway or overload."""
+    return status is not None and status >= 500 and status not in TRANSIENT_STATUSES
+
+
 class CheckNonExistingResource(Check):
     """
     Checks what happens when something that does not exist is looked up.  The
@@ -3603,38 +3615,55 @@ class CheckIfMatchOptional(Check):
 ENTITY_TAG = re.compile(r'(W/)?"[^"]*"')
 
 
+class _StatusOnly(NamedTuple):
+    """An answer the client raised rather than returned: its status is all there is."""
+
+    status: int
+
+
+class _Unauthorized(int):
+    """A 401 or a 403, which the client raises alike, carrying the request URL
+    rather than the status: compares as 403, and says "401/403" in text."""
+
+    def __new__(cls):
+        return super().__new__(cls, 403)
+
+    def __str__(self):
+        return "401/403"
+
+    def __format__(self, spec):
+        return format(str(self), spec)
+
+
 class CheckPutEtag(Check):
     """
     Checks the ETag header a PUT answers with, and whether a conditional PUT
-    carrying it is accepted; then whether If-Match: * is honoured.
+    carrying it is accepted; then whether the ``*`` conditions are honoured.
 
     Bedework 5 percent-encodes the quotes in its PUT response (``%22...%22``,
     where a GET gives the quoted form) and refuses the encoded form in If-Match
     with 412.  The CalDAV library decodes that shape, so save() hides it and
-    the probe reads the raw response.  RFC 9110 section 13.1.1 has
-    ``If-Match: *`` match any existing representation; Bedework answers it
-    with 412 as well.
+    the probe reads the raw response.
+
+    RFC 9110 section 13.1.1 has ``If-Match: *`` hold where the object exists,
+    and section 13.1.2 ``If-None-Match: *`` where it does not, so each is tried
+    on an existing object and on a missing one.  Bedework (3 and 5) has
+    If-Match backwards: 412 on the existing object, 201 on the missing one.
+    Zimbra compares ``*`` as a literal etag, so If-Match: * never holds and
+    If-None-Match: * always does - it overwrites.  If-None-Match has no feature
+    of its own; what it gets wrong goes into the behaviour text.
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"save.etag", "save-load.mutable.if-match-wildcard"}
+    WILDCARD = "save-load.mutable.if-match-wildcard"
+    features_to_be_checked = {"save.etag", WILDCARD}
+    ## One missing object per condition: an If-Match: * that is ignored or
+    ## backwards creates its object, which would then exist for the other.
+    MISSING = ("csc_put_etag_missing_1", "csc_put_etag_missing_2")
 
     def _run_check(self) -> None:
-        url = str(self.checker.calendar.url.join("csc_put_etag.ics"))
-        year = self.checker.fixture_base_year
-        ical = (
-            "BEGIN:VCALENDAR\r\n"
-            "VERSION:2.0\r\n"
-            "PRODID:-//caldav-server-tester//put-etag probe//EN\r\n"
-            "BEGIN:VEVENT\r\n"
-            "UID:csc_put_etag\r\n"
-            f"DTSTAMP:{year}0120T120000Z\r\n"
-            f"DTSTART:{year}0120T120000Z\r\n"
-            f"DTEND:{year}0120T130000Z\r\n"
-            "SUMMARY:put-etag probe\r\n"
-            "END:VEVENT\r\n"
-            "END:VCALENDAR\r\n"
-        )
+        url = self._url("csc_put_etag")
+        ical = self._ical("csc_put_etag")
         created = self._put(url, ical)
         if not self._ok(created):
             for feature in self.features_to_be_checked:
@@ -3642,26 +3671,62 @@ class CheckPutEtag(Check):
             return
         try:
             self._grade_etag(url, ical, created.headers.get("Etag"))
-            wildcard = self._put(url, ical, "*")
-            if wildcard is None:
-                self.set_feature("save-load.mutable.if-match-wildcard", None)
-            elif self._ok(wildcard):
-                self.set_feature("save-load.mutable.if-match-wildcard")
-            elif wildcard.status == 412:
-                self.set_feature("save-load.mutable.if-match-wildcard", False)
-            elif wildcard.status >= 500:
-                ## The server having a bad moment, not an answer about If-Match: *.
-                self.set_feature("save-load.mutable.if-match-wildcard", None)
-            else:
-                self.set_feature(
-                    "save-load.mutable.if-match-wildcard",
-                    {"support": "unsupported", "behaviour": f"If-Match: * answered {wildcard.status}"},
-                )
+            ## A run that died half-way may have left a "missing" object behind.
+            for name in self.MISSING:
+                self._delete(self._url(name))
+            self.set_feature(self.WILDCARD, self._grade_wildcard(url, ical))
         finally:
-            try:
-                self.client.delete(url)
-            except Exception:
-                pass
+            for probe_url in (url, *map(self._url, self.MISSING)):
+                self._delete(probe_url)
+
+    def _grade_wildcard(self, url, ical):
+        """``If-Match: *`` on the existing object grades; the missing object
+        tells "never holds" from "holds backwards"."""
+        existing = self._status(self._put(url, ical, if_match="*"))
+        name = self.MISSING[0]
+        absent = self._status(self._put(self._url(name), self._ical(name), if_match="*"))
+        notes = self._if_none_match_notes(url, ical)
+        creates = absent is not None and 200 <= absent < 300
+        if existing is None:
+            return self._graded("unknown", "cannot test, If-Match: * on an existing object got no answer", *notes)
+        if existing == 412:
+            if creates:
+                return self._graded(
+                    "broken",
+                    "If-Match: * holds backwards: refused with 412 on an existing object, and creates a missing object",
+                    *notes,
+                )
+            if absent is None:
+                notes.insert(
+                    0, "If-Match: * on a missing object got no answer, so holding backwards (broken) is not ruled out"
+                )
+            return self._graded("unsupported", *notes)
+        if not 200 <= existing < 300:
+            ## A 403 included: the same PUT went through unconditionally a
+            ## moment ago, so what is refused is the condition.
+            return self._graded("ungraceful", f"If-Match: * on an existing object answered {existing}", *notes)
+        if creates:
+            return self._graded("broken", f"If-Match: * is ignored: it created a missing object ({absent})", *notes)
+        if absent is not None and absent != 412:
+            notes.insert(0, f"If-Match: * on a missing object answered {absent} rather than 412")
+        return self._graded("full", *notes)
+
+    def _if_none_match_notes(self, url, ical):
+        """What ``If-None-Match: *`` gets wrong: it must refuse the existing
+        object with 412 and create the missing one."""
+        notes = []
+        existing = self._status(self._put(url, ical, if_none_match="*"))
+        if existing is not None and 200 <= existing < 300:
+            notes.append("If-None-Match: * overwrote an existing object")
+        elif existing is not None and existing != 412:
+            notes.append(f"If-None-Match: * on an existing object answered {existing} rather than 412")
+        name = self.MISSING[1]
+        absent = self._status(self._put(self._url(name), self._ical(name), if_none_match="*"))
+        if absent == 412:
+            notes.append("If-None-Match: * refused to create a missing object")
+        elif absent is not None and not 200 <= absent < 300:
+            notes.append(f"If-None-Match: * on a missing object answered {absent}")
+        return notes
 
     def _grade_etag(self, url, ical, etag) -> None:
         if not etag:
@@ -3703,14 +3768,57 @@ class CheckPutEtag(Check):
             return
         self.set_feature("save.etag", {"support": "broken", "behaviour": f"malformed etag {etag!r}"})
 
-    def _put(self, url, ical, if_match=None):
+    def _url(self, name):
+        return str(self.checker.calendar.url.join(f"{name}.ics"))
+
+    def _ical(self, uid):
+        year = self.checker.fixture_base_year
+        return (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//put-etag probe//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            f"DTSTAMP:{year}0120T120000Z\r\n"
+            f"DTSTART:{year}0120T120000Z\r\n"
+            f"DTEND:{year}0120T130000Z\r\n"
+            "SUMMARY:put-etag probe\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+    def _put(self, url, ical, if_match=None, if_none_match=None):
         headers = {"Content-Type": "text/calendar; charset=utf-8"}
         if if_match is not None:
             headers["If-Match"] = if_match
+        if if_none_match is not None:
+            headers["If-None-Match"] = if_none_match
         try:
             return self.client.put(url, ical, headers)
-        except (DAVError, AuthorizationError):
+        except AuthorizationError as exc:
+            ## 401/403 are raised before a response exists, but they are answers.
+            return _StatusOnly(dav_error_status(exc) or _Unauthorized())
+        except (DAVError, OSError):
+            ## Rate limited for longer than the client waits, or no answer at all.
             return None
+
+    def _delete(self, url):
+        try:
+            self.client.delete(url)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _status(response):
+        """The status of an answer that says something about the server: None
+        for no answer, and for a gateway or overload status."""
+        if response is None or response.status in TRANSIENT_STATUSES:
+            return None
+        return response.status
+
+    @staticmethod
+    def _graded(support, *notes):
+        return {"support": support, "behaviour": "; ".join(notes)} if notes else support
 
     @staticmethod
     def _ok(response) -> bool:
