@@ -8,7 +8,7 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
-## [Unreleased]
+## 1.3.0 - 2026-09-16
 
 This release works with caldav 3.3.1.
 
@@ -21,9 +21,9 @@ same server, so a re-run with `--diff` against your stored profile is worthwhile
 New probes, by the feature key they fill in:
 
 - **`url.encode-at.literal.object` / `.collection` / `.principal`, `url.encode-at.encoded`, `url.encode-at.identity`** - whether a path may carry a literal `@`, whether the `%40` spelling resolves, and whether the two spellings are one resource or two (RFC 3986 §2.2 says two; every server probed so far says one).  Asked separately for an object name, a calendar id and the principal path, since a server may route them differently - Stalwart serves an *object* only under `%40` while serving a *calendar* under either spelling.
-- **`save.etag`, `save-load.mutable.if-match-wildcard`** - the `ETag` a PUT answers with, replayed in `If-Match`, plus `If-Match: *` and `If-None-Match: *` against an existing and a missing object.  Bedework answers with a percent-encoded etag and refuses that form back; Zimbra, SOGo and Bedework each get `If-Match: *` wrong in a different way.
+- **`save.etag`, `save-load.mutable.if-match-wildcard`** - the `ETag` a PUT answers with, replayed in `If-Match`, plus `If-Match: *` and `If-None-Match: *` against an existing and a missing object.  Bedework 5 answers with a percent-encoded etag and refuses that form back; Zimbra, SOGo, Radicale and Bedework each get `If-Match: *` wrong in a different way.
 - **`synchronous-write`** (the caldav library's former `write-delay` peculiarity) - how long a write takes to become readable is now measured rather than only read from the profile.  A delay observed on a server configured without one, or one that has outgrown the configured value, is reported.  The configured delay is also honoured during a run: every write on the main connection and on any scheduling account is followed by it, so read-backs see settled data on a server that processes writes asynchronously (verified: Infomaniak).
-- **`create-calendar.with-supported-component-types`** - whether a calendar created with a component set really is restricted.  Bedework 5 advertises the restriction and ignores it, so no calendar a client creates there can hold a task.
+- **`create-calendar.with-supported-component-types`** - whether a calendar created with a component set really is restricted.  Bedework 5 advertises the restriction and ignores it. It also does not support tasks on a regular calendar, so no calendar a client creates there can hold a task.
 - **`save-load.event.no-summary`** - an event without `SUMMARY`, which RFC 5545 §3.6.1 permits and Bedework 5 refuses with `500 missingeventproperty`.
 - **`well-known`** - RFC 6764 §5 discovery.  The redirect target is asked for `OPTIONS` and must advertise `calendar-access`, so a login page answering `200` is not mistaken for support.
 - **`search.time-range.todo.no-dtstart`** - a `VTODO` with `DUE` but no `DTSTART` in a closed date-range search (Davical, Stalwart and Synology skip it).  Replaces the `vtodo_datesearch_nodtstart_task_is_skipped` flag.
@@ -52,8 +52,8 @@ Tool behaviour:
 
 ### Changed
 
-- **`delete-calendar`** - a deletion that merely takes a while is now a `quirk` carrying the measured `delay`, not `fragile`; `fragile` is reserved for a deletion that fails and succeeds on a retry (Cyrus, Nextcloud).  This matters beyond wording: every gate that asks "can we keep probing?" now asks whether the operation *takes effect*, so a server graded honestly no longer switches off the probes below it.
-- **`create-calendar`, `delete-calendar`** - probed with any configured write delay **suspended**, so the workaround no longer hides the quirks the probe exists to find, and the poll scales with the configured delay instead of a flat 10s.  A calendar left behind by a previous run is read as evidence that a creation which timed out did take effect, rather than as "creation does not work".
+- **`delete-calendar`** - a deletion that merely takes a while is now a `quirk` carrying the measured `delay`, not `fragile`; `fragile` is reserved for a deletion that fails and succeeds on a retry (Cyrus).  This matters beyond wording: every gate that asks "can we keep probing?" now asks whether the operation *takes effect*, so a server graded honestly no longer switches off the probes below it.
+- **`create-calendar`, `delete-calendar`** - probed with any configured write delay **suspended**, so the workaround no longer hides the quirks the probe exists to find, and the wait for a deletion to take effect scales with the configured delay, replacing a flat 10s sleep.  A calendar left behind by a previous run is read as evidence that a creation which timed out did take effect, rather than as "creation does not work".
 - **`create-calendar`** - a `MKCALENDAR` that fails in a way that could plausibly go the other way (5xx, 408, 429) is retried before the answer is believed, and a creation that fails and then succeeds is `fragile`.
 - **`delete-calendar`** - a DELETE that raises is checked before it is retried, since a server may report an error and carry the deletion out anyway; where it did, the verdict is `ungraceful`.
 - **`search.unlimited-time-range`** - distinguishes a classic sliding window (year-2000 objects hidden) from a window so tight that even next-year fixtures are hidden.
@@ -71,7 +71,7 @@ Probes that reported a verdict they had not observed:
 - **`get-current-user-principal`** - a transient 503, TLS or connection error during the re-fetch is `unknown` with a warning, and the principal obtained at connection time is kept, instead of being reported `unsupported` and nulled out.
 - **`get-current-user-principal`** - a principal URL the server hands out but then answers 404 for (verified: Infomaniak's sabre/dav, violating RFC 5397) is reported rather than left to raise an unhandled traceback out of the next check that asks for the calendar-home-set.
 - **`create-calendar.set-displayname`** - verified by looking the calendar up by `cal_id` and reading its display name, rather than by looking it up by display name, which a leftover calendar of the same name could shadow.
-- **`propfind.displayname`** - probed against an existing calendar when the probe calendar cannot be created (verified: Infomaniak), instead of aborting the whole run with an assertion error.
+- **`create-calendar`** - a server that creates calendars asynchronously, answering `MKCALENDAR` before the collection can be queried (verified: Infomaniak), was reported as unable to create calendars.  The probe now polls for the new calendar and records a `quirk`, "delayed creation".
 - **`save-load.todo`** and its children - a server that can store a `VTODO` nowhere at all (Bedework 5) no longer aborts the run before a single event or journal fixture has been written.  The report held three features instead of ninety.
 
 Tool behaviour:
@@ -79,7 +79,6 @@ Tool behaviour:
 - **Data-loss protection when `--caldav-calendar` names a real calendar.**  Cleanup deleted the whole calendar whenever the server supported MKCALENDAR/DELETE, even one the user named, and the stale-fixture sweep deleted every leftover object it found rather than only the tool's own `csc_*` fixtures.
 - **Probe calendars no longer accumulate.**  A crash, an exception or an asynchronous server-side DELETE could leave throwaway calendars behind, which matters on servers that cap calendars per principal.  Cleanup now ends with a sweep of the tool's own probe namespaces; calendars the user pointed the tool at are spared.
 - The run no longer discards the report or skips cleanup when a check raises: cleanup and reporting are in a `finally`, shared by the `--caldav-url`, `--name` and config-file paths.
-- `--cleanup-only` exits non-zero when the purge failed, instead of reporting "Removed 0 object(s)" and exiting 0 while every fixture remained.
 - `--format hints` and the verbose text report no longer get the data that compact rendering had already collapsed, which dropped per-feature `behaviour` notes.
 - The `weeklymeeting` fixture is renamed `csc_weeklymeeting`, so the `csc_*` cleanup fallback no longer leaves it in the user's calendar permanently.
 
@@ -96,7 +95,7 @@ hand.  The level of scrutiny is lower than in the caldav library - though the
 data-loss protection above was written precisely because the tool is now
 expected to survive being pointed at a real calendar.
 
-## [1.2.0] - 2026-04-24
+## 1.2.0 - 2026-04-24
 
 This release works with caldav 3.2.1.
 
@@ -115,7 +114,7 @@ This release works with caldav 3.2.1.
 
 The notes given for release 1.1.0 applies to 1.2.0 as well.  CHANGELOG-entry was AI-generated and then partly rewritten by hand.
 
-## [1.1.0] - 2026-04-24
+## 1.1.0 - 2026-04-24
 
 This release works with caldav 3.2.0.
 
@@ -128,7 +127,7 @@ This release works with caldav 3.2.0.
 
 This release has been predominantly coded with AI-assistance.  The level of scrutiny done on this tool is a bit less than the level of scrutiny done on the caldav libary.  Then again, I don't expect you to run this checker directly towards some calendars that are also used in production.
 
-## [1.0.1] - 2026-03-19
+## 1.0.1 - 2026-03-19
 
 ### Fixed
 - `--name radicale` (and other lowercase names) failed to find servers in the caldav test registry after the caldav library renamed its server entries to capitalised names (`Radicale`, `Xandikos`).  The registry lookup is now case-insensitive.
@@ -146,7 +145,7 @@ This release has been predominantly coded with AI-assistance.  The level of scru
   * added guide for contributing a new server profile to `caldav/compatibility_hints.py`
   * added guide for storing checker results in `~/.config/caldav/calendar.conf` (named profile, inline features, and base+overrides patterns)
 
-## [1.0.0] - 2026-03-15
+## 1.0.0 - 2026-03-15
 
 Considering this tool as "production ready" now - even though it's still lots of corner cases to be tested.
 
@@ -163,7 +162,7 @@ This release corresponds to version 3.0.2 of the caldav library.  It's important
 - Development status classifier updated to Production/Stable
 
 
-## [0.2.2] - 2026-03-11
+## 0.2.2 - 2026-03-11
 
 Lots of changes have been done since v0.1.0.  I'm not sure the changelog is complete, I didn't get time to do a proper QA on it.  CalDAV version 3.0 is required.
 
@@ -230,7 +229,7 @@ This was sort of a pre-release of v1.0.0.
 - Fixed `type(foo) == date` to use `isinstance` with correct datetime-exclusion semantics in `_filter_2000`
 - Decomposed 415-line `PrepareCalendar._run_check` into focused helper methods
 
-## [0.1] - [2025-11-08]
+## 0.1 - 2025-11-08
 
 This release corresponds with the caldav version 2.1.2
 
