@@ -260,3 +260,41 @@ The work is a sweep of `tests/` and the docstrings in
 `src/caldav_server_tester/`, plus dropping the placeholder entries from
 `.lycheeignore`.  Nothing depends on the current hostnames — they are never
 connected to — so it is a rename and a test run.
+
+# A probe for a feature key the installed caldav lacks aborts the whole run
+
+(Clean-context review 2026-09-18, filed rather than fixed.)
+
+`Check.run_check` ends by asserting that every key in `features_to_be_checked`
+was recorded.  `FeatureSet.set_feature` warns and records nothing for a key that
+has no `FEATURES` entry, so a probe written against a caldav that has not been
+released yet does not merely abstain: the `AssertionError` is re-raised out of
+`run_check`, `ServerQuirkChecker.check_all()` dies on it, and every check
+ordered after the new one never runs.  A user on the pinned caldav loses most of
+the report and gets an assertion instead of a verdict.
+
+This is a normal state of affairs between releases — the practice is to develop
+on corresponding branches in both repositories and to release caldav first, so
+this window is expected — but the failure mode should be "this one probe could
+not run", not "the report stops here".  Guards in the individual checks were
+considered and rejected as too intrusive; the fix belongs in `run_check`, which
+can tell a key that is absent from `FeatureSet.FEATURES` from one a probe
+forgot to set.
+
+# `auth.www-authenticate` and CheckWellKnown duplicate the raw-HTTP escape hatch
+
+(Clean-context review 2026-09-18, filed rather than fixed.)
+
+Both probes bypass `client.request()` and go at the session directly, because
+they need a request the library would not make.  `CheckWWWAuthenticate` threads
+the client's proxy, timeout, TLS settings and headers through to it;
+`CheckWellKnown` hardcodes `timeout=10` and ignores `proxy`,
+`ssl_verify_cert` and `ssl_cert` altogether, so a `/.well-known/caldav` probe
+against a self-signed test server or through a proxy fails for reasons that have
+nothing to do with the server's discovery support.
+
+A `Check._raw_request(method, url, **kwargs)` in `checks_base.py` applying the
+client's connection settings would serve both, and fixing well-known's
+config-blindness is the part that changes a verdict on a real server — which is
+why it wants a run against the fleet rather than being folded into an unrelated
+commit.
