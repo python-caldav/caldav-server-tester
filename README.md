@@ -19,6 +19,7 @@ The full list is currently maintained in the CalDAV library, https://github.com/
 - Sync-collection reports (RFC 6578)
 - Free-busy queries
 - Principal discovery (RFC 5397)
+- A `WWW-Authenticate` header on a 401, naming a usable scheme (RFC 7235)
 - Duplicate UID handling across calendars
 - Timezone support in events
 
