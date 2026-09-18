@@ -11,7 +11,9 @@ from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
 from caldav.davobject import DAVObject
 from caldav.elements import dav, ical
+from caldav.lib.auth import extract_auth_types
 from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
+from caldav.lib.http_sync import CaseInsensitiveDict
 from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
 
@@ -348,6 +350,165 @@ class CheckGetCurrentUserPrincipal(Check):
 
         self.set_feature("get-current-user-principal")
         return self.checker.principal
+
+
+class _AuthChallenge(NamedTuple):
+    """What an unauthenticated request answered.
+
+    Read off the response while the throwaway session that made it is still
+    open, so the grading never touches a response whose connection has gone.
+    ``challenge`` is the WWW-Authenticate header, empty when there was none.
+    """
+
+    status_code: int
+    challenge: str
+
+
+class CheckWWWAuthenticate(Check):
+    """Does a 401 from this server name an authentication scheme we can use?
+
+    Two questions, because a client that cannot connect wants to know which
+    one went wrong.  RFC7235 section 3.1 requires every 401 to carry a
+    ``WWW-Authenticate`` header saying how to authenticate; a server that omits
+    it leaves the client with nothing to negotiate, so the caldav library
+    builds no auth object, the credentials it was handed are never transmitted,
+    and the bare 401 reaches the caller as an ``AuthorizationError`` that looks
+    exactly like a rejected password.  Yahoo Calendar does this - see
+    https://github.com/python-caldav/caldav/issues/713.  A server that *does*
+    send the header may still name only schemes the library has no
+    implementation for, which fails one step later with the same practical
+    result; that is the second feature.
+
+    Either way the cure is to pin the scheme in the configuration rather than
+    negotiate it, which is why the schemes the server offers are recorded.
+
+    Note what this check cannot do: a run only reaches it on a server the tool
+    already authenticated against, so on an affected server it reports *why*
+    the scheme had to be pinned rather than discovering the problem for
+    somebody who has not pinned it yet - that run dies in the library, before
+    any check runs.
+    """
+
+    features_to_be_checked = {"auth.www-authenticate", "auth.www-authenticate.usable-scheme"}
+    depends_on = set()
+
+    ## The schemes the library can build an auth object for - see
+    ## BaseDAVClient._build_auth_from_401, whose NotImplementedError names
+    ## exactly these three.  Deliberately not asked via select_auth_type():
+    ## that answers "which scheme should *this* connection use", which depends
+    ## on whether a username was configured, and a server feature must not come
+    ## out differently because of how the run was invoked.
+    LIBRARY_AUTH_SCHEMES = frozenset({"basic", "digest", "bearer"})
+
+    ## A PROPFIND for one live property: a request an anonymous caller is not
+    ## normally allowed to make, and cheap for the server to refuse.  A GET
+    ## would be answered by a login page on the servers that sit behind a web
+    ## frontend.
+    UNAUTHENTICATED_PROPFIND = (
+        '<?xml version="1.0" encoding="utf-8" ?>'
+        '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>'
+    )
+
+    def _run_check(self) -> None:
+        try:
+            answer = self._propfind_without_credentials()
+        except Exception as e:
+            self._nothing_was_asked(f"request failed: {e}")
+            return
+
+        if answer.status_code != 401:
+            ## Not a violation: the server never got to the point of naming a
+            ## scheme.  Either it serves anonymous callers, or it refuses them
+            ## some other way (Robur answers 403 for everything it dislikes).
+            self._nothing_was_asked(f"an unauthenticated PROPFIND was answered {answer.status_code}, not 401")
+            return
+
+        if not answer.challenge:
+            logging.warning(
+                "Server answers 401 without a WWW-Authenticate header, breaching RFC7235 section 3.1. "
+                "A client that negotiates authentication from that header - the caldav library included - "
+                "never transmits the password at all, so this server can only be reached with the "
+                "authentication scheme pinned in the configuration, as it evidently is for this run."
+            )
+            self.set_feature(
+                "auth.www-authenticate",
+                {"support": "unsupported", "behaviour": "401 carries no WWW-Authenticate header"},
+            )
+            self.set_feature(
+                "auth.www-authenticate.usable-scheme",
+                {"support": "unknown", "behaviour": "the server named no scheme to judge"},
+            )
+            return
+
+        offered = sorted(extract_auth_types(answer.challenge))
+        self.set_feature("auth.www-authenticate", {"support": "full", "behaviour": f"offers {answer.challenge}"})
+
+        if set(offered) & self.LIBRARY_AUTH_SCHEMES:
+            self.set_feature(
+                "auth.www-authenticate.usable-scheme",
+                {"support": "full", "behaviour": f"offers {', '.join(offered)}"},
+            )
+            return
+
+        logging.warning(
+            "Server answers 401 offering only %s.  The caldav library implements basic, digest and "
+            "bearer, so negotiating from this challenge cannot succeed and the scheme has to be "
+            "pinned in the configuration.",
+            ", ".join(offered),
+        )
+        self.set_feature(
+            "auth.www-authenticate.usable-scheme",
+            {"support": "unsupported", "behaviour": f"offers only {', '.join(offered)}"},
+        )
+
+    def _nothing_was_asked(self, behaviour) -> None:
+        """Record both features unprobed: no 401 came back, so neither question
+        was put to the server."""
+        for feature in self.features_to_be_checked:
+            self.set_feature(feature, {"support": "unknown", "behaviour": behaviour})
+
+    def _propfind_without_credentials(self) -> _AuthChallenge:
+        """PROPFIND the CalDAV URL with the credentials deliberately left off.
+
+        On a throwaway session rather than the client's own, which is not as
+        anonymous as it looks: a session carries cookies, so a server that
+        handed one out during the authenticated connect would answer this as
+        the logged-in user, and the probe would grade it "unknown" - an
+        abstention that reads like a considered one.  ``trust_env`` is turned
+        off for the same reason, since the HTTP library substitutes ~/.netrc
+        credentials whenever no auth object is passed.
+
+        Everything else the user configured is copied across - TLS, proxy,
+        timeout and the client's own headers, User-Agent included - so that the
+        probe is the request the rest of the run makes, minus the credentials.
+        """
+        client = self.client
+        url = str(client.url)
+        headers = {k: v for k, v in dict(client.headers).items() if k.lower() != "authorization"}
+        headers["Content-Type"] = 'application/xml; charset="utf-8"'
+        headers["Depth"] = "0"
+        ## Whatever HTTP library the client was built on - niquests, requests,
+        ## an injected fake - never one named here.
+        session = type(client.session)()
+        try:
+            session.trust_env = False
+            response = session.request(
+                "PROPFIND",
+                url,
+                data=self.UNAUTHENTICATED_PROPFIND,
+                headers=headers,
+                proxies={urlsplit(url).scheme: client.proxy} if client.proxy else None,
+                auth=None,
+                timeout=client.timeout,
+                verify=client.ssl_verify_cert,
+                cert=client.ssl_cert,
+            )
+            ## Case-insensitively, so that a response object whose headers are a
+            ## plain dict is read the same as the library's own.
+            challenge = CaseInsensitiveDict(response.headers).get("WWW-Authenticate", "") or ""
+            return _AuthChallenge(response.status_code, challenge.strip())
+        finally:
+            session.close()
 
 
 class CheckWellKnown(Check):
