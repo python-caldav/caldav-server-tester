@@ -6041,13 +6041,19 @@ class CheckScheduling(Check):
 
 class CheckSchedulingDetails(Check):
     """
-    Checks RFC6638 scheduling sub-features: mailbox (inbox/outbox) and
-    calendar-user-address-set.  Depends on CheckScheduling; when scheduling
-    is unsupported both sub-features are recorded as unsupported immediately.
+    Checks RFC6638 scheduling sub-features: mailbox (inbox/outbox),
+    calendar-user-address-set, and whether that address set actually carries
+    an address.  Depends on CheckScheduling; when scheduling is ungood the
+    sub-features are left unrecorded and inherit its verdict at lookup time -
+    'unknown' for an unprobed parent, not 'unsupported'.
     """
 
     depends_on = {CheckScheduling, CheckGetCurrentUserPrincipal}
-    features_to_be_checked = {"scheduling.mailbox", "scheduling.calendar-user-address-set"}
+    features_to_be_checked = {
+        "scheduling.mailbox",
+        "scheduling.calendar-user-address-set",
+        "scheduling.calendar-user-address-set.populated",
+    }
 
     def _run_check(self) -> None:
         if self.feature_ungood("scheduling"):
@@ -6056,6 +6062,8 @@ class CheckSchedulingDetails(Check):
         principal = self.checker.principal
         if principal is None:
             self.set_feature("scheduling.mailbox", {"support": "unknown"})
+            ## .populated is left unrecorded: it inherits the parent's
+            ## 'unknown' at lookup time.
             self.set_feature("scheduling.calendar-user-address-set", {"support": "unknown"})
             return
 
@@ -6071,15 +6079,31 @@ class CheckSchedulingDetails(Check):
 
         ## Check calendar-user-address-set
         try:
-            principal.calendar_user_address_set()
+            addresses = principal.calendar_user_address_set()
             self.set_feature("scheduling.calendar-user-address-set", True)
+            ## The property can be served and still be empty - Xandikos 0.4.7
+            ## does that, while advertising calendar-auto-schedule and serving
+            ## schedule-inbox/outbox.  The principal then has no address of its
+            ## own, and RFC 6638 section 2.4.1 has its URL stand in.
+            if addresses:
+                self.set_feature("scheduling.calendar-user-address-set.populated", True)
+            else:
+                self.set_feature(
+                    "scheduling.calendar-user-address-set.populated",
+                    {
+                        "support": "unsupported",
+                        "behaviour": "the property is served but empty, so the principal URL is used as the calendar user address",
+                    },
+                )
         except NotFoundError:
             self.set_feature("scheduling.calendar-user-address-set", False)
+            self.set_feature("scheduling.calendar-user-address-set.populated", False)
         except Exception as e:
             self.set_feature(
                 "scheduling.calendar-user-address-set",
                 {"support": "broken", "behaviour": str(e)},
             )
+            self.set_feature("scheduling.calendar-user-address-set.populated", {"support": "unknown"})
 
 
 class CheckFreeBusyQueryRFC6638(Check):

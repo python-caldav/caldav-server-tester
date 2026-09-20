@@ -44,6 +44,7 @@ def _run(check_cls, observed):
     [
         (CheckSchedulingDetails, "scheduling.mailbox"),
         (CheckSchedulingDetails, "scheduling.calendar-user-address-set"),
+        (CheckSchedulingDetails, "scheduling.calendar-user-address-set.populated"),
         (CheckFreeBusyQueryRFC6638, "scheduling.freebusy-query"),
         (CheckScheduleTag, "scheduling.schedule-tag"),
     ],
@@ -59,6 +60,7 @@ def test_unprobed_parent_leaves_children_unknown(check_cls, feature):
     [
         (CheckSchedulingDetails, "scheduling.mailbox"),
         (CheckSchedulingDetails, "scheduling.calendar-user-address-set"),
+        (CheckSchedulingDetails, "scheduling.calendar-user-address-set.populated"),
         (CheckFreeBusyQueryRFC6638, "scheduling.freebusy-query"),
         (CheckScheduleTag, "scheduling.schedule-tag"),
     ],
