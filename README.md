@@ -20,6 +20,7 @@ The full list is currently maintained in the CalDAV library, https://github.com/
 - Free-busy queries
 - Principal discovery (RFC 5397)
 - A `WWW-Authenticate` header on a 401, naming a usable scheme (RFC 7235)
+- Scheduling identity: whether `calendar-user-address-set` holds an address (RFC 6638)
 - Duplicate UID handling across calendars
 - Timezone support in events
 
