@@ -14,6 +14,10 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 - **`auth.www-authenticate`, `auth.www-authenticate.usable-scheme`** - whether a 401 from the server names an authentication scheme, as RFC 7235 §3.1 requires, and whether the schemes it names include one the caldav library implements.  A server that omits the header leaves the caldav library with nothing to negotiate: no auth object is built, the password is never transmitted, and the bare 401 surfaces as an `AuthorizationError` indistinguishable from a rejected one.  Yahoo Calendar does this; a server naming only Negotiate or NTLM is the same dead end one step later, and pinning `auth_type` is the cure for both.  See https://github.com/python-caldav/caldav/issues/713.  Note that a run only reaches this probe on a server it has already authenticated against, so on an affected server it records *why* `auth_type` had to be pinned rather than diagnosing a connection that never came up.
 
+### Fixed
+
+- **`search.time-range.event.old-dates`, `search.unlimited-time-range`, `search.is-not-defined*`, `search.time-range.alarm`** - falsely reported as failing on a server that ignores the comp-filter (verified: Infomaniak) whenever the test calendar survived an earlier run: the year-2000 probe event was deleted as a stale fixture.
+
 ## 1.3.0 - 2026-09-16
 
 This release works with caldav 3.3.1.
