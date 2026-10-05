@@ -3096,13 +3096,24 @@ END:VCALENDAR""",
         client_url = calendar.url.join(stored_as)
         self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
 
+    @staticmethod
+    def _fixtures_by_uid(objects, base):
+        """Map UID to object for what a previous run left in the fixture window.
+
+        Journals go through the window like events and tasks do: a server
+        ignoring the comp-filter (Infomaniak) answers the journal listing with
+        the whole calendar, year-2000 probes included, and only the window
+        keeps those out of the stale-fixture sweep.
+        """
+        return {obj.component["uid"]: obj for obj in _filter_fixture_window(objects, base)}
+
     def _delete_stale_fixtures(self, object_by_uid):
         """Delete leftover fixtures from previous runs that aren't in the current set.
 
         Only objects whose UID starts with ``csc_`` are removed.  ``object_by_uid``
         may legitimately contain real user data when ``--caldav-calendar`` points
-        the tool at a production calendar (a real VJOURNAL, or a real event/task
-        dated in the fixture base year that survived the ``add_if_not_existing``
+        the tool at a production calendar (a real event, task or journal dated
+        in the fixture base year that survived the ``add_if_not_existing``
         pops); deleting those would be silent, permanent data loss.  All fixtures
         the tool creates use the ``csc_`` prefix, so the prefix check is sufficient
         to tell ours apart from the user's.  The year-2000 old-date probes fall
@@ -3167,15 +3178,7 @@ END:VCALENDAR""",
         except (AuthorizationError, DAVError):
             journals_in_window = []
 
-        object_by_uid = {}
-
-        for obj in _filter_fixture_window(events_in_window + tasks_in_window, base):
-            object_by_uid[obj.component["uid"]] = obj
-        for obj in journals_in_window:
-            try:
-                object_by_uid[obj.component["uid"]] = obj
-            except Exception:
-                pass
+        object_by_uid = self._fixtures_by_uid(events_in_window + tasks_in_window + journals_in_window, base)
 
         def add_if_not_existing(*largs, **kwargs):
             if largs[0] == Todo:

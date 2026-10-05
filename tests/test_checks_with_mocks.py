@@ -15,8 +15,10 @@ If those tests will break in the future, then consider just deleting
 this file.
 """
 
+from datetime import date, datetime
 from unittest.mock import Mock
 
+import icalendar
 import pytest
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import DAVError, NotFoundError, ReportError
@@ -1363,6 +1365,33 @@ class TestCleanupDoesNotDeleteUserData:
         csc_obj.delete.assert_called_once()
         real_event.delete.assert_not_called()
         real_journal.delete.assert_not_called()
+
+    def test_journal_listing_of_a_server_ignoring_comp_filter(self) -> None:
+        """A server ignoring the comp-filter (Infomaniak) answers journals() with
+        the whole calendar.  The year-2000 old-date probe event sits outside the
+        fixture window, so nothing pops it, and the stale sweep deleted it - which
+        failed search.unlimited-time-range and, through the workaround that then
+        kicks in, every is-not-defined and alarm search."""
+        checker = self._checker()
+        check = PrepareCalendar(checker)
+
+        def obj(component_class, uid: str, dtstart) -> Mock:
+            component = component_class()
+            component.add("uid", uid)
+            component.add("dtstart", dtstart)
+            o = Mock()
+            o.component = component
+            return o
+
+        event = obj(icalendar.Event, "csc_simple_event1", datetime(2027, 1, 1, 9, 0))
+        journal = obj(icalendar.Journal, "csc_simple_journal1", date(2027, 1, 11))
+        olddate_event = obj(icalendar.Event, "csc_olddate_event", datetime(2000, 1, 1, 12, 0))
+
+        ## What journals() returned is listed alongside what the event search
+        ## returned - the whole calendar again, on a server ignoring the comp-filter.
+        found = check._fixtures_by_uid([event, journal, event, olddate_event], base=2027)
+
+        assert found == {"csc_simple_event1": event, "csc_simple_journal1": journal}
 
 
 class TestDelayedDeleteIsAQuirk:
