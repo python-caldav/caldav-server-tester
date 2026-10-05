@@ -1,4 +1,6 @@
+import contextlib
 import logging
+import math
 import re
 import time
 import uuid
@@ -9,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
+from caldav.compatibility_hints import FeatureSet
 from caldav.davobject import DAVObject
 from caldav.elements import dav, ical
 from caldav.lib.auth import extract_auth_types
@@ -687,8 +690,44 @@ class CheckMakeDeleteCalendar(Check):
         "propfind.displayname",
         "delete-calendar",
         "delete-calendar.free-namespace",
+        "synchronous-write.create-calendar",
+        "synchronous-write.delete-calendar",
     }
     depends_on = {CheckGetCurrentUserPrincipal}
+
+    def __init__(self, checker):
+        super().__init__(checker)
+        ## The longest settle time seen per synchronous-write child, as
+        ## (seconds, behaviour, extra keys); a run creates and deletes several
+        ## calendars, and the slowest one is what a client has to wait for.
+        self._settle_samples = {}
+        ## Why a child could not be timed, where something more specific than
+        ## "nothing was created and deleted" is known.
+        self._settle_unknown = {}
+
+    def _sample_settle_delay(self, feature, waited, behaviour, **extra):
+        """Note how long a calendar creation or deletion took to show.
+
+        Timing is synchronous-write's question, not create-calendar's or
+        delete-calendar's: their own grade (mkcol-required, fragile, ...) says
+        whether the request goes through, this says when it is visible.
+        Recorded once, by _record_settle_delays, so that a quick first sample
+        is not reported (and compared with the profile) before a slow one.
+        """
+        if waited >= self._settle_samples.get(feature, (-1,))[0]:
+            self._settle_samples[feature] = (waited, behaviour, extra)
+
+    def _record_settle_delays(self):
+        for feature in ("synchronous-write.create-calendar", "synchronous-write.delete-calendar"):
+            if feature not in self._settle_samples:
+                reason = self._settle_unknown.get(feature, "no calendar was created and deleted to time")
+                self.set_feature(feature, {"support": "unknown", "behaviour": reason})
+                continue
+            waited, behaviour, extra = self._settle_samples[feature]
+            if waited:
+                self.set_feature(feature, {"support": "unsupported", "behaviour": behaviour, "delay": waited, **extra})
+            else:
+                self.set_feature(feature, True)
 
     ## The cal_id the make/delete probe uses.  Prefixed so the cleanup sweep
     ## recognises it (see checker.PROBE_CALENDAR_PREFIXES).
@@ -735,6 +774,9 @@ class CheckMakeDeleteCalendar(Check):
             if not cal:
                 ## cal not made and does not exist, exception thrown.
                 return False
+            self._settle_unknown.setdefault(
+                "synchronous-write.create-calendar", "creation raised, so how long it took to show was not seen"
+            )
         else:
             ## MKCALENDAR returned without error, but we must be sure the
             ## collection is actually usable - poll for it (handles async creation,
@@ -762,15 +804,6 @@ class CheckMakeDeleteCalendar(Check):
                 self.set_feature(
                     "create-calendar", {"support": "fragile", "behaviour": self._with_empty_207(behaviour, empty_207)}
                 )
-            elif waited:
-                ## Supported, but the client must poll/wait for the calendar to
-                ## materialise — a quirk (is_supported(bool) stays True so the
-                ## downstream checks still run), not plain "full".
-                behaviour = f"delayed creation (not queryable until ~{waited}s)"
-                self.set_feature(
-                    "create-calendar",
-                    {"support": "quirk", "behaviour": self._with_empty_207(behaviour, empty_207)},
-                )
             elif empty_207:
                 ## The creation worked and the calendar is there; all that is
                 ## wrong is what the server said about it.  "quirk" rather than
@@ -780,6 +813,11 @@ class CheckMakeDeleteCalendar(Check):
                 self.set_feature("create-calendar", {"support": "quirk", "behaviour": EMPTY_207_BEHAVIOUR})
             else:
                 self.set_feature("create-calendar")
+            self._sample_settle_delay(
+                "synchronous-write.create-calendar",
+                waited,
+                f"a new calendar is not queryable until ~{waited}s after it was created",
+            )
 
         assert cal
 
@@ -811,6 +849,10 @@ class CheckMakeDeleteCalendar(Check):
         ## Delete throw no exceptions, but was the calendar deleted?
         gone = self._calendar_gone(cal)
         if gone is None:
+            self._settle_unknown.setdefault(
+                "synchronous-write.delete-calendar",
+                "a deletion cannot be observed on a server that creates calendars on access",
+            )
             ## Nothing observable on a server that auto-creates a calendar on
             ## access, and the long-standing reading is to take a clean DELETE
             ## at its word there.  The honest answer needs the probe the
@@ -822,6 +864,7 @@ class CheckMakeDeleteCalendar(Check):
             ## (in the case of non_existing_calendar_found, we should add
             ## some events to the calendar, delete the calendar and make
             ## sure no events are found on a new calendar with same ID)
+            self._sample_settle_delay("synchronous-write.delete-calendar", 0, "")
             return True
 
         ## Calendar not deleted yet.  The server may delete it
@@ -833,15 +876,16 @@ class CheckMakeDeleteCalendar(Check):
             ## Calendar not deleted, but no exception thrown.
             ## Perhaps it's a "move to thrashbin"-regime on the server
             return {"support": "unknown", "behaviour": "move to trashbin?"}
-        ## Calendar was deleted, it just took some time.  That is a quirk, not
-        ## "fragile": the client's single DELETE was enough and only the length
-        ## of the wait varies, where fragile means the request has to go out
-        ## again (see _grade_failing_delete).
-        return {
-            "support": "quirk",
-            "behaviour": f"delayed deletion (still queryable for ~{waited}s)",
-            "delay": waited,
-        }
+        ## Calendar was deleted, it just took some time.  The DELETE itself
+        ## works - the client's single request was enough, where fragile means
+        ## it has to go out again (see _grade_failing_delete) - and the wait is
+        ## an asynchronous write.
+        self._sample_settle_delay(
+            "synchronous-write.delete-calendar",
+            waited,
+            f"a deleted calendar is still queryable for ~{waited}s",
+        )
+        return True
 
     def _grade_failing_delete(self, cal, cal_id, error, context):
         """The DELETE raised - find out whether it did anything anyway.
@@ -861,10 +905,13 @@ class CheckMakeDeleteCalendar(Check):
                 ## response, so it has to catch the error and check - which is
                 ## what "ungraceful" means.
                 behaviour = f"deleting {context} answers an error, but the calendar is deleted ({error})"
-                verdict = {"support": "ungraceful", "behaviour": behaviour}
-                if waited:
-                    verdict["delay"] = waited
-                return verdict
+                ## How long it took to go is a settle time like any other.
+                self._sample_settle_delay(
+                    "synchronous-write.delete-calendar",
+                    waited,
+                    f"a deleted calendar is still queryable for ~{waited}s",
+                )
+                return {"support": "ungraceful", "behaviour": behaviour}
             if waited >= self.checker.delay_probe_timeout:
                 if gone is None:
                     ## Nothing was observed either way, so nothing is claimed.
@@ -936,6 +983,7 @@ class CheckMakeDeleteCalendar(Check):
                     "propfind.displayname",
                     {"support": "unknown", "behaviour": "no calendar available to probe"},
                 )
+        self._record_settle_delays()
 
     def _probe_free_namespace(self, cal_id, timeout=5, method=None):
         """Did the DELETE free up the calendar id for re-use?
@@ -1050,7 +1098,13 @@ class CheckMakeDeleteCalendar(Check):
             ## The collection has to be there before its deletion can be
             ## probed: on an asynchronous server a calendar that is merely not
             ## published yet looks exactly like one a failing DELETE removed.
-            settled, _waited = self._poll_calendar(cal=cal, timeout=timeout)
+            settled, waited = self._poll_calendar(cal=cal, timeout=timeout)
+            if settled is not None:
+                self._sample_settle_delay(
+                    "synchronous-write.create-calendar",
+                    waited,
+                    f"a re-created calendar is not queryable until ~{waited}s after it was created",
+                )
             if settled is None:
                 ## Never turned up.  Not this probe's question - but it may yet
                 ## turn up after we stop watching, so do not walk away from it.
@@ -1151,17 +1205,13 @@ class CheckMakeDeleteCalendar(Check):
             ## mis-describes the server, and the two further cal_ids tried below
             ## would leak two more orphans on a server that is merely slow.
             timeout = self.checker.delay_probe_timeout
-            self.set_feature(
-                "create-calendar",
-                {
-                    "support": "quirk",
-                    "behaviour": (
-                        f"delayed creation, longer than the {timeout}s polled for "
-                        f"(a calendar from a previous run was found, so MKCALENDAR does take effect)"
-                    ),
-                    "delay": timeout,
-                    "delay-is-lower-bound": True,
-                },
+            self.set_feature("create-calendar")
+            self._sample_settle_delay(
+                "synchronous-write.create-calendar",
+                timeout,
+                f"a new calendar takes longer than the {timeout}s polled for "
+                f"(a calendar from a previous run was found, so MKCALENDAR does take effect)",
+                **{"delay-is-lower-bound": True},
             )
             _cannot = "cannot test, the calendar did not materialise within the timeout"
             self.set_feature("delete-calendar", {"support": "unknown", "behaviour": _cannot})
@@ -1427,7 +1477,13 @@ class CheckMakeDeleteCalendar(Check):
         ## (creation may be async, see _poll_calendar_accessible).  On Zimbra/OX
         ## the requested cal_id resolves as a collection-level alias, so this poll
         ## returns quickly even when the *canonical* URL is elsewhere.
-        probe_cal, _ = self._poll_calendar(cal_id=cal_id)
+        probe_cal, waited = self._poll_calendar(cal_id=cal_id)
+        if probe_cal is not None:
+            self._sample_settle_delay(
+                "synchronous-write.create-calendar",
+                waited,
+                f"a new calendar is not queryable until ~{waited}s after it was created",
+            )
 
         ## Locate the calendar by the unique display name to discover its
         ## *canonical* URL - this is where the server really put it, and the only
@@ -1795,8 +1851,8 @@ class PrepareCalendar(Check):
             ## Some servers (Infomaniak/SabreDAV) create calendars asynchronously:
             ## the collection 404s for a few seconds after MKCALENDAR returns.
             ## Wait for it to materialise before the fixture-loading checks start
-            ## using it (CheckMakeDeleteCalendar already detected this and marked
-            ## create-calendar as a "delayed creation" quirk).  Poll the object
+            ## using it (CheckMakeDeleteCalendar already detected this and recorded
+            ## it on synchronous-write.create-calendar).  Poll the object
             ## make_calendar() handed back rather than re-resolving the cal_id -
             ## the created calendar does not necessarily live there (see
             ## create-calendar.stable-url).
@@ -2682,8 +2738,8 @@ END:VCALENDAR""",
         where the object was stored successfully.  A bare PROPFIND on ``%40``
         used to decide it where nothing could be stored, which made a
         conformant server (nothing has been created at ``%40``, so it 404s)
-        and a merely slow one (the ``create-calendar`` delayed-creation quirk this
-        suite already probes) come out ``encoded: unsupported``.
+        and a merely slow one (the ``synchronous-write.create-calendar`` delay
+        this suite already probes) come out ``encoded: unsupported``.
 
         A write that said nothing either way - a 5xx, a dropped connection -
         is not a refusal: the object may be there regardless, so it is asked
@@ -3464,12 +3520,12 @@ class CheckSynchronousWrite(Check):
     have either without the other.  Nothing is polled unless the first read-back
     fails, so a synchronous server pays one extra GET and no waiting at all.
 
-    The verdict then combines that with the delays the calendar create/delete
-    probe measured.  Any of them makes writes ``unsupported``, but a blanket
-    post-write sleep is only the right prescription when *object writes* are
-    affected: a server that merely creates collections asynchronously would
-    have every PUT slowed down for nothing.  So a delayed save-load records a
-    ``delay``, while a calendar delay on its own is recorded without one.
+    Only a delayed save-load makes writes ``unsupported``, and its ``delay``
+    is the save-load delay alone.  Calendar delays are recorded on
+    ``synchronous-write.create-calendar`` and ``.delete-calendar`` by the
+    calendar probe (they are only noted here): a blanket
+    post-write sleep sized to them would slow every PUT for the sake of the
+    odd MKCALENDAR.
     ``fragile`` - asynchronous, but too fast to catch - is never reported: one
     probe cannot tell it from ``full``.
     """
@@ -3563,8 +3619,8 @@ class CheckSynchronousWrite(Check):
         ## What the calendar lifecycle probe measured, if it ran.  A retried
         ## request is not an asynchronous one, so fragile delays do not count.
         checked = self.checker.features_checked
-        create = asynchronous_delay(checked.is_supported("create-calendar", dict))
-        delete = asynchronous_delay(checked.is_supported("delete-calendar", dict))
+        create = asynchronous_delay(checked.is_supported("synchronous-write.create-calendar", dict))
+        delete = asynchronous_delay(checked.is_supported("synchronous-write.delete-calendar", dict))
 
         notes = []
         if save_load:
@@ -3582,19 +3638,122 @@ class CheckSynchronousWrite(Check):
                 {
                     "support": "unsupported",
                     "behaviour": "; ".join(notes) + " - consider configuring a delay for this server",
-                    "delay": max(save_load, create, delete),
+                    "delay": save_load,
                     "save-load-delay": save_load,
                 },
             )
             return
 
-        value = {"support": "full", "save-load-delay": save_load}
-        if notes:
-            ## Collection writes are asynchronous, but object writes are not -
-            ## no reason to make every PUT on this server sleep.
-            value["support"] = "unsupported"
-            value["behaviour"] = "; ".join(notes)
-        self.set_feature("synchronous-write", value)
+        ## Delayed collection writes alone do not make writes asynchronous:
+        ## synchronous-write.create-calendar and .delete-calendar record those
+        ## delays themselves, and the library waits for them there.
+        self.set_feature("synchronous-write", {"support": "full", "save-load-delay": save_load})
+
+
+@contextlib.contextmanager
+def proppatch_wait(client, node):
+    """Run a block with the library waiting after a PROPPATCH as ``node`` says.
+
+    The library reads ``synchronous-write.proppatch`` off the features the
+    client holds - during a check, what has been observed so far - so the
+    block gets a copy with that one feature replaced.
+    """
+    saved = client.features
+    replaced = FeatureSet(saved)
+    replaced.copyFeatureSet({"synchronous-write.proppatch": node}, collapse=False)
+    client.features = replaced
+    try:
+        yield
+    finally:
+        client.features = saved
+
+
+class CheckProppatchDelay(Check):
+    """Is a PROPPATCH observable once the server has answered it?
+
+    Infomaniak answers a PROPPATCH at once, but PROPFIND keeps returning the
+    old display name for ~10s, while a PUT is readable immediately - so
+    CheckSynchronousWrite, which times a PUT, cannot see it.  The library
+    waits for such a server when ``synchronous-write.proppatch`` carries a
+    ``delay``, and this check measures that delay.
+
+    It renames the calendar and times how long PROPFIND keeps showing the old
+    name, with both the sleep after every write and the library's own wait
+    suspended, then puts the name back.  The display name is used because
+    every server stores it; the colour and order probes depend on this check,
+    so the library waits for their writes too.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"synchronous-write.proppatch"}
+
+    def _timeout(self):
+        ## Infomaniak takes ~10-11s, so the general 10s floor is not enough;
+        ## and as with the other delay probes, wait out twice what is configured.
+        own = self.expected_features.is_supported("synchronous-write.proppatch", dict).get("delay") or 0
+        return max(30, self.checker.delay_probe_timeout, 2 * own)
+
+    def _display_name(self, cal):
+        return cal.get_properties([dav.DisplayName()]).get(dav.DisplayName.tag)
+
+    def _run_check(self):
+        cal = self.checker.calendar
+        feature = "synchronous-write.proppatch"
+        if cal is None:
+            self.set_feature(feature, {"support": "unknown", "behaviour": "no calendar to write to"})
+            return
+        original = self._display_name(cal)
+        probe = f"csc proppatch probe {uuid.uuid4().hex[:8]}"
+        waited = 0
+        try:
+            with self.checker.without_write_delay(), proppatch_wait(cal.client, {"support": "full"}):
+                try:
+                    cal.set_properties([dav.DisplayName(probe)])
+                except (DAVError, AuthorizationError) as e:
+                    self.set_feature(feature, {"support": "unknown", "behaviour": f"cannot set the display name ({e})"})
+                    return
+                ## Wall-clock time, not a count of sleeps: each PROPFIND
+                ## takes a fraction of a second too, and counting only the
+                ## sleeps read Infomaniak's ~10s as 7.
+                start = time.monotonic()
+                stale = False
+                while self._display_name(cal) == original:
+                    stale = True
+                    if time.monotonic() - start >= self._timeout():
+                        self.set_feature(
+                            feature,
+                            {
+                                "support": "unknown",
+                                "behaviour": f"the display name did not change in {self._timeout()}s",
+                            },
+                        )
+                        return
+                    time.sleep(1)
+                ## Only a stale read makes it a delay: the first read-back's
+                ## own latency would otherwise round every server up to 1s.
+                waited = math.ceil(time.monotonic() - start) if stale else 0
+            if waited:
+                self.set_feature(
+                    feature,
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"a PROPPATCH takes ~{waited}s to show in PROPFIND",
+                        "delay": waited,
+                    },
+                )
+            else:
+                self.set_feature(feature, True)
+        finally:
+            ## After the verdict is recorded, so the library waits for this
+            ## write: the next probe must not see the probe name.  With the
+            ## same margin as CheckCalendarProperties, for the same reason.
+            try:
+                with contextlib.ExitStack() as stack:
+                    if waited:
+                        stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": 2 * waited}))
+                    cal.set_properties([dav.DisplayName(original or "")])
+            except (DAVError, AuthorizationError):
+                logging.warning("Could not restore the display name of %s after probing it", cal.url)
 
 
 class CheckMutable(Check):
@@ -3674,14 +3833,24 @@ class CheckCalendarProperties(Check):
     value (calendar-color.hex); some servers accept one form but not the other.
     """
 
-    depends_on = {PrepareCalendar}
+    ## CheckProppatchDelay first: once the delay is recorded, the library
+    ## waits out each set_properties() below, and the read-backs see the
+    ## new value instead of grading the property read-only.
+    depends_on = {PrepareCalendar, CheckProppatchDelay}
     features_to_be_checked = {"calendar-color", "calendar-color.hex", "calendar-order"}
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
-        self._probe("calendar-color", ical.CalendarColor, "blue", "green", cal)
-        self._probe("calendar-color.hex", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
-        self._probe("calendar-order", ical.CalendarOrder, "12", "34", cal)
+        ## The measured delay is one sample of a delay that varies (9-11s on
+        ## Infomaniak); the library stops waiting as soon as the value changes,
+        ## so a generous margin costs a quick server nothing.
+        delay = asynchronous_delay(self.checker.features_checked.is_supported("synchronous-write.proppatch", dict))
+        with contextlib.ExitStack() as stack:
+            if delay:
+                stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": 2 * delay}))
+            self._probe("calendar-color", ical.CalendarColor, "blue", "green", cal)
+            self._probe("calendar-color.hex", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
+            self._probe("calendar-order", ical.CalendarOrder, "12", "34", cal)
 
     def _probe(self, feature, element, v1, v2, cal) -> None:
         ## The probe works by *writing* the property, so whatever was there

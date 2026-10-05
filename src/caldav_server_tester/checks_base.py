@@ -147,10 +147,11 @@ class Check:
     def _check_observed_delay(self, feature, fs):
         """Complain when a measured delay outgrows the configured one.
 
-        The `delay` of `synchronous-write` in a server profile is a number written by hand, and the
-        only way to learn that it is too small is to measure the server.  Any
-        probe that records a `delay` therefore gets it compared against what the
-        profile asks a client to sleep, and the complaint goes out through the
+        A `delay` in a server profile is a number written by hand, and the only
+        way to learn that it is too small is to measure the server.  Any probe
+        that records a `delay` therefore gets it compared against what the
+        profile asks a client to wait - the feature's own `delay`, or the
+        `synchronous-write` one, whichever is longer - and the complaint goes out through the
         same debug_mode machinery as any other unmet expectation.
 
         Deliberately placed above the fragile/unknown early return below: that
@@ -164,23 +165,28 @@ class Check:
         if not delay:
             return
 
-        configured = write_delay(self.expected_features)
+        ## A delay declared on the feature itself (synchronous-write.create-calendar
+        ## on a server creating calendars asynchronously, which the library polls for)
+        ## covers it, and so does the sleep after every write.
+        own = self.expected_features.is_supported(feature, dict).get("delay") or 0
+        configured = max(own, write_delay(self.expected_features))
 
         if not configured:
             complaint = (
-                f"{feature}: observed delay of ~{delay}s, but no synchronous-write delay is configured for this server"
+                f"{feature}: observed delay of ~{delay}s, but no delay is configured for {feature}, "
+                f"nor a synchronous-write delay"
             )
         elif observed.get("delay-is-lower-bound"):
             ## The probe stopped waiting, so the server is slower than this - by
             ## an unknown amount, which no ratio can be computed against.
             complaint = (
                 f"{feature}: observed delay is at least ~{delay}s, longer than the probe waited, "
-                f"against a configured write delay of {configured}s"
+                f"against a configured delay of {configured}s"
             )
         elif delay / configured > DELAY_MARGIN_RATIO:
             complaint = (
                 f"{feature}: observed delay of ~{delay}s takes up more than "
-                f"{DELAY_MARGIN_RATIO:.0%} of the configured write delay of {configured}s"
+                f"{DELAY_MARGIN_RATIO:.0%} of the configured delay of {configured}s"
             )
         else:
             return

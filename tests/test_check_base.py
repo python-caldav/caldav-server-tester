@@ -464,7 +464,9 @@ class TestObservedDelayWarning:
     debug_mode machinery as any other unmet expectation.
     """
 
-    def _check(self, configured=None, debug_mode="logging") -> Check:
+    def _check(self, configured=None, debug_mode="logging", own=None) -> Check:
+        """``configured`` is the synchronous-write delay, ``own`` maps a
+        feature to a delay declared on that feature itself."""
         checker = Mock()
         checker._features_checked = FeatureSet()
         checker.debug_mode = debug_mode
@@ -476,40 +478,63 @@ class TestObservedDelayWarning:
             expected.copyFeatureSet(
                 {"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False
             )
+        for feature, delay in (own or {}).items():
+            expected.copyFeatureSet({feature: {"support": "unsupported", "delay": delay}}, collapse=False)
         check.expected_features = expected
         return check
 
     @staticmethod
     def _delayed(delay, **extra):
-        return {"support": "quirk", "behaviour": "delayed creation", "delay": delay, **extra}
+        return {"support": "unsupported", "behaviour": "slow to show", "delay": delay, **extra}
 
     def test_warns_when_the_observed_delay_eats_the_margin(self, caplog) -> None:
         check = self._check(configured=10)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("create-calendar", self._delayed(9))
+            check.set_feature("synchronous-write.create-calendar", self._delayed(9))
         assert "observed delay" in caplog.text
-        assert "create-calendar" in caplog.text
+        assert "synchronous-write.create-calendar" in caplog.text
         assert "9" in caplog.text and "10" in caplog.text
 
     def test_quiet_when_the_configured_delay_has_room(self, caplog) -> None:
         check = self._check(configured=10)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("create-calendar", self._delayed(4))
+            check.set_feature("synchronous-write.create-calendar", self._delayed(4))
         assert "observed delay" not in caplog.text
 
     def test_warns_when_nothing_is_configured(self, caplog) -> None:
         """A delay nobody configured is the case worth hearing about."""
         check = self._check(configured=None)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("create-calendar", self._delayed(3))
+            check.set_feature("synchronous-write.create-calendar", self._delayed(3))
         assert "observed delay" in caplog.text
-        assert "no synchronous-write delay is configured" in caplog.text
+        assert "no delay is configured for synchronous-write.create-calendar" in caplog.text
+
+    def test_a_calendar_delay_is_measured_against_its_own_feature(self, caplog) -> None:
+        """Infomaniak: object writes are synchronous, so the profile carries
+        no synchronous-write delay - the creation delay is declared on
+        synchronous-write.create-calendar, and the library polls for it there."""
+        check = self._check(own={"synchronous-write.create-calendar": 15})
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("synchronous-write.create-calendar", self._delayed(8))
+        assert "observed delay" not in caplog.text
+
+    def test_a_calendar_delay_outgrowing_its_own_feature_warns(self, caplog) -> None:
+        check = self._check(own={"synchronous-write.delete-calendar": 8})
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("synchronous-write.delete-calendar", self._delayed(7))
+        assert "configured delay of 8s" in caplog.text
+
+    def test_a_delay_on_another_calendar_feature_does_not_count(self, caplog) -> None:
+        check = self._check(own={"synchronous-write.delete-calendar": 15})
+        with caplog.at_level(logging.ERROR):
+            check.set_feature("synchronous-write.create-calendar", self._delayed(8))
+        assert "no delay is configured for synchronous-write.create-calendar" in caplog.text
 
     def test_a_lower_bound_always_warns(self, caplog) -> None:
         """The probe gave up waiting, so the real delay is longer than this."""
         check = self._check(configured=100)
         with caplog.at_level(logging.ERROR):
-            check.set_feature("create-calendar", self._delayed(10, **{"delay-is-lower-bound": True}))
+            check.set_feature("synchronous-write.create-calendar", self._delayed(10, **{"delay-is-lower-bound": True}))
         assert "observed delay" in caplog.text
 
     def test_a_zero_delay_says_nothing(self, caplog) -> None:

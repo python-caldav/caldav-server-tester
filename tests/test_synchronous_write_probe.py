@@ -111,27 +111,31 @@ class TestSaveLoadDelayMeasurement:
 
 
 class TestAggregateVerdict:
-    """Any delayed write is asynchronous; a delayed object write justifies a sleep."""
+    """Only a delayed object write makes writes asynchronous, and justifies a sleep."""
 
     def _with_calendar_delays(self, checker, create=None, delete=None) -> None:
         if create is not None:
             checker._features_checked.set_feature(
-                "create-calendar", {"support": "quirk", "behaviour": "delayed creation", "delay": create}
+                "synchronous-write.create-calendar", {"support": "unsupported", "delay": create}
             )
         if delete is not None:
             checker._features_checked.set_feature(
-                "delete-calendar", {"support": "quirk", "behaviour": "delayed deletion", "delay": delete}
+                "synchronous-write.delete-calendar", {"support": "unsupported", "delay": delete}
             )
 
     def test_delays_on_creation_and_save_load_recommend_a_delay(self, monkeypatch) -> None:
+        """The recommended sleep is the object write's; the calendar delays
+        belong to create-calendar and delete-calendar, and every PUT sleeping
+        as long as the slowest MKCALENDAR would be the over-prescription."""
         checker = _checker(monkeypatch)
         self._with_calendar_delays(checker, create=6, delete=4)
-        _readback(monkeypatch, fail_times=8)
+        _readback(monkeypatch, fail_times=3)
 
         observed = _run(checker)
 
         assert observed["support"] == "unsupported"
-        assert observed["delay"] == 8  ## the longest delay seen anywhere
+        assert observed["delay"] == 3
+        assert "create-calendar takes ~6s" in observed["behaviour"]
         assert "consider configuring a delay" in observed["behaviour"]
 
     def test_a_delayed_save_load_alone_recommends_a_delay(self, monkeypatch) -> None:
@@ -144,11 +148,13 @@ class TestAggregateVerdict:
         assert observed["support"] == "unsupported"
         assert observed["delay"] == 3
 
-    def test_a_delayed_creation_alone_records_no_delay(self, monkeypatch) -> None:
-        """Asynchronous collection creation is asynchronous, but not a reason to sleep.
+    def test_a_delayed_creation_alone_is_full(self, monkeypatch) -> None:
+        """Asynchronous collection creation is create-calendar's to report.
 
-        A blanket post-write sleep would be the wrong prescription: it would
-        slow every PUT on a server whose PUTs are perfectly synchronous.
+        It carries its own delay, which the library polls for; grading object
+        writes unsupported as well would report the one quirk twice - and
+        Infomaniak flip-flopped between full and unsupported, depending on
+        whether a run happened to catch the calendar delay.
         """
         checker = _checker(monkeypatch)
         self._with_calendar_delays(checker, create=6)
@@ -156,19 +162,16 @@ class TestAggregateVerdict:
 
         observed = _run(checker)
 
-        assert observed["support"] == "unsupported"
-        assert "delay" not in observed
-        assert "create-calendar" in observed["behaviour"]
+        assert observed == {"support": "full", "save-load-delay": 0}
 
-    def test_a_delayed_deletion_alone_records_no_delay(self, monkeypatch) -> None:
+    def test_a_delayed_deletion_alone_is_full(self, monkeypatch) -> None:
         checker = _checker(monkeypatch)
         self._with_calendar_delays(checker, delete=4)
         _readback(monkeypatch, fail_times=0)
 
         observed = _run(checker)
 
-        assert observed["support"] == "unsupported"
-        assert "delay" not in observed
+        assert observed == {"support": "full", "save-load-delay": 0}
 
     def test_a_retried_deletion_is_not_asynchronous(self, monkeypatch) -> None:
         """A fragile delay is how long the request kept failing, not a queue.

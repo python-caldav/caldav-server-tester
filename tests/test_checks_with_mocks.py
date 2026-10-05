@@ -117,7 +117,8 @@ class TestCheckMakeDeleteCalendar:
         OK but the new collection 404s for a few seconds.  The probe must poll for
         it to materialise instead of concluding creation failed (which both
         mis-reports create-calendar AND leaks the orphaned calendar), and record
-        the result as a 'delayed creation' quirk."""
+        the delay on synchronous-write.create-calendar - not on create-calendar,
+        whose own grade (e.g. mkcol-required) is a different question."""
         import caldav_server_tester.checks as checks_mod
 
         checker, client, principal = self.create_checker_with_principal()
@@ -141,10 +142,13 @@ class TestCheckMakeDeleteCalendar:
 
         check = CheckMakeDeleteCalendar(checker)
         calmade = check._try_make_calendar(cal_id="x")
+        check._record_settle_delays()
 
         assert calmade is True
-        assert checker.features_checked.is_supported("create-calendar", str) == "quirk"
-        assert "delayed" in checker.features_checked.is_supported("create-calendar", dict)["behaviour"]
+        assert checker.features_checked.is_supported("create-calendar", str) == "full"
+        observed = checker.features_checked.is_supported("synchronous-write.create-calendar", dict)
+        assert observed["support"] == "unsupported"
+        assert observed["delay"] == 3
 
     def test_create_calendar_never_materialises_is_unsupported(self, monkeypatch) -> None:
         """If the calendar never becomes accessible, creation is still treated as
@@ -1394,15 +1398,15 @@ class TestCleanupDoesNotDeleteUserData:
         assert found == {"csc_simple_event1": event, "csc_simple_journal1": journal}
 
 
-class TestDelayedDeleteIsAQuirk:
-    """A delete that only takes a while is a quirk, not fragile.
+class TestDelayedDeleteIsAnAsynchronousWrite:
+    """A delete that only takes a while is an asynchronous write, not fragile.
 
-    A "quirk" delete goes through on the one DELETE that was sent and only the
-    wait varies; "fragile" is for an outcome that is not deterministic at all.
-    Only 'quirk' counts as positive in FeatureSet (_POSITIVE_STATUSES), so a
-    fragile verdict makes is_supported("delete-calendar") False - the
-    free-namespace probe therefore asks with accept_fragile=True rather than
-    self-skipping.
+    It goes through on the one DELETE that was sent and only the wait varies,
+    so delete-calendar stays full and the delay goes on
+    synchronous-write.delete-calendar; "fragile" is for an outcome that is
+    not deterministic at all, and makes is_supported("delete-calendar")
+    False - the free-namespace probe therefore asks with accept_fragile=True
+    rather than self-skipping.
     """
 
     def _checker(self) -> tuple[ServerQuirkChecker, Mock]:
@@ -1418,7 +1422,7 @@ class TestDelayedDeleteIsAQuirk:
         checker._features_checked.set_feature("create-calendar.auto", False)
         return checker, checker.principal
 
-    def test_delayed_deletion_is_quirk_with_observed_delay(self, monkeypatch) -> None:
+    def test_delayed_deletion_is_an_asynchronous_write(self, monkeypatch) -> None:
         import caldav_server_tester.checks as checks_mod
 
         checker, principal = self._checker()
@@ -1446,14 +1450,48 @@ class TestDelayedDeleteIsAQuirk:
         check = CheckMakeDeleteCalendar(checker)
         monkeypatch.setattr(checks_mod.DAVObject, "delete", lambda _self: state.__setitem__("deleted", True))
         check._try_make_calendar(cal_id="x")
+        check._record_settle_delays()
 
-        observed = checker.features_checked.is_supported("delete-calendar", dict)
-        assert observed["support"] == "quirk"
-        assert "delayed deletion" in observed["behaviour"]
+        observed = checker.features_checked.is_supported("synchronous-write.delete-calendar", dict)
+        assert observed["support"] == "unsupported"
         assert observed["delay"] == 2
-        ## quirk is a positive status, so the free-namespace probe is no longer
-        ## silently skipped on such servers
-        assert checker.features_checked.is_supported("delete-calendar") is True
+        ## The deletion itself works, so the free-namespace probe is not
+        ## skipped on such servers
+        assert checker.features_checked.is_supported("delete-calendar", str) == "full"
+
+    def test_a_quick_first_sample_is_not_recorded_before_a_slow_one(self, monkeypatch) -> None:
+        """One verdict per run, from the slowest sample: recording each one
+        compared a quick first delete with the profile and logged a mismatch."""
+        checker, _principal = self._checker()
+        check = CheckMakeDeleteCalendar(checker)
+        check._sample_settle_delay("synchronous-write.delete-calendar", 0, "")
+        assert "synchronous-write.delete-calendar" not in checker.features_checked.dotted_feature_set_list()
+        check._sample_settle_delay("synchronous-write.delete-calendar", 7, "slow")
+        check._sample_settle_delay("synchronous-write.delete-calendar", 3, "less slow")
+        check._record_settle_delays()
+        observed = checker.features_checked.is_supported("synchronous-write.delete-calendar", dict)
+        assert observed["delay"] == 7
+
+    def test_an_ungraceful_delete_still_times_the_deletion(self, monkeypatch) -> None:
+        """An error answer that is carried out anyway: delete-calendar is
+        ungraceful, and how long the calendar took to go is a settle time."""
+        import caldav_server_tester.checks as checks_mod
+
+        checker, _principal = self._checker()
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        check = CheckMakeDeleteCalendar(checker)
+        gone = iter([False, False, True])
+        monkeypatch.setattr(check, "_calendar_gone", lambda _cal: next(gone))
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", Mock(side_effect=DAVError("500")))
+
+        verdict = check._grade_failing_delete(Mock(), "x", DAVError("500"), check.FRESHLY_CREATED)
+        check._record_settle_delays()
+
+        assert verdict["support"] == "ungraceful"
+        assert "delay" not in verdict
+        observed = checker.features_checked.is_supported("synchronous-write.delete-calendar", dict)
+        assert observed["support"] == "unsupported"
+        assert observed["delay"] > 0
 
     def test_trashbin_is_still_unknown(self, monkeypatch) -> None:
         """A calendar that never disappears is not a delay - verdict unchanged."""
@@ -1612,7 +1650,7 @@ class TestLeftoverCalendarEvidence:
         cal.delete.side_effect = lambda: state.__setitem__("wiped", True)
         return cal
 
-    def test_leftover_makes_it_a_delayed_creation_quirk(self, monkeypatch) -> None:
+    def test_leftover_makes_it_a_delayed_creation(self, monkeypatch) -> None:
         import caldav_server_tester.checks as checks_mod
 
         checker, principal = self._checker()
@@ -1623,11 +1661,14 @@ class TestLeftoverCalendarEvidence:
         principal.make_calendar.return_value = cal
         principal.calendars.return_value = [cal]
 
-        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+        check = CheckMakeDeleteCalendar(checker)
+        check._probe_make_delete()
+        check._record_settle_delays()
 
-        observed = checker.features_checked.is_supported("create-calendar", dict)
-        assert observed["support"] == "quirk"
-        assert "delayed creation" in observed["behaviour"]
+        assert checker.features_checked.is_supported("create-calendar", str) == "full"
+        observed = checker.features_checked.is_supported("synchronous-write.create-calendar", dict)
+        assert observed["support"] == "unsupported"
+        assert observed["delay-is-lower-bound"] is True
         assert "previous run" in observed["behaviour"]
         ## The delete question cannot be answered when the calendar never showed
         ## up, but it must not be answered *wrongly* either.
