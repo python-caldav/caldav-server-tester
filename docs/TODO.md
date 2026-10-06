@@ -298,3 +298,32 @@ client's connection settings would serve both, and fixing well-known's
 config-blindness is the part that changes a verdict on a real server — which is
 why it wants a run against the fleet rather than being folded into an unrelated
 commit.
+
+# Leftovers found on Infomaniak, 2026-10-05
+
+(Found while cleaning the Infomaniak test account, not yet investigated.)
+
+## `Calendar.delete()` on a URL with a literal `@` deletes nothing
+
+Infomaniak lists the url.encode-at probe calendar under a literal `@`
+(`.../csc_encode_at_cal@example.com/`), twice.  `Calendar.delete()` on that
+URL raised nothing and removed nothing; a raw DELETE to the `%40` spelling
+answered 204 and removed it, the literal spelling 404.  So a delete that
+404s on a server-handed URL is being swallowed somewhere - a caldav bug, if
+it reproduces.
+
+## The url.encode-at probe leaks its calendar
+
+`csc_encode_at_cal@example.com` was left behind on Infomaniak, so the
+probe's cleanup misses it.  Probably the item above: cleanup deletes by the
+literal URL the server listed.
+
+## Async test calendars leaked with `delete-calendar` fragile
+
+Every `pythoncaldav-async-*` calendar was left on the server, emptied but
+not deleted - the shape of `Calendar._async_delete()` with a fragile
+`delete-calendar` whose retry loop never sees a `NotFoundError`, which ends
+in wiping the objects instead of deleting the calendar.  A fresh async
+create-and-delete worked (gone in 2.2s), so the leftovers may predate the
+2026-10-05 profile change; confirm on the next Infomaniak run.  This belongs
+in caldav, not here.
