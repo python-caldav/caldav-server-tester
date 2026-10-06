@@ -327,3 +327,34 @@ in wiping the objects instead of deleting the calendar.  A fresh async
 create-and-delete worked (gone in 2.2s), so the leftovers may predate the
 2026-10-05 profile change; confirm on the next Infomaniak run.  This belongs
 in caldav, not here.
+
+## Consolidation of delays
+
+There are several kinds of delay, some handled in the caldav library and
+others only in test code:
+
+* Asynchronous writes, all under `synchronous-write` (graded
+  `unsupported` with a `delay`; each child inherits from the parent):
+  * `synchronous-write` itself - object writes; the tester and the
+    caldav test suite sleep after every write, the library does nothing
+  * `.create-calendar`, `.delete-calendar`, `.proppatch` - the library
+    polls after MKCALENDAR, a calendar DELETE or a PROPPATCH until the
+    change shows, for up to `delay` seconds (one shared helper)
+* The Cyrus calendar delete bug - `delete-calendar` `fragile`: deleting a
+  calendar re-created on a just-deleted id answers 500 for ~1s
+  (https://github.com/cyrusimap/cyrus-imapd/issues/6383); the library
+  retries the DELETE.
+* `search-cache` - writes are synchronous, but a REPORT may take a while
+  to show new content.  Uses `behaviour: delay` rather than a support
+  level; arbitrary sleeps before searches in the tester and the test suite.
+* `rate-limit` - client-side throttling, not a server delay.
+
+The asynchronous writes were consolidated on 2026-10-06; the Cyrus bug,
+`search-cache` and `rate-limit` stay as they are for now.
+
+Left over: during a run the library waits as long as the tester has
+*observed*, and one measurement of a varying delay is too tight a bound -
+on Infomaniak later calendar creations log "did not show within 6s".
+CheckCalendarProperties gives the library twice the measured PROPPATCH
+delay; the same margin for all `synchronous-write` children, applied in one
+place, would cover creation and deletion too.
