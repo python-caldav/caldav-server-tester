@@ -358,3 +358,71 @@ on Infomaniak later calendar creations log "did not show within 6s".
 CheckCalendarProperties gives the library twice the measured PROPPATCH
 delay; the same margin for all `synchronous-write` children, applied in one
 place, would cover creation and deletion too.
+
+# Lookup by UID: two missing probes
+
+(Measured 2026-10-07 with caldav master `5d165da1`, no server hints, raw
+`calendar-query` REPORTs against a calendar holding four events.)
+
+## Is an object name other than `<uid>.ics` allowed?
+
+`Calendar.get_object_by_uid()` only ever searches, so it does not depend on
+this - but a client that builds `<cal>/<uid>.ics` from a UID, or a test that
+stores under an arbitrary name, does.  `save-load.stable-url` (probed in
+`PrepareCalendar`) asks whether the server keeps the URL the client stored
+under; that probe stores under `<uid>.ics`, so a server that accepts only
+that name passes it.  Nothing probes a non-UID name.
+
+* Zimbra: a PUT to `some-other-name.ics` answers `302` to `<uid>.ics` (on the
+  internal port 8443, so caldav following the redirect gets "connection
+  refused" from the docker image) and **stores nothing**.
+* Bedework 3 and 5: `201`; the object lives under the given name and
+  `<uid>.ics` is 404.
+
+SOGo and Purelymail keep the name too.  Suggested sub-feature
+`save-load.stable-url.arbitrary-name`: `full` when the name is kept;
+`unsupported` (with a `behaviour` naming the redirect) for Zimbra.  The
+Zimbra profile's comment "Zimbra keeps the name the object was stored
+under" holds only for `<uid>.ics` names, and should say so.
+
+## `search.text.by-uid` independently of `search.text`
+
+`get_object_by_uid()` is a text search on `UID`, yet servers differ on UID
+and other text properties:
+
+| server    | UID exact | UID substring | SUMMARY exact/substring | non-match |
+|-----------|-----------|---------------|-------------------------|-----------|
+| Zimbra    | all 4     | all 4         | all 4                   | all 4     |
+| Bedework3 | 1 (after the ~3 s search-cache delay; 0 before) | 0 | 0 | 0 |
+| Bedework5 | 1         | 0             | 0                       | 0         |
+| SOGo      | 1         | 1             | all 4 (filter ignored)  | 0 on UID, all 4 on SUMMARY |
+| Purelymail | 1 (after the ~180 s index delay; 0 before) | 1 | 1 | 0 |
+
+Robur could not be measured on 2026-10-07: every PUT answered 500.
+
+* Zimbra ignores every `text-match`; its `search.text: unsupported` hint is
+  right.  `get_object_by_uid()` still works only because the library
+  post-filters (`o.id == uid`) - i.e. it downloads the whole calendar per
+  lookup.
+* SOGo's profile sets no `search.text`, only `search.text.case-sensitive`
+  and `search.text.case-insensitive` as unsupported.  Measured, text search
+  works on UID, substring included, but a SUMMARY filter is ignored.
+* Purelymail does full text search once its index catches up; the old
+  claim in caldav's `search.py` that it lacks text search mistook the
+  index delay for missing support (corrected in caldav 3.4.0).  An empty
+  `_hacks="insist"` result is retried without the text filters, but only
+  with a feature profile: with `features="purelymail"` (its `search-cache`
+  delay) `get_object_by_uid()` works right after a save, without features
+  it raises `NotFoundError` until the index catches up.
+* Bedework matches an exact UID but nothing else (no substring, no SUMMARY),
+  so `search.text: unsupported` hides that UID lookup works server-side.  It
+  costs: with that hint, caldav's `CalDAVSearcher` drops *all* text filters,
+  UID included, and every UID lookup fetches the whole calendar.
+  Without hints, `get_object_by_uid()` on Bedework 3 right after a save raises
+  `NotFoundError` - the search-cache delay, not text search.
+
+Probe `search.text.by-uid` (exact match) on its own, and let the library
+consult it rather than `search.text` when deciding whether a UID search can be
+trusted to the server.  Its substring behaviour belongs under
+`search.text.substring`, which is `unsupported` on Bedework (no substring
+match anywhere; the missing SUMMARY match is `search.text`).
