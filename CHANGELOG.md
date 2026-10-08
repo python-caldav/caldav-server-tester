@@ -8,13 +8,15 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
-## Unreleased
+## 1.4.0 - 2026-10-08
+
+This release works with caldav 3.4.0.
 
 ### Added
 
 - **`scheduling.calendar-user-address-set.populated`** - set if the principal's `calendar-user-address-set` actually carries an address.  Xandikos 0.4.7 leaves it blank.
 
-- **`auth.www-authenticate`, `auth.www-authenticate.usable-scheme`** - whether a 401 from the server names an authentication scheme, as RFC 7235 §3.1 requires, and whether the schemes it names include one the caldav library implements.  A server that omits the header leaves the caldav library with nothing to negotiate: no auth object is built, the password is never transmitted, and the bare 401 surfaces as an `AuthorizationError` indistinguishable from a rejected one.  Yahoo Calendar does this; a server naming only Negotiate or NTLM is the same dead end one step later, and pinning `auth_type` is the cure for both.  See https://github.com/python-caldav/caldav/issues/713.  Note that a run only reaches this probe on a server it has already authenticated against, so on an affected server it records *why* `auth_type` had to be pinned rather than diagnosing a connection that never came up.
+- **`auth.www-authenticate`, `auth.www-authenticate.usable-scheme`** - whether a 401 from the server names an authentication scheme, as RFC 7235 §3.1 requires, and whether the schemes it names include one the caldav library implements.  Yahoo Calendar skips this header; a server naming only Negotiate or NTLM is the same dead end one step later, and pinning `auth_type` is the cure for both.  See https://github.com/python-caldav/caldav/issues/713.  Note that a run only reaches this probe on a server it has already authenticated against, so on an affected server it records *why* `auth_type` had to be pinned rather than diagnosing a connection that never came up.
 
 - **`synchronous-write.proppatch`** - how long a PROPPATCH takes to show in a PROPFIND.  Infomaniak answers it at once but keeps serving the old display name or colour for 7-11s, while a PUT is readable immediately.  Needs a caldav library that knows the feature, which then waits for such a server in `set_properties()`.
 
