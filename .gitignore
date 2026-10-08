@@ -155,3 +155,8 @@ cython_debug/
 
 # lychee link checker cache
 .lycheecache
+
+# installed by: pre-commit run prepare-ai-repository --hook-stage manual
+/.claude/settings.json
+/.claude/hooks/record-prompt.py
+/.github/assistant-guidelines.md
