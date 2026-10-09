@@ -455,18 +455,19 @@ class ServerQuirkChecker:
         return self._purge_csc_objects(candidates)
 
     def _get_deviating_features(self) -> dict:
-        """Return observed features where support differs from the spec default.
+        """Return observed features whose resolved value differs from the spec default.
 
-        The default for each feature comes from FeatureSet.FEATURES[feature]['default'].
-        Features with no explicit default are assumed to be "full" (standard CalDAV compliance).
+        Both sides are resolved by caldav's ``is_supported(feature, str)``, so a
+        server-feature compares its support level against the default in
+        FeatureSet.FEATURES (or "full"), while an observation or client-feature
+        compares its bool ("True"/"False") against the default for its type.
         """
         all_observed = self._features_checked.dotted_feature_set_list(compact=False)
+        defaults = FeatureSet()
         deviating = {}
         for feature, info in all_observed.items():
-            obs_support = info.get("support", "unknown")
-            feature_default = FeatureSet.FEATURES.get(feature, {}).get("default", {})
-            default_support = feature_default.get("support", "full") if isinstance(feature_default, dict) else "full"
-            if obs_support != default_support:
+            observed = self._features_checked.is_supported(feature, str)
+            if observed != defaults.is_supported(feature, str):
                 deviating[feature] = info
         return deviating
 
@@ -474,14 +475,19 @@ class ServerQuirkChecker:
         """Compare expected (configured) features against observed features.
 
         Returns a dict mapping feature name to {"expected": ..., "observed": ...}
-        for every feature where the support level differs.
+        for every feature where the support level differs.  Like caldav's
+        FeatureSet.compare(), only server-features are compared - the types in
+        FeatureSet._UNCHECKABLE_FEATURE_TYPES (observations, client-features,
+        ...) carry no support level and cannot be reliably probed.
         """
         observed = self._features_checked.dotted_feature_set_list(compact=False)
         expected_all = self.expected_features.dotted_feature_set_list(compact=False)
         diff = {}
         all_keys = set(observed) | set(expected_all)
         for key in all_keys:
-            obs_support = observed.get(key, {}).get("support", "unknown")
+            if FeatureSet.find_feature(key).get("type", "server-feature") in FeatureSet._UNCHECKABLE_FEATURE_TYPES:
+                continue
+            obs_support = self._features_checked.is_supported(key, str) if key in observed else "unknown"
             exp_support = self.expected_features.is_supported(key, str)
             if obs_support != exp_support:
                 diff[key] = {"expected": exp_support, "observed": obs_support}
