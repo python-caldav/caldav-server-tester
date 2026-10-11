@@ -10,6 +10,10 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
+### Changed
+
+- **`save.etag`** - the probe now also GETs the object.  A weak ETag on PUT (which `If-Match` can never match) where a GET gives a strong one that `If-Match` accepts is graded `quirk` with behaviour `weak on PUT, strong on GET` (seen on GMX); it used to pass as `full` with only a note.  A GET ETag differing from a strong PUT ETag is noted.
+
 ### Fixed
 
 - **`--diff` and the non-verbose report** - observations (e.g. `get-current-user-principal.has-calendar`) and client-features (e.g. `rate-limit`) carry a value rather than a support level, and were listed as spurious deviations.  `--diff` now skips them like caldav's `FeatureSet.compare()` does, and the report compares their resolved value against the default.  Requires caldav 3.5.0, which reads an observation as a boolean.

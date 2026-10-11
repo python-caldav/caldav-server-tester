@@ -4082,12 +4082,27 @@ class CheckPutEtag(Check):
             self.set_feature("save.etag", None)
             return
         if ENTITY_TAG.fullmatch(etag):
+            ## Before the replay, which may change the etag
+            get_etag = self._get_etag(url)
             replay = self._put(url, ical, etag)
-            if self._ok(replay):
-                self.set_feature("save.etag")
-            elif etag.startswith("W/") and replay is not None and replay.status == 412:
+            weak = etag.startswith("W/")
+            if weak and (self._ok(replay) or (replay is not None and replay.status == 412)):
                 ## RFC 9110 section 13.1.1 compares If-Match strongly, so a weak
-                ## etag can never match: the 412 is the server following the RFC.
+                ## etag can never match: a 412 is the server following the RFC,
+                ## and the library never sends one anyway.  Where a GET gives a
+                ## strong one that holds (GMX), a client keeping the PUT etag
+                ## has lost its lost-update protection.
+                if self._ok(replay):
+                    ## A server comparing weakly took it; the object may have a new etag
+                    get_etag = self._get_etag(url)
+                if (
+                    get_etag
+                    and ENTITY_TAG.fullmatch(get_etag)
+                    and not get_etag.startswith("W/")
+                    and self._ok(self._put(url, ical, get_etag))
+                ):
+                    self.set_feature("save.etag", {"support": "quirk", "behaviour": "weak on PUT, strong on GET"})
+                    return
                 self.set_feature(
                     "save.etag",
                     {
@@ -4095,6 +4110,15 @@ class CheckPutEtag(Check):
                         "behaviour": f"weak etag {etag}, which If-Match cannot match (RFC 9110 section 13.1.1)",
                     },
                 )
+            elif self._ok(replay):
+                if get_etag and get_etag != etag:
+                    ## RFC 4791 section 5.3.4: a PUT etag says the object is stored as sent
+                    self.set_feature(
+                        "save.etag",
+                        {"support": "full", "behaviour": "a GET gives another etag than the PUT"},
+                    )
+                else:
+                    self.set_feature("save.etag")
             else:
                 answer = replay.status if replay is not None else "an error"
                 self.set_feature(
@@ -4134,6 +4158,16 @@ class CheckPutEtag(Check):
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
+
+    def _get_etag(self, url):
+        """The ETag header a GET answers with, or None."""
+        try:
+            response = self.client.request(url)
+        except (DAVError, OSError):
+            return None
+        if not self._ok(response):
+            return None
+        return response.headers.get("Etag")
 
     def _put(self, url, ical, if_match=None, if_none_match=None):
         headers = {"Content-Type": "text/calendar; charset=utf-8"}

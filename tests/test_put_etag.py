@@ -40,6 +40,7 @@ class EtagServer:
     """A collection answering PUT the ways the probe has to tell apart.
 
     ``put_etag`` is the ETag header a PUT answers with (None for no header),
+    ``get_etag`` the one a GET answers with (defaults to ``put_etag``),
     ``accepts`` the If-Match etags a conditional PUT succeeds with,
     ``if_match_star``/``if_none_match_star`` a key of ``STAR``.  ``answers``
     overrides the reply to a ``(header, object exists)`` pair with a status, or
@@ -49,6 +50,7 @@ class EtagServer:
     def __init__(
         self,
         put_etag='"tag-1"',
+        get_etag=None,
         accepts=None,
         if_match_star="rfc",
         if_none_match_star="rfc",
@@ -57,6 +59,7 @@ class EtagServer:
         answers=None,
     ):
         self.put_etag = put_etag
+        self.get_etag = put_etag if get_etag is None else get_etag
         self.accepts = {put_etag} if accepts is None else set(accepts)
         self.if_match_star = if_match_star
         self.if_none_match_star = if_none_match_star
@@ -98,6 +101,12 @@ class EtagServer:
         response = Mock()
         response.status = status
         response.headers = {"Etag": self.put_etag} if self.put_etag is not None and status < 300 else {}
+        return response
+
+    def request(self, url, method="GET"):
+        response = Mock()
+        response.status = 200 if url in self.objects else 404
+        response.headers = {"Etag": self.get_etag} if response.status == 200 and self.get_etag else {}
         return response
 
     def delete(self, url):
@@ -181,6 +190,34 @@ def test_weak_etag_refused_in_if_match_is_not_broken():
     etag, _ = _run(EtagServer(put_etag='W/"tag-1"', accepts=set()))
     assert etag["support"] == "full"
     assert "weak" in etag["behaviour"]
+
+
+def test_weak_etag_on_put_strong_on_get_is_a_quirk():
+    """GMX: the PUT answers W/"..." while a GET of the same object gives a
+    strong etag that If-Match accepts.  A client keeping the PUT etag has no
+    lost-update protection until it fetches the object again."""
+    etag, _ = _run(EtagServer(put_etag='W/"tag-1"', get_etag='"tag-1"', accepts={'"tag-1"'}))
+    assert etag == {"support": "quirk", "behaviour": "weak on PUT, strong on GET"}
+
+
+def test_weak_etag_on_put_strong_on_get_refused_too_stays_full():
+    etag, _ = _run(EtagServer(put_etag='W/"tag-1"', get_etag='"tag-1"', accepts=set()))
+    assert etag["support"] == "full"
+    assert "weak" in etag["behaviour"]
+
+
+def test_weak_etag_accepted_in_if_match_is_still_a_quirk():
+    """A server comparing weakly takes W/"..." back, but the library never sends a
+    weak etag, so a client is in the same spot as on GMX."""
+    etag, _ = _run(EtagServer(put_etag='W/"tag-1"', get_etag='"tag-1"', accepts={'W/"tag-1"', '"tag-1"'}))
+    assert etag == {"support": "quirk", "behaviour": "weak on PUT, strong on GET"}
+
+
+def test_etag_on_get_differing_from_put_is_noted():
+    """RFC 4791 section 5.3.4: a PUT etag means the stored object is the one sent."""
+    etag, _ = _run(EtagServer(put_etag='"tag-1"', get_etag='"tag-2"'))
+    assert etag["support"] == "full"
+    assert "GET" in etag["behaviour"]
 
 
 def test_wildcard_holding_only_for_a_missing_object_is_broken():
