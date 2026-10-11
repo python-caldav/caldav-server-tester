@@ -457,3 +457,22 @@ pass `len(expected)` from `_grade` into `_follow` (the changes for the token
 run, the live members for the initial sync), and treat a first page without a
 507 as cut when it holds fewer members than that.  This also covers today's
 `== limit` test.  Found in review, 2026-10-14.
+
+# DAViCal ignores `<C:expand>` when `schedule-tag` is requested
+
+A calendar-query asking for `<C:calendar-data><C:expand .../></C:calendar-data>`
+plus `<D:getetag/><C:schedule-tag/>` gets the unexpanded master (with its
+RRULE) back from DAViCal, and a 404 propstat for `schedule-tag`.  Without
+`schedule-tag` the same query is expanded.  Seen 2026-10-11 against the
+DAViCal docker server (port 8805), with a plain yearly all-day event.
+
+The caldav library works around it in
+https://github.com/python-caldav/caldav/pull/751 (commit 45e7bee5) by
+leaving `schedule-tag` out of every REPORT that carries `<C:expand>`, on
+every server.
+
+To do: a check that sends that REPORT with and without `schedule-tag` and
+compares the results, recorded as a feature (say
+`search.recurrences.expanded.with-schedule-tag`).  Optionally, have the
+library then request `schedule-tag` in expanding searches on servers where
+the feature is supported.
