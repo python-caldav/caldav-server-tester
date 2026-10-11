@@ -10,9 +10,14 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
+### Added
+
+- **`sync-token.invalid-token`** - whether a sync token the server never issued is refused with `DAV:valid-sync-token`, as RFC 6578 §3.2 says.  Xandikos 0.4.8 and CCS answer some such tokens with a 500 (https://github.com/jelmer/xandikos/issues/743), and Stalwart and Ox with a report and no error.
+
 ### Changed
 
 - **`save.etag`** - the probe now also GETs the object.  A weak ETag on PUT (which `If-Match` can never match) where a GET gives a strong one that `If-Match` accepts is graded `quirk` with behaviour `weak on PUT, strong on GET` (seen on GMX); it used to pass as `full` with only a note.  A GET ETag differing from a strong PUT ETag is noted.
+- Requires caldav 3.5.0, for the `sync-token.invalid-token` feature and the preconditions of a 401/403.
 
 ### Fixed
 

@@ -2,8 +2,11 @@
 
 from unittest.mock import Mock
 
+import pytest
 from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import ReportError
+from caldav.davclient import DAVClient
+from caldav.elements import dav
+from caldav.lib.error import AuthorizationError, ReportError
 
 from caldav_server_tester.checks import CheckSyncToken
 
@@ -42,6 +45,8 @@ class TestCheckSyncTokenAPI:
         checker.features_checked = checker._features_checked
         checker.debug_mode = None
         checker._client_obj = Mock()
+        checker._client_obj.report.side_effect = _refuse_token
+        checker._client_obj._build_sync_collection_body = DAVClient._build_sync_collection_body
         checker._client_obj.features = FeatureSet()
         checker.expected_features = FeatureSet()
         checker.calendar = self.create_mock_calendar()
@@ -175,6 +180,11 @@ class TestCheckSyncTokenAPI:
         assert result.get("support") == "fragile"
 
 
+def _refuse_token(*args, **kwargs):
+    """A REPORT for a never-issued token, refused as RFC 6578 section 3.2 says."""
+    raise AuthorizationError(reason="Forbidden", preconditions=[dav.ValidSyncToken.tag])
+
+
 class _SyncResult:
     """What ``objects_by_sync_token`` hands back: a token and some changes."""
 
@@ -219,6 +229,8 @@ class TestSyncTokenDeleteGrading:
         checker.features_checked = checker._features_checked
         checker.debug_mode = None
         checker._client_obj = Mock()
+        checker._client_obj.report.side_effect = _refuse_token
+        checker._client_obj._build_sync_collection_body = DAVClient._build_sync_collection_body
         checker._client_obj.features = FeatureSet()
         checker.expected_features = FeatureSet()
         checker.calendar = cal
@@ -240,3 +252,79 @@ class TestSyncTokenDeleteGrading:
     def test_a_sync_that_raises_after_a_delete_is_ungraceful(self) -> None:
         """Infomaniak answers 418 for the removed member; the client can catch it."""
         assert self._run(ReportError("418 I'm a teapot")) == "ungraceful"
+
+
+class TestSyncTokenInvalidTokenGrading:
+    """`sync-token.invalid-token`: how a token the server never issued is refused.
+
+    RFC 6578 section 3.2 wants DAV:valid-sync-token, and RFC 4918 section 16
+    a 403 with it.  The library only reads the precondition from a 401/403,
+    so another status carrying it is a quirk.  An error without it is
+    ungraceful (Xandikos and CCS answer 500), and no error at all is broken:
+    Stalwart returns a full listing, which a client can't tell from a report.
+    """
+
+    def _run(self, *answers):
+        """Grade the server whose REPORTs for the two tokens get `answers`.
+
+        An answer is an exception to raise, or a (status, body) pair.
+        """
+        checker = TestSyncTokenDeleteGrading()._checker(_SyncResult("token-3", changes=1))
+        side_effects = []
+        for answer in answers:
+            if isinstance(answer, Exception):
+                side_effects.append(answer)
+            else:
+                status, body = answer
+                side_effects.append(Mock(status=status, raw=body))
+        checker._client_obj.report.side_effect = side_effects
+        CheckSyncToken(checker)._run_check()
+        assert checker._client_obj.report.call_count == len(answers)
+        return checker._features_checked.is_supported("sync-token.invalid-token", dict)
+
+    _refused = AuthorizationError(reason="Forbidden", preconditions=[dav.ValidSyncToken.tag])
+    _precondition_body = '<D:error xmlns:D="DAV:"><D:valid-sync-token/></D:error>'
+
+    def test_a_403_with_valid_sync_token_is_full(self) -> None:
+        assert self._run(self._refused, self._refused)["support"] == "full"
+
+    def test_another_status_with_valid_sync_token_is_a_quirk(self) -> None:
+        result = self._run(self._refused, (412, self._precondition_body))
+        assert result["support"] == "quirk"
+        assert "412 with valid-sync-token" in result["behaviour"]
+
+    def test_an_error_without_valid_sync_token_is_ungraceful(self) -> None:
+        """Xandikos: 500 for a malformed token, 412 with the precondition for a hex one."""
+        result = self._run((500, "Server got itself in trouble"), (412, self._precondition_body))
+        assert result["support"] == "ungraceful"
+        assert "500 without valid-sync-token" in result["behaviour"]
+
+    def test_a_403_without_valid_sync_token_is_ungraceful(self) -> None:
+        refused = AuthorizationError(reason="Forbidden")
+        assert self._run(refused, self._refused)["support"] == "ungraceful"
+
+    def test_a_report_that_succeeds_is_broken(self) -> None:
+        """Stalwart answers a never-issued token with a full listing."""
+        result = self._run((207, "<D:multistatus xmlns:D='DAV:'/>"), (500, ""))
+        assert result["support"] == "broken"
+
+    def test_the_tokens_were_never_issued(self) -> None:
+        checker = TestSyncTokenDeleteGrading()._checker(_SyncResult("token-3", changes=1))
+        checker._client_obj.report.side_effect = _refuse_token
+        checker._client_obj._build_sync_collection_body = DAVClient._build_sync_collection_body
+        CheckSyncToken(checker)._run_check()
+        for call in checker._client_obj.report.call_args_list:
+            assert b"token-" not in call.args[1]
+
+    def test_an_error_other_than_401_403_is_ungraceful(self) -> None:
+        assert self._run(ReportError("500"), self._refused)["support"] == "ungraceful"
+
+    def test_a_crashing_probe_keeps_the_other_results(self) -> None:
+        """The probe runs last, so a crash in it can't cost the main results."""
+        ## a deletion the sync never mentions: an outcome only test 4 records,
+        ## where an unset feature would read as full
+        checker = TestSyncTokenDeleteGrading()._checker(_SyncResult("token-3", changes=0))
+        checker._client_obj.report.side_effect = RuntimeError("probe crashed")
+        with pytest.raises(RuntimeError):
+            CheckSyncToken(checker)._run_check()
+        assert checker._features_checked.is_supported("sync-token.delete", str) == "unsupported"

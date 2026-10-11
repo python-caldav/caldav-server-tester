@@ -15,7 +15,7 @@ from caldav.compatibility_hints import FeatureSet
 from caldav.davobject import DAVObject
 from caldav.elements import dav, ical
 from caldav.lib.auth import extract_auth_types
-from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError
+from caldav.lib.error import AuthorizationError, DAVError, NotFoundError, PutError, ReportError, parse_preconditions
 from caldav.lib.http_sync import CaseInsensitiveDict
 from caldav.lib.python_utilities import to_local
 from caldav.search import CalDAVSearcher
@@ -5870,13 +5870,57 @@ class CheckSyncToken(Check):
     2. Time-based sync tokens (second-precision, requires sleep between ops)
     3. Fragile sync tokens (returns extra content, race conditions)
     4. Sync breaks on delete (server fails after object deletion)
+    5. A token the server never issued isn't refused with DAV:valid-sync-token
     """
 
     depends_on = {PrepareCalendar}
     features_to_be_checked = {
         "sync-token",
         "sync-token.delete",
+        "sync-token.invalid-token",
     }
+
+    ## Tokens no server has issued: a URI, the form RFC 6578 section 3.2
+    ## gives a token, and a 40-digit hex string, the form of a Xandikos
+    ## token, which Xandikos treats differently from a malformed one
+    NEVER_ISSUED_TOKENS = ("http://example.invalid/never-issued", "0" * 40)
+
+    def _check_invalid_token(self, cal) -> None:
+        """Probe how the server refuses a sync token it never issued.
+
+        RFC 6578 section 3.2 refuses it with the DAV:valid-sync-token
+        precondition, and RFC 4918 section 16 suggests a 403 for a request
+        that will always fail.  The REPORT is sent through the low-level client,
+        since the library only keeps the precondition of a 401/403: a 412
+        with the precondition and a 500 without it would look the same.
+        """
+        support = "full"
+        observed = []
+        for token in self.NEVER_ISSUED_TOKENS:
+            query = self.client._build_sync_collection_body(sync_token=token, props=["getetag"])
+            try:
+                response = self.client.report(str(cal.url), query, depth=0)
+            except AuthorizationError as e:
+                if dav.ValidSyncToken.tag in e.preconditions:
+                    continue
+                grade, what = "ungraceful", "401/403 without valid-sync-token"
+            except DAVError as e:
+                grade, what = "ungraceful", f"{type(e).__name__}"
+            else:
+                status = response.status
+                if 200 <= status < 300:
+                    grade, what = "broken", f"{status}, no error"
+                elif dav.ValidSyncToken.tag in parse_preconditions(response.raw):
+                    grade, what = "quirk", f"{status} with valid-sync-token"
+                else:
+                    grade, what = "ungraceful", f"{status} without valid-sync-token"
+            observed.append(f"{token!r}: {what}")
+            if is_worse(grade, support):
+                support = grade
+        if observed:
+            self.set_feature("sync-token.invalid-token", {"support": support, "behaviour": "; ".join(observed)})
+        else:
+            self.set_feature("sync-token.invalid-token", True)
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
@@ -6010,6 +6054,10 @@ class CheckSyncToken(Check):
                     test_event.delete()
                 except Exception:
                     pass
+
+        ## Test 5: a token the server never issued.  Last, so a crash in it
+        ## can't cost the results above
+        self._check_invalid_token(cal)
 
 
 class CheckFreeBusyQuery(Check):
