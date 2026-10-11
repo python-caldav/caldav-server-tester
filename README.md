@@ -16,7 +16,7 @@ The full list is currently maintained in the CalDAV library, https://github.com/
 - Saving and loading events, tasks, and journals
 - Time-range, text, alarm, and recurrence searches (RFC 4791)
 - Case sensitivity and substring matching in text searches
-- Sync-collection reports (RFC 6578)
+- Sync-collection reports (RFC 6578), including paging with DAV:limit
 - Free-busy queries
 - Principal discovery (RFC 5397)
 - A `WWW-Authenticate` header on a 401, naming a usable scheme (RFC 7235)

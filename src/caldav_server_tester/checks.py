@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
 
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
@@ -5976,6 +5977,200 @@ class CheckSyncToken(Check):
                     test_event.delete()
                 except Exception:
                     pass
+
+
+class LimitRefused(Exception):
+    """A sync-collection with DAV:limit failed as RFC 6578 section 3.7 says
+    a server that cannot truncate must: DAV:number-of-matches-within-limits."""
+
+
+class CheckSyncTokenLimit(Check):
+    """
+    Checks DAV:limit in a sync-collection report (RFC 6578 section 3.7), and
+    following the checkpoint token of a truncated reply (section 3.6).
+
+    The CalDAV library never sends DAV:limit, but a server may truncate on its
+    own: Stalwart caps every report at its maxResults setting (default 2000),
+    the same code path as a client limit.  Its checkpoint of a truncated
+    initial sync (empty token) skips the remaining members, while paging from
+    an issued token works, so the two are probed separately.  Xandikos cuts
+    the reply at the limit without a 507 and hands out its newest token.
+    https://github.com/pycalendar/calendaring-sync/pull/19
+
+    A member is lost when it is in neither the pages nor one unlimited report
+    from the last page's token.  The raw reply is parsed here, since the
+    library's parser only learned the 507 marker after caldav 3.4.  Members
+    are told apart by name, and the collection by its trailing slash too:
+    OX names the calendar by another path in every href.
+    """
+
+    depends_on = {CheckSyncToken}
+    INITIAL = "sync-token.limit.initial-sync"
+    features_to_be_checked = {"sync-token.limit", INITIAL}
+    ## At least NRESULTS, and few enough pages on a big calendar
+    NRESULTS = 2
+    MAX_PAGES = 20
+    UIDS = ("csc_sync_limit_1", "csc_sync_limit_2", "csc_sync_limit_3")
+    ## _report's stand-in for the collection listed as one of its own members
+    COLLECTION = "collection"
+    COLLECTION_NOTE = "lists the collection itself as a member"
+    CUT = "the reply is cut at DAV:limit without a 507"
+    STUCK = "a 507 without a new token"
+    OUT_OF_PAGES = f"still truncated after {MAX_PAGES} pages"
+    REFUSED = "refused with 507 number-of-matches-within-limits"
+
+    def _run_check(self) -> None:
+        sync = self.checker.features_checked.is_supported("sync-token", return_type=dict)
+        if sync.get("support") not in ("full", "fragile"):
+            return
+        self.time_based = sync.get("behaviour") == "time-based"
+        cal = self.checker.calendar
+        self.cal_url = cal.url.canonical()
+        self.collection_path = unquote(self.cal_url.path).rstrip("/")
+        created = []
+        try:
+            try:
+                token = self._report("", limit=None)[2]
+            except (DAVError, ReportError) as e:
+                for feature in self.features_to_be_checked:
+                    self.set_feature(feature, {"support": "ungraceful", "behaviour": f"sync-collection failed: {e}"})
+                return
+            self._tick()
+            for i, uid in enumerate(self.UIDS):
+                created.append(
+                    cal.save_object(
+                        Event,
+                        summary="Sync limit test event",
+                        uid=uid,
+                        dtstart=datetime(self.checker.fixture_base_year, 4, 2, 10 + i, tzinfo=utc),
+                        dtend=datetime(self.checker.fixture_base_year, 4, 2, 11 + i, tzinfo=utc),
+                    )
+                )
+            self._tick()
+            changed = {self._name(obj.url) for obj in created}
+            self.set_feature("sync-token.limit", self._grade(token, changed, "changes"))
+            children = (cal.url.join(url) for (url, _, _) in cal.children())
+            live = {self._name(url) for url in children if not self._is_collection(url)}
+            self.set_feature(self.INITIAL, self._grade("", live, "members"))
+        finally:
+            for obj in created:
+                try:
+                    obj.delete()
+                except Exception:
+                    pass
+
+    def _tick(self) -> None:
+        """Time-based tokens tell apart only changes a second apart."""
+        if self.time_based:
+            time.sleep(1)
+
+    def _grade(self, token, expected, what):
+        limit = max(self.NRESULTS, math.ceil(len(expected) / (self.MAX_PAGES // 2)))
+        try:
+            (seen, truncated, notes) = self._follow(token, limit)
+        except LimitRefused:
+            return {"support": "unsupported", "behaviour": self.REFUSED}
+        except (DAVError, ReportError) as e:
+            return {"support": "ungraceful", "behaviour": f"sync-collection with DAV:limit failed: {e}"}
+        missing = expected - seen
+        if missing:
+            how = (
+                "the checkpoint token skips them"
+                if truncated
+                else f"the reply is cut at {limit} without a 507, and the token skips them"
+            )
+            notes = [note for note in notes if note != self.CUT]
+            notes.insert(0, f"{len(missing)} of {len(expected)} {what} are never reported: {how}")
+            return {"support": "broken", "behaviour": "; ".join(notes)}
+        if not truncated and self.CUT not in notes:
+            notes.insert(0, "DAV:limit is ignored")
+            return {"support": "unsupported", "behaviour": "; ".join(notes)}
+        ## Nothing lost, but caldav stops paging early here and reports an
+        ## incomplete result; the next sync brings the rest.
+        if any(note in notes for note in (self.CUT, self.STUCK, self.OUT_OF_PAGES)):
+            return {"support": "fragile", "behaviour": "; ".join(notes)}
+        return {"support": "full", "behaviour": "; ".join(notes)} if notes else "full"
+
+    def _follow(self, token, limit):
+        """Page a report limited to ``limit`` from ``token`` by its
+        checkpoints, then make one unlimited report from the last token.
+
+        Returns the URLs reported, whether any page was truncated, and notes
+        on what the server did beside the RFC.
+        """
+        seen = set()
+        truncated_any = False
+        notes = []
+        for page in range(self.MAX_PAGES):
+            (members, truncated, new_token) = self._report(token, limit=limit)
+            if self.COLLECTION in members and self.COLLECTION_NOTE not in notes:
+                notes.append(self.COLLECTION_NOTE)
+            members.discard(self.COLLECTION)
+            if page == 0 and not truncated and len(members) == limit:
+                notes.append(self.CUT)
+            seen |= members
+            truncated_any |= truncated
+            if truncated and (not new_token or new_token == token):
+                notes.append(self.STUCK)
+            if not truncated or not new_token or new_token == token:
+                token = new_token or token
+                break
+            token = new_token
+        else:
+            notes.append(self.OUT_OF_PAGES)
+        ## The unlimited report is paged too: a server may cap every reply
+        for _page in range(self.MAX_PAGES):
+            (members, truncated, new_token) = self._report(token, limit=None)
+            seen |= members - {self.COLLECTION}
+            if not truncated or not new_token or new_token == token:
+                break
+            token = new_token
+        return (seen, truncated_any, notes)
+
+    def _name(self, url):
+        return unquote(url.path).rstrip("/").rsplit("/", 1)[-1]
+
+    def _is_collection(self, url):
+        ## The request-URI may come back without its trailing slash, and on
+        ## OX by another path; members of a calendar are never collections
+        path = unquote(url.path)
+        return path.endswith("/") or path.rstrip("/") == self.collection_path
+
+    def _report(self, token, limit):
+        """One raw sync-collection REPORT on the calendar.
+
+        Returns the names of the members it names (changed or removed, and
+        COLLECTION for the collection itself), whether it carries the section
+        3.6 507 marker for the collection, and its token.
+        """
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<D:sync-collection xmlns:D="DAV:">'
+            f"<D:sync-token>{xml_escape(token)}</D:sync-token>"
+            "<D:sync-level>1</D:sync-level>"
+            + (f"<D:limit><D:nresults>{limit}</D:nresults></D:limit>" if limit else "")
+            + "<D:prop><D:getetag/></D:prop></D:sync-collection>"
+        )
+        response = self.client.report(str(self.cal_url), body, depth=0)
+        if limit and response.status == 507 and "number-of-matches-within-limits" in str(response.raw):
+            raise LimitRefused()
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"sync-collection answered {response.status}")
+        members = set()
+        truncated = False
+        for elem in response.tree.iter(dav.Response.tag):
+            href = elem.find(dav.Href.tag)
+            if href is None or not href.text:
+                continue
+            url = self.cal_url.join(href.text)
+            is_collection = self._is_collection(url)
+            status = elem.find(dav.Status.tag)
+            if status is not None and " 507" in (status.text or ""):
+                truncated |= is_collection
+                continue
+            members.add(self.COLLECTION if is_collection else self._name(url))
+        new_token = response.tree.find(f".//{dav.SyncToken.tag}")
+        return (members, truncated, new_token.text if new_token is not None else None)
 
 
 class CheckFreeBusyQuery(Check):

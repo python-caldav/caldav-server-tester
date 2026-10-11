@@ -8,6 +8,12 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+### Added
+
+- **`sync-token.limit`, `sync-token.limit.initial-sync`** - whether a sync-collection report honours DAV:limit (RFC 6578 section 3.7), and whether following the checkpoint tokens of the truncated reply reports every change, from an issued token and from an empty one.  Stalwart's checkpoint of a truncated initial sync skips the remaining members, and Stalwart truncates on its own at its maxResults setting (default 2000).  Xandikos and Nextcloud cut the reply without a 507; CCS refuses DAV:limit with a 507, as section 3.7 allows.  Needs a caldav library that knows the features.  See https://github.com/pycalendar/calendaring-sync/pull/19.
+
 ## 1.4.0 - 2026-10-08
 
 This release works with caldav 3.4.0.
