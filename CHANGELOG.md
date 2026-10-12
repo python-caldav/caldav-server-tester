@@ -8,6 +8,12 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+### Added
+
+- **`propfind.principal-depth-1`** - whether a Depth: 1 PROPFIND on the principal URL returns a multistatus.  RFC 3744 does not require a principal to be a collection; GMX answers with a 400.  The caldav library lists the principal at depth 1 when a server gives no `calendar-home-set`.  Needs a caldav library that knows the feature.  See https://github.com/python-caldav/caldav/pull/755.
+
 ## 1.4.0 - 2026-10-08
 
 This release works with caldav 3.4.0.

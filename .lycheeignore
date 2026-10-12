@@ -8,3 +8,6 @@ https://x/dav/
 ## Placeholder hosts in unit-test fixtures - never resolvable, and not meant to be
 ^http://dav/
 ^https://h/
+
+## XML namespace URIs in test fixtures - identifiers, not web pages
+^http://osafoundation.org/cosmo/DAV
