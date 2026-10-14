@@ -75,6 +75,70 @@ def _install_write_delay(client, delay):
     client.request = delayed_request
 
 
+def _needs_search_index(searcher, xml) -> bool:
+    """Whether the server answers this search from its search index.
+
+    A search-cache delay is a lagging index: on Purelymail a time-range or
+    text search found a new object only after ~25 s (the profile allows
+    180 s), while a plain listing (``events()``, ``children()``) found it
+    at once (probed 2026-10-14).  So a time range, an alarm range, raw XML
+    or any property filter counts - is-not-defined and defined filters too,
+    which keep only an operator.  So does a todo search with
+    ``include_completed=False``: its STATUS filters go into the XML of the
+    nested searches, where this cannot see them.
+    """
+    return bool(
+        xml
+        or (searcher.todo and searcher.include_completed is False)
+        or searcher.start
+        or searcher.end
+        or searcher.alarm_start
+        or searcher.alarm_end
+        or searcher._property_filters
+        or searcher._property_operator
+    )
+
+
+def _install_write_clock(client):
+    """Make ``client`` record when it last sent a write request, on the
+    class-level clock the search-cache delay counts from.  Guarded against
+    re-wrapping like ``_install_write_delay``."""
+    from caldav.search import CalDAVSearcher
+
+    original_request = client.request
+    if getattr(original_request, "_write_clock_wrapper", False) is True:
+        return
+
+    def clocked_request(url, method="GET", *args, **kwargs):
+        try:
+            return original_request(url, method, *args, **kwargs)
+        finally:
+            if str(method).upper() in WRITE_HTTP_METHODS:
+                CalDAVSearcher._csc_last_write = time.monotonic()
+
+    clocked_request._write_clock_wrapper = True
+    client.request = clocked_request
+
+
+def _delayed_search(self, *args, **kwargs):
+    """CalDAVSearcher.search, sleeping first when the last write is younger
+    than the search-cache delay - for the rest of that delay only.  With
+    ``filtered-only`` (Purelymail) only a search that needs the server's
+    index waits; Bedework 3 lags in plain listings too.  Every search is judged, nested
+    ones included (caldav adds filters in the searches it recurses into);
+    once a sleep has paid the delay, the next search owes nothing."""
+    from caldav.search import CalDAVSearcher
+
+    delay = CalDAVSearcher._csc_search_delay
+    if delay:
+        xml = CalDAVSearcher._csc_search_signature.bind_partial(self, *args, **kwargs).arguments.get("xml")
+        remaining = delay - (time.monotonic() - CalDAVSearcher._csc_last_write)
+        if remaining > 0 and (not CalDAVSearcher._csc_filtered_only or _needs_search_index(self, xml)):
+            time.sleep(remaining)
+            CalDAVSearcher._csc_last_write = time.monotonic() - delay
+    return CalDAVSearcher._csc_undelayed_search(self, *args, **kwargs)
+
+
 class ServerQuirkChecker:
     """This class will ...
 
@@ -102,30 +166,30 @@ class ServerQuirkChecker:
 
         ## Handle search-cache delay if configured.
         ##
-        ## The caldav library owns every Calendar instance (they are created
-        ## on demand inside the library, not by this checker), so we cannot wrap
-        ## search() per instance.  The delay is therefore implemented by a
-        ## one-time class-level wrap of Calendar.search whose sleep duration is
-        ## read from a class attribute.  EVERY construction overwrites that
-        ## attribute — including resetting it to 0 when this server has no delay
-        ## configured — so a fast server can no longer inherit a previous slow
-        ## server's delay within the same process (the earlier hazard).
-        from caldav.collection import Calendar
+        ## The caldav library owns the searcher objects, so the delay is a
+        ## one-time class-level wrap of CalDAVSearcher.search, which both
+        ## Calendar.search() and the checks' own searchers go through.  Its
+        ## sleep duration is read from a class attribute that EVERY construction
+        ## overwrites — including resetting it to 0 when this server has no
+        ## delay configured — so a fast server cannot inherit a previous slow
+        ## server's delay within the same process.  The delay counts from the
+        ## last write any of this checker's clients sent; before the first
+        ## one, from now, as the server may have been written to just before.
+        from caldav.search import CalDAVSearcher
 
         search_cache_config = self._client_obj.features.is_supported("search-cache", return_type=dict)
         delay = search_cache_config.get("delay", 1) if search_cache_config.get("behaviour") == "delay" else 0
-        if delay and not hasattr(Calendar, "_original_search"):
-            Calendar._original_search = Calendar.search
+        if not hasattr(CalDAVSearcher, "_csc_undelayed_search"):
+            CalDAVSearcher._csc_undelayed_search = CalDAVSearcher.search
+            CalDAVSearcher._csc_search_signature = inspect.signature(CalDAVSearcher.search)
+            CalDAVSearcher.search = _delayed_search
 
-            def delayed_search(self, *args, **kwargs):
-                d = getattr(Calendar, "_search_delay", 0)
-                if d:
-                    time.sleep(d)
-                return Calendar._original_search(self, *args, **kwargs)
-
-            Calendar.search = delayed_search
-
-        Calendar._search_delay = delay
+        CalDAVSearcher._csc_search_delay = delay
+        CalDAVSearcher._csc_filtered_only = bool(search_cache_config.get("filtered-only"))
+        CalDAVSearcher._csc_last_write = time.monotonic()
+        if delay:
+            for client in (self._client_obj, *self._extra_clients):
+                _install_write_clock(client)
 
         ## Handle the post-write delay of a server without synchronous-write.
         ## Unlike search-cache (which wraps the
@@ -299,7 +363,19 @@ class ServerQuirkChecker:
         ``csc_*`` fixtures are purged.  The dedicated task/journal sibling
         calendars are always ones the tool created, so they are deleted wholesale
         when the server supports it.
+
+        Afterwards the search-cache delay is switched off: its wrap of
+        CalDAVSearcher.search is class-level and would otherwise delay every
+        later search in the process (caldav's own tests run this checker).
         """
+        from caldav.search import CalDAVSearcher
+
+        try:
+            return self._cleanup(force)
+        finally:
+            CalDAVSearcher._csc_search_delay = 0
+
+    def _cleanup(self, force):
         if not force:
             test_cal_info = self.expected_features.is_supported("test-calendar.compatibility-tests", return_type=dict)
             if not test_cal_info.get("cleanup", False):

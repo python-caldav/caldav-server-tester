@@ -4,6 +4,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -895,3 +896,207 @@ class TestWriteDelaySuspension:
         """
         assert ServerQuirkChecker(self._client(delay=16)).delay_probe_timeout >= 16
         assert ServerQuirkChecker(self._client(delay=None)).delay_probe_timeout == 10
+
+
+class TestSearchCacheDelay:
+    """search-cache with a delay: sleep only before a search the server's
+    index answers.
+
+    Purelymail lags ~25 s behind a write in a time-range or text search, but
+    lists a calendar (events(), todos(), children) at once (probed
+    2026-10-14).  Sleeping before every search made a full run take hours,
+    since the calendar-creation probes poll with events().
+    """
+
+    def _client(self, delay=None, filtered_only=True):
+        client = Mock()
+        features = FeatureSet()
+        if delay is not None:
+            config = {"behaviour": "delay", "delay": delay}
+            if filtered_only:
+                config["filtered-only"] = True
+            features.copyFeatureSet({"search-cache": config}, collapse=False)
+        client.features = features
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        client.request = Mock(name="request", return_value="response")
+        return client
+
+    def _search(self, searcher, *args, **kwargs):
+        from caldav.search import CalDAVSearcher
+
+        with patch.object(CalDAVSearcher, "_csc_undelayed_search", Mock(return_value=[])) as undelayed:
+            searcher.search(Mock(), *args, **kwargs)
+        return undelayed
+
+    @pytest.fixture(autouse=True)
+    def _reset_delay(self):
+        ## A frozen clock: no time passes unless a test says so
+        with patch("caldav_server_tester.checker.time.monotonic", return_value=1000.0):
+            yield
+        ## The wrapper is class-level; leave no delay behind for other tests
+        ServerQuirkChecker(self._client())
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_plain_listing_does_not_sleep(self, mock_sleep) -> None:
+        from caldav.calendarobjectresource import Event
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        self._search(CalDAVSearcher(comp_class=Event))
+        self._search(CalDAVSearcher(todo=True))
+        mock_sleep.assert_not_called()
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_pending_todos_sleep(self, mock_sleep) -> None:
+        """include_completed=False filters on STATUS in nested searches whose
+        filters go into the XML, unseen by the wrapper: it counts itself."""
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        self._search(CalDAVSearcher(todo=True, include_completed=False))
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_cleanup_ends_the_delay(self, mock_sleep) -> None:
+        """The wrap is class-level: once a checker is done, later searches in
+        the same process (caldav's own tests) must not inherit its delay."""
+        from caldav.search import CalDAVSearcher
+
+        checker = ServerQuirkChecker(self._client(delay=180))
+        with patch.object(ServerQuirkChecker, "_cleanup", return_value=None):
+            checker.cleanup()
+        self._search(CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc)))
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"start": datetime(2027, 3, 1, tzinfo=timezone.utc)},
+            {"end": datetime(2027, 3, 2, tzinfo=timezone.utc)},
+            {"alarm_start": datetime(2027, 3, 1, tzinfo=timezone.utc)},
+        ],
+    )
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_time_range_sleeps(self, mock_sleep, kwargs) -> None:
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        self._search(CalDAVSearcher(event=True, **kwargs))
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_property_filter_sleeps(self, mock_sleep) -> None:
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        searcher = CalDAVSearcher(event=True)
+        searcher.add_property_filter("SUMMARY", "meeting")
+        self._search(searcher)
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_is_not_defined_sleeps(self, mock_sleep) -> None:
+        """no_category=True and friends keep only an operator, no value."""
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        searcher = CalDAVSearcher(event=True)
+        searcher.add_property_filter("categories", True, operator="undef")
+        self._search(searcher)
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_filter_added_in_a_nested_search_sleeps(self, mock_sleep) -> None:
+        """todos() recurses into STATUS-filtered searches, the unlimited-range
+        workaround into a time-range one: the inner search is judged too."""
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+
+        def nested(searcher, *args, **kwargs):
+            if not searcher.start:
+                CalDAVSearcher.search(
+                    CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc)), Mock()
+                )
+            return []
+
+        with patch.object(CalDAVSearcher, "_csc_undelayed_search", side_effect=nested, autospec=True):
+            CalDAVSearcher(event=True).search(Mock())
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_raw_xml_sleeps(self, mock_sleep) -> None:
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        self._search(CalDAVSearcher(), xml="<C:calendar-query/>")
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_nested_search_sleeps_once(self, mock_sleep) -> None:
+        """A search may recurse (e.g. once per component type): one sleep in all."""
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+
+        def nested(searcher, *args, **kwargs):
+            if searcher.event:
+                CalDAVSearcher.search(CalDAVSearcher(todo=True, start=searcher.start), Mock())
+            return []
+
+        outer = CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc))
+        with patch.object(CalDAVSearcher, "_csc_undelayed_search", side_effect=nested, autospec=True) as undelayed:
+            outer.search(Mock())
+        assert undelayed.call_count == 2
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_plain_listing_sleeps_without_filtered_only(self, mock_sleep) -> None:
+        """Bedework 3 lags in plain listings too: without the key every
+        search waits, though still only for the rest of the delay."""
+        from caldav.calendarobjectresource import Event
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180, filtered_only=False))
+        self._search(CalDAVSearcher(comp_class=Event))
+        mock_sleep.assert_called_once_with(180)
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_no_delay_configured(self, mock_sleep) -> None:
+        from caldav.search import CalDAVSearcher
+
+        ServerQuirkChecker(self._client(delay=180))
+        ServerQuirkChecker(self._client())
+        self._search(CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc)))
+        mock_sleep.assert_not_called()
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_sleeps_only_the_rest_of_the_delay(self, mock_sleep) -> None:
+        """The index lags behind the last write: a search 100 s after it
+        waits the remaining 80 s, one 200 s after it not at all."""
+        from caldav.search import CalDAVSearcher
+
+        client = self._client(delay=180)
+        ServerQuirkChecker(client)
+        client.request("https://example.com/caldav/cal/x.ics", "PUT")
+        searcher = CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc))
+        with patch("caldav_server_tester.checker.time.monotonic", return_value=1100.0):
+            self._search(searcher)
+        mock_sleep.assert_called_once_with(80.0)
+        mock_sleep.reset_mock()
+        with patch("caldav_server_tester.checker.time.monotonic", return_value=1200.0):
+            self._search(searcher)
+        mock_sleep.assert_not_called()
+
+    @patch("caldav_server_tester.checker.time.sleep")
+    def test_a_read_does_not_restart_the_clock(self, mock_sleep) -> None:
+        from caldav.search import CalDAVSearcher
+
+        client = self._client(delay=180)
+        ServerQuirkChecker(client)
+        with patch("caldav_server_tester.checker.time.monotonic", return_value=1500.0):
+            client.request("https://example.com/caldav/cal/x.ics", "GET")
+            client.request("https://example.com/caldav/cal/", "REPORT")
+            self._search(CalDAVSearcher(event=True, start=datetime(2027, 3, 1, tzinfo=timezone.utc)))
+        mock_sleep.assert_not_called()

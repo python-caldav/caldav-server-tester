@@ -24,6 +24,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 ### Fixed
 
 - **`--diff` and the non-verbose report** - observations (e.g. `get-current-user-principal.has-calendar`) and client-features (e.g. `rate-limit`) carry a value rather than a support level, and were listed as spurious deviations.  `--diff` now skips them like caldav's `FeatureSet.compare()` does, and the report compares their resolved value against the default.  Requires caldav 3.5.0, which reads an observation as a boolean.
+- **`search-cache` delay** - a server configured with a search-cache delay (e.g. Purelymail, 180 s) got that delay before every search, including the plain calendar listings that the calendar-creation probes poll with, so a run could take hours.  A search now only waits for what is left of the delay since the last write, and where the server profile sets `filtered-only` (Purelymail), only searches with a time range or a property filter (text, is-not-defined, ...) wait at all - and it now also applies to the text-search probes, which used to skip it.
 
 ## 1.4.0 - 2026-10-08
 
