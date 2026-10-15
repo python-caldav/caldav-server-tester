@@ -18,11 +18,6 @@ from caldav.response import DAVResponse
 
 from caldav_server_tester.checks import CheckSyncTokenLimit
 
-## caldav 3.4.0, which CI runs, does not know the features yet
-pytestmark = pytest.mark.skipif(
-    "sync-token.limit" not in FeatureSet.FEATURES, reason="caldav does not know sync-token.limit"
-)
-
 BASE = "/dav/cal/"
 CAL = "https://caldav.example.com" + BASE
 

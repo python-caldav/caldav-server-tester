@@ -6027,8 +6027,9 @@ class CheckSyncToken(Check):
         RFC 6578 section 3.2 refuses it with the DAV:valid-sync-token
         precondition, and RFC 4918 section 16 suggests a 403 for a request
         that will always fail.  The REPORT is sent through the low-level client,
-        since the library only keeps the precondition of a 401/403: a 412
-        with the precondition and a 500 without it would look the same.
+        which raises only for a 401/403 and otherwise hands back the response,
+        so the probe reads the status and the precondition itself and can tell
+        a 412 with the precondition from a 500 without it.
         """
         support = "full"
         observed = []

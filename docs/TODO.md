@@ -201,6 +201,19 @@ rate-limiting are `unknown`.  Then every handler in the file goes through it.
 Worth its own round, and it will move recorded verdicts on servers that were
 merely unwell during a run.
 
+`refusal_status()` (with `graded_refusal()`, from the `save-load.event.no-dtend`
+work) is a start on that helper, and two gaps were found reviewing the
+October 2026 merges:
+
+- `CheckPropfindAllprop._check_principal_depth1` still grades any
+  `DAVError` and any non-2xx (502, 503, 429, a stale-session 401) as
+  `unsupported`; it should go through `refusal_status()` and record
+  `unknown` when that returns None.
+- `refusal_status()` tells a 401 from a 403 only by `exc.reason ==
+  "Unauthorized"`, the server's free-text reason phrase (caldav puts
+  "None given" there when there is none).  The robust fix is upstream:
+  caldav keeping the HTTP status on `AuthorizationError`.
+
 ## `save-load.todo` on a server that stores a VTODO nowhere
 
 (Clean-context review 2026-09-14, filed rather than fixed.)
