@@ -14,11 +14,12 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 - **`sync-token.invalid-token`** - whether a sync token the server never issued is refused with `DAV:valid-sync-token`, as RFC 6578 §3.2 says.  Xandikos 0.4.8 and CCS answer some such tokens with a 500 (https://github.com/jelmer/xandikos/issues/743), and Stalwart and Ox with a report and no error.
 - **`sync-token.limit`, `sync-token.limit.initial-sync`** - whether a sync-collection report honours DAV:limit (RFC 6578 section 3.7), and whether following the checkpoint tokens of the truncated reply reports every change, from an issued token and from an empty one.  Stalwart's checkpoint of a truncated initial sync skips the remaining members, and Stalwart truncates on its own at its maxResults setting (default 2000).  Xandikos and Nextcloud cut the reply without a 507; CCS refuses DAV:limit with a 507, as section 3.7 allows.  See https://github.com/pycalendar/calendaring-sync/pull/19.
+- **`propfind.principal-depth-1`** - whether a Depth: 1 PROPFIND on the principal URL returns a multistatus.  RFC 3744 does not require a principal to be a collection; GMX answers with a 400.  The caldav library lists the principal at depth 1 when a server gives no `calendar-home-set`.  See https://github.com/python-caldav/caldav/pull/755.
 
 ### Changed
 
 - **`save.etag`** - the probe now also GETs the object.  A weak ETag on PUT (which `If-Match` can never match) where a GET gives a strong one that `If-Match` accepts is graded `quirk` with behaviour `weak on PUT, strong on GET` (seen on GMX); it used to pass as `full` with only a note.  A GET ETag differing from a strong PUT ETag is noted.
-- Requires caldav 3.5.0, for the `sync-token.invalid-token` and `sync-token.limit` features and the preconditions of a 401/403.
+- Requires caldav 3.5.0, for the `sync-token.invalid-token`, `sync-token.limit` and `propfind.principal-depth-1` features and the preconditions of a 401/403.
 
 ### Fixed
 

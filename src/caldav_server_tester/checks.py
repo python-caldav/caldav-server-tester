@@ -628,16 +628,28 @@ class CheckPropfindAllprop(Check):
                                          multistatus response
       * propfind.allprop.resourcetype  - that allprop response includes the
                                          DAV:resourcetype live property
+      * propfind.principal-depth-1     - a Depth: 1 PROPFIND on the principal
+                                         returns a multistatus response
 
     RFC4918 section 9.1 lists resourcetype among the live properties an allprop
-    request should return; a few servers (e.g. Bedework) omit it.  The three are
-    probed separately so that a server which merely omits resourcetype is not
-    mistaken for one that does not support PROPFIND at all.  Replaces the old
+    request should return; a few servers (e.g. Bedework) omit it.  The allprop
+    features are probed separately so that a server which merely omits
+    resourcetype is not mistaken for one that does not support PROPFIND at
+    all.  Replaces the old
     'propfind_allprop_failure' flag.
+
+    RFC3744 does not require a principal to be a collection; GMX answers a
+    Depth: 1 PROPFIND on its principal with 400.  The library lists the
+    principal at depth 1 when there is no calendar-home-set.
     """
 
     depends_on = {CheckGetCurrentUserPrincipal}
-    features_to_be_checked = {"propfind", "propfind.allprop", "propfind.allprop.resourcetype"}
+    features_to_be_checked = {
+        "propfind",
+        "propfind.allprop",
+        "propfind.allprop.resourcetype",
+        "propfind.principal-depth-1",
+    }
 
     XML_HEAD = '<?xml version="1.0" encoding="UTF-8"?>'
 
@@ -647,6 +659,7 @@ class CheckPropfindAllprop(Check):
         ## We know root supports PROPFIND because that is where current-user-principal
         ## was fetched from (or the auth check happened).
         url = principal.url if principal is not None else self.client.url
+        self._check_principal_depth1(principal)
 
         ## propfind: a PROPFIND for a named property returns a multistatus
         named = self._propfind(
@@ -667,6 +680,32 @@ class CheckPropfindAllprop(Check):
         self.set_feature("propfind.allprop", "multistatus" in allprop)
         ## propfind.allprop.resourcetype: that allprop response includes resourcetype
         self.set_feature("propfind.allprop.resourcetype", "resourcetype" in allprop)
+
+    def _check_principal_depth1(self, principal) -> None:
+        """Probe propfind.principal-depth-1 (unknown without a principal)."""
+        if principal is None:
+            self.set_feature("propfind.principal-depth-1", {"support": "unknown"})
+            return
+        try:
+            response = self.client.propfind(
+                principal.url,
+                props=f'{self.XML_HEAD}<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>',
+                depth=1,
+            )
+        except (DAVError, AuthorizationError) as e:
+            self.set_feature(
+                "propfind.principal-depth-1",
+                {"support": "unsupported", "behaviour": f"raised {type(e).__name__}"},
+            )
+            return
+        raw = to_local(response.raw) or ""
+        if 200 <= response.status < 300 and "multistatus" in raw:
+            self.set_feature("propfind.principal-depth-1", True)
+        else:
+            self.set_feature(
+                "propfind.principal-depth-1",
+                {"support": "unsupported", "behaviour": f"HTTP {response.status}"},
+            )
 
     def _propfind(self, url, body):
         """Return the decoded raw response of a PROPFIND, or None on error."""
