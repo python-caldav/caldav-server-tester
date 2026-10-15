@@ -398,6 +398,54 @@ class TestServerQuirkCheckerReport:
         assert "create-calendar" in result
         assert "full" in result or "unsupported" in result
 
+    def _checker_with(self, expected: dict, observed: dict) -> ServerQuirkChecker:
+        client = Mock()
+        expected_fs = FeatureSet()
+        expected_fs.copyFeatureSet(expected, collapse=False)
+        client.features = expected_fs
+        client.server_name = "Test Server"
+        client.url = "https://example.com/caldav"
+        checker = ServerQuirkChecker(client)
+        checker._features_checked.copyFeatureSet(observed, collapse=False)
+        return checker
+
+    def test_diff_ignores_matching_observation(self) -> None:
+        """An observation carries a value, not a support level - a match is no diff"""
+        checker = self._checker_with(
+            {"get-current-user-principal.has-calendar": {"value": False}},
+            {"get-current-user-principal.has-calendar": {"value": False}},
+        )
+        assert "get-current-user-principal.has-calendar" not in checker._compute_diff()
+
+    def test_diff_skips_types_caldav_compare_skips(self) -> None:
+        """--diff must agree with FeatureSet.compare(): no client-features or observations"""
+        checker = self._checker_with(
+            {"rate-limit": {"enable": True, "interval": 1}},
+            {
+                "rate-limit": {"enable": True, "interval": 1},
+                "get-current-user-principal.has-calendar": {"value": False},
+            },
+        )
+        diff = checker._compute_diff()
+        assert "rate-limit" not in diff
+        assert "get-current-user-principal.has-calendar" not in diff
+
+    def test_diff_still_reports_server_feature(self) -> None:
+        checker = self._checker_with(
+            {"create-calendar": {"support": "full"}},
+            {"create-calendar": {"support": "unsupported"}},
+        )
+        assert checker._compute_diff()["create-calendar"] == {"expected": "full", "observed": "unsupported"}
+
+    def test_deviating_ignores_observation_at_default(self) -> None:
+        """has-calendar observed True is the default - not a deviation"""
+        checker = self._checker_with({}, {"get-current-user-principal.has-calendar": {"value": True}})
+        assert "get-current-user-principal.has-calendar" not in checker._get_deviating_features()
+
+    def test_deviating_shows_observation_off_default(self) -> None:
+        checker = self._checker_with({}, {"get-current-user-principal.has-calendar": {"value": False}})
+        assert "get-current-user-principal.has-calendar" in checker._get_deviating_features()
+
 
 class TestServerQuirkCheckerCleanupSafety:
     """Test cleanup safety when PrepareCalendar hasn't run"""

@@ -6,6 +6,8 @@ Creating a check is quite time-consuming, creating one with test code is even ha
 
 The AI-policy from pycal.org applies to this project - https://pycal.org/ai-policy/ - in particular, transparency about AI-usage is important, and the commit messages should include some information about prompts and model used.  If you use the AI to fix a bug, the most important thing is that you confirm that the fix solves your problem.
 
+To have prompts recorded automatically when working with Claude Code, run `pre-commit run prepare-ai-repository --hook-stage manual` once per clone (and again after updating the hook).  The files it installs are not tracked.
+
 ## Changes to the feature label hierarchy
 
 New features to be tested also need changes in the caldav project.  Please coordinate this with Tobias - or at least, create pull requests from the same branch name in both projects.  Those changes need serious thinking and a good decision from a human being.  It may be a good idea to ask the AI about suggestions, an even better idea to ask the AI to do a QA on whatever suggestion you can come up with, but don't trust the AI to get this right.  Discuss with Tobias if in doubt.
