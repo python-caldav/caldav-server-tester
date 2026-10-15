@@ -30,10 +30,10 @@ repos:
 
  - repo: local
    hooks:
-    # Prevent direct pushes to main branch (bypass with --no-verify for releases)
+    # main takes only merged PR work (bypass with --no-verify for releases)
     - id: no-push-to-main
-      name: Prevent direct push to main branch
-      entry: bash -c 'branch=$(git rev-parse --abbrev-ref HEAD); if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then echo "Direct pushes to $branch are not allowed. Use --no-verify to bypass."; exit 1; fi'
+      name: Prevent direct commits on main
+      entry: tools/check-push-to-main.sh
       language: system
       pass_filenames: false
       stages: [pre-push]
