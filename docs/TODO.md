@@ -426,3 +426,21 @@ consult it rather than `search.text` when deciding whether a UID search can be
 trusted to the server.  Its substring behaviour belongs under
 `search.text.substring`, which is `unsupported` on Bedework (no substring
 match anywhere; the missing SUMMARY match is `search.text`).
+
+# `sync-token.limit`: a cut without a 507 is only seen at exactly `limit` members
+
+`CheckSyncTokenLimit._follow` notes "the reply is cut at DAV:limit without a
+507" only when the first page holds exactly `limit` members once the
+collection's own entry is dropped.  Two shapes slip past it:
+
+* a server that lists the collection among its members and counts that entry
+  toward the limit, then cuts without a 507 (`limit - 1` members);
+* a server whose own cap is below the requested limit and that cuts without a
+  507.
+
+If nothing is lost on such a server, it is graded `unsupported` ("DAV:limit is
+ignored") rather than `fragile`.  No server has been seen doing either.  Fix:
+pass `len(expected)` from `_grade` into `_follow` (the changes for the token
+run, the live members for the initial sync), and treat a first page without a
+507 as cut when it holds fewer members than that.  This also covers today's
+`== limit` test.  Found in review, 2026-10-14.
