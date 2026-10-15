@@ -15,16 +15,19 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 - **`sync-token.invalid-token`** - whether a sync token the server never issued is refused with `DAV:valid-sync-token`, as RFC 6578 §3.2 says.  Xandikos 0.4.8 and CCS answer some such tokens with a 500 (https://github.com/jelmer/xandikos/issues/743), and Stalwart and Ox with a report and no error.
 - **`sync-token.limit`, `sync-token.limit.initial-sync`** - whether a sync-collection report honours DAV:limit (RFC 6578 section 3.7), and whether following the checkpoint tokens of the truncated reply reports every change, from an issued token and from an empty one.  Stalwart's checkpoint of a truncated initial sync skips the remaining members, and Stalwart truncates on its own at its maxResults setting (default 2000).  Xandikos and Nextcloud cut the reply without a 507; CCS refuses DAV:limit with a 507, as section 3.7 allows.  See https://github.com/pycalendar/calendaring-sync/pull/19.
 - **`propfind.principal-depth-1`** - whether a Depth: 1 PROPFIND on the principal URL returns a multistatus.  RFC 3744 does not require a principal to be a collection; GMX answers with a 400.  The caldav library lists the principal at depth 1 when a server gives no `calendar-home-set`.  See https://github.com/python-caldav/caldav/pull/755.
+- **`save-load.event.no-dtend`** - whether a VEVENT with neither DTEND nor DURATION is stored.  RFC 5545 section 3.6.1 allows one; iCloud refuses it with a 404, or a 403.  See https://github.com/python-caldav/caldav-server-tester/issues/24.
 
 ### Changed
 
 - **`save.etag`** - the probe now also GETs the object.  A weak ETag on PUT (which `If-Match` can never match) where a GET gives a strong one that `If-Match` accepts is graded `quirk` with behaviour `weak on PUT, strong on GET` (seen on GMX); it used to pass as `full` with only a note.  A GET ETag differing from a strong PUT ETag is noted.
-- Requires caldav 3.5.0, for the `sync-token.invalid-token`, `sync-token.limit` and `propfind.principal-depth-1` features and the preconditions of a 401/403.
+- Requires caldav 3.5.0, for the `sync-token.invalid-token`, `sync-token.limit`, `propfind.principal-depth-1` and `save-load.event.no-dtend` features and the preconditions of a 401/403.
 
 ### Fixed
 
 - **`--diff` and the non-verbose report** - observations (e.g. `get-current-user-principal.has-calendar`) and client-features (e.g. `rate-limit`) carry a value rather than a support level, and were listed as spurious deviations.  `--diff` now skips them like caldav's `FeatureSet.compare()` does, and the report compares their resolved value against the default.  Requires caldav 3.5.0, which reads an observation as a boolean.
 - **`search-cache` delay** - a server configured with a search-cache delay (e.g. Purelymail, 180 s) got that delay before every search, including the plain calendar listings that the calendar-creation probes poll with, so a run could take hours.  A search now only waits for what is left of the delay since the last write, and where the server profile sets `filtered-only` (Purelymail), only searches with a time range or a property filter (text, is-not-defined, ...) wait at all - and it now also applies to the text-search probes, which used to skip it.
+- **`PrepareCalendar`** - stopped at the first VEVENT without an end that the server refused (iCloud), so the fixtures after it were missing and e.g. `search.recurrences.*` and `search.time-range.event.old-dates` came out wrong.  A refused all-day fixture now gets the one-day DTEND RFC 5545 implies, and the timed one is skipped.
+- **`save-load.event.no-summary`** - a 401 is graded `unknown` rather than `ungraceful`: on a session that is already authenticated it is no answer to the request, and iCloud answers 401 to anything for a while after a run of 429s.
 
 ## 1.4.0 - 2026-10-08
 

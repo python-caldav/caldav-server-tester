@@ -66,9 +66,10 @@ def test_refused_is_ungraceful(error):
         PutError("503 Service Unavailable"),
         PutError("504 Gateway Timeout"),
         RateLimitError(reason="429 Too Many Requests"),
+        AuthorizationError(url=URL, reason="Unauthorized"),
         PutError("connection reset"),
     ],
-    ids=["502", "503", "504", "rate-limited", "no-status"],
+    ids=["502", "503", "504", "rate-limited", "401", "no-status"],
 )
 def test_a_save_failing_for_no_reason_of_its_own_is_unknown(error):
     """A gateway, an overloaded server or no answer says nothing about SUMMARY,
