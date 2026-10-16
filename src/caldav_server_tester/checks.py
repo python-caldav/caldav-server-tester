@@ -3760,6 +3760,18 @@ def proppatch_wait(client, node):
         client.features = saved
 
 
+def proppatch_margin(check, measured) -> int:
+    """How long to let the library wait after a PROPPATCH during a probe.
+
+    Neither the delay measured in this run (one sample of a delay that
+    varies) nor the configured one can be trusted alone, and waiting too
+    little makes a written property look read-only - so the larger of
+    twice the measured delay and the configured one.
+    """
+    configured = asynchronous_delay(check.checker.expected_features.is_supported("synchronous-write.proppatch", dict))
+    return max(2 * (measured or 0), configured)
+
+
 class CheckProppatchDelay(Check):
     """Is a PROPPATCH observable once the server has answered it?
 
@@ -3841,8 +3853,8 @@ class CheckProppatchDelay(Check):
             ## same margin as CheckCalendarProperties, for the same reason.
             try:
                 with contextlib.ExitStack() as stack:
-                    if waited:
-                        stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": 2 * waited}))
+                    if margin := proppatch_margin(self, waited):
+                        stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": margin}))
                     cal.set_properties([dav.DisplayName(original or "")])
             except (DAVError, AuthorizationError):
                 logging.warning("Could not restore the display name of %s after probing it", cal.url)
@@ -3933,13 +3945,13 @@ class CheckCalendarProperties(Check):
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
-        ## The measured delay is one sample of a delay that varies (9-11s on
+        ## The measured delay is one sample of a delay that varies (2-11s on
         ## Infomaniak); the library stops waiting as soon as the value changes,
         ## so a generous margin costs a quick server nothing.
-        delay = asynchronous_delay(self.checker.features_checked.is_supported("synchronous-write.proppatch", dict))
+        measured = asynchronous_delay(self.checker.features_checked.is_supported("synchronous-write.proppatch", dict))
         with contextlib.ExitStack() as stack:
-            if delay:
-                stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": 2 * delay}))
+            if margin := proppatch_margin(self, measured):
+                stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": margin}))
             self._probe("calendar-color", ical.CalendarColor, "blue", "green", cal)
             self._probe("calendar-color.hex", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
             self._probe("calendar-order", ical.CalendarOrder, "12", "34", cal)
