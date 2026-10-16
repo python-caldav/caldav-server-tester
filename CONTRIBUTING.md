@@ -38,7 +38,7 @@ Note: older commits in this repository predate those conventions and do not foll
 
 ## Pull requests and merging
 
-A pull request may hold several commits, each one a step that makes sense on its own.  Pull requests are merged as they are, without squashing: a single commit is fast-forwarded onto `main`, several get a merge commit.  The pre-push hook refuses a push to `main` that brings commits (merge commits aside) which are not already on some other remote branch, to catch work committed directly on `main` by accident; releases bypass it with `--no-verify`.  It sees only the first ref of a push, so push `main` on its own.
+A pull request may hold several commits, each one a step that makes sense on its own.  Pull requests are merged as they are, without squashing: a single commit is fast-forwarded onto `main`, several get a merge commit.  The pre-push hook refuses a push to `main` that brings commits (merge commits aside) which are not already on some other remote branch, to catch work committed directly on `main` by accident; releases skip it, as [`docs/RELEASE-HOWTO.md`](docs/RELEASE-HOWTO.md) describes.  It sees only the first ref of a push, so push `main` on its own.
 
 ## Reporting bugs
 
