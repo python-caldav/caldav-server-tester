@@ -476,3 +476,24 @@ compares the results, recorded as a feature (say
 `search.recurrences.expanded.with-schedule-tag`).  Optionally, have the
 library then request `schedule-tag` in expanding searches on servers where
 the feature is supported.
+
+## Two Zimbra oddities seen through plann
+
+Found 2026-10-19 while trying a Zimbra task list with plann (caldav 3.5.0,
+a production Zimbra, not the podman one):
+
+* **Category search matches substrings.**  `plann select --todo --category
+  R` returned a task with category `RL`, and `--category do` matched `doc`.
+  Zimbra ignores `text-match`, so this is the library's (or plann's)
+  client-side post-filter.  RFC 4791 text-match is a substring match by
+  default, but a category is a list of whole values; on xandikos
+  `--category RL` does not match `rl_tobias`.  Find out which layer does the
+  substring match, probe `search.text.category` exact versus substring
+  on the servers, and make the post-filter agree with what the servers do.
+* **A delete selecting 65 tasks by `--uid` deleted nothing**, silently:
+  `plann --config-section work-tasks select --todo --include-completed
+  --uid U1 ... --uid U65 delete` printed no `Deleting` line.  The same
+  UIDs deleted one at a time worked, and a two-`--uid` select works on
+  xandikos.  Reproduce: is it the number of UIDs, Zimbra's UID search (it
+  ignores text-match, so each lookup fetches the whole list), or plann's
+  handling of several UIDs?
