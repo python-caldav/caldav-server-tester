@@ -115,7 +115,7 @@ class EtagServer:
         return Mock(status=204)
 
 
-def _run(server):
+def _run_all(server):
     checker = Mock()
     checker._features_checked = FeatureSet()
     checker.debug_mode = None
@@ -123,7 +123,11 @@ def _run(server):
     checker.fixture_base_year = 2027
     checker.calendar.url.join.side_effect = lambda name: BASE + name
     CheckPutEtag(checker)._run_check()
-    fs = checker._features_checked
+    return checker._features_checked
+
+
+def _run(server):
+    fs = _run_all(server)
     return (
         fs.is_supported("save.etag", return_type=dict),
         fs.is_supported("save-load.mutable.if-match-wildcard", return_type=dict),
@@ -263,17 +267,90 @@ def test_never_holding_without_the_missing_object_says_it_could_not_tell(answer)
     assert "missing object" in wildcard["behaviour"]
 
 
-def test_if_none_match_overwriting_an_existing_object_is_noted():
-    """Zimbra: "*" compared as an etag, so If-None-Match: * never protects."""
+def _if_none_match(server):
+    return _run_all(server).is_supported("save.if-none-match", return_type=dict)
+
+
+def test_if_none_match_refusing_an_existing_object_is_full():
+    assert _if_none_match(EtagServer()) == {"support": "full"}
+
+
+@pytest.mark.parametrize("mode", ["literal", "ignored"], ids=["zimbra", "sogo"])
+def test_if_none_match_overwriting_an_existing_object_is_unsupported(mode):
+    """Zimbra compares "*" as an etag, SOGo ignores the header: either way
+    If-None-Match: * never protects an existing object."""
+    inm = _if_none_match(EtagServer(if_none_match_star=mode))
+    assert inm["support"] == "unsupported"
+    assert "If-None-Match: * overwrote an existing object" in inm["behaviour"]
+
+
+def test_if_none_match_refusing_to_create_is_broken():
+    """Sent on every no-overwrite save, it would then refuse every new object."""
+    inm = _if_none_match(EtagServer(answers={("If-None-Match", False): 412}))
+    assert inm["support"] == "broken"
+    assert "If-None-Match: * refused to create a missing object" in inm["behaviour"]
+
+
+def test_if_none_match_holding_backwards_is_broken():
+    inm = _if_none_match(EtagServer(if_none_match_star="inverted"))
+    assert inm["support"] == "broken"
+    assert "overwrote" in inm["behaviour"]
+
+
+@pytest.mark.parametrize("status", [403, 409, 500])
+def test_if_none_match_refusing_an_existing_object_otherwise_than_412_is_ungraceful(status):
+    inm = _if_none_match(EtagServer(answers={("If-None-Match", True): status}))
+    assert inm["support"] == "ungraceful"
+    assert str(status) in inm["behaviour"]
+
+
+def test_if_none_match_failing_on_a_missing_object_is_ungraceful():
+    inm = _if_none_match(EtagServer(answers={("If-None-Match", False): 500}))
+    assert inm["support"] == "ungraceful"
+    assert "500" in inm["behaviour"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [ConnectionError("redirected nowhere"), 503],
+    ids=["no-answer", "overloaded"],
+)
+def test_if_none_match_without_an_answer_on_the_existing_object_is_not_graded(answer):
+    inm = _if_none_match(EtagServer(answers={("If-None-Match", True): answer}))
+    assert inm["support"] == "unknown"
+
+
+def test_if_none_match_without_an_answer_on_the_missing_object_is_not_graded():
+    """Graded full, the library would send it on every new object - which
+    fails everywhere if that unprobed half refuses to create."""
+    inm = _if_none_match(EtagServer(answers={("If-None-Match", False): ConnectionError("nowhere")}))
+    assert inm["support"] == "unknown"
+    assert "missing object" in inm["behaviour"]
+
+
+def test_if_none_match_overwriting_without_an_answer_on_the_missing_object_is_unsupported():
+    inm = _if_none_match(
+        EtagServer(if_none_match_star="ignored", answers={("If-None-Match", False): ConnectionError("nowhere")})
+    )
+    assert inm["support"] == "unsupported"
+
+
+def test_if_none_match_and_wildcard_use_separate_missing_objects():
+    """An ignored If-Match: * creates its missing object; If-None-Match: *
+    must not then find it there."""
+    assert _if_none_match(EtagServer(if_match_star="ignored")) == {"support": "full"}
+
+
+def test_missing_objects_deleted_when_the_existing_one_got_no_answer():
+    server = EtagServer(answers={("If-None-Match", True): ConnectionError("nowhere")})
+    _run_all(server)
+    assert {BASE + "csc_put_etag_missing_1.ics", BASE + "csc_put_etag_missing_2.ics"} <= set(server.deleted)
+
+
+def test_if_none_match_is_left_out_of_the_wildcard_verdict():
+    """It has a feature of its own now."""
     _, wildcard = _run(EtagServer(if_match_star="literal", if_none_match_star="literal"))
-    assert wildcard["support"] == "unsupported"
-    assert "If-None-Match: * overwrote an existing object" in wildcard["behaviour"]
-
-
-def test_if_none_match_refusing_to_create_is_noted():
-    _, wildcard = _run(EtagServer(if_none_match_star="inverted"))
-    assert wildcard["support"] == "full"
-    assert "If-None-Match: * refused to create a missing object" in wildcard["behaviour"]
+    assert wildcard == {"support": "unsupported"}
 
 
 @pytest.mark.parametrize("status", [500, 501])
@@ -322,7 +399,7 @@ def test_no_etag_header_is_not_graded():
     ids=["refused", "raised"],
 )
 def test_object_that_cannot_be_created_grades_nothing(server):
-    etag, wildcard = _run(server)
-    assert etag["support"] == "unknown"
-    assert wildcard["support"] == "unknown"
+    fs = _run_all(server)
+    for feature in ("save.etag", "save-load.mutable.if-match-wildcard", "save.if-none-match"):
+        assert fs.is_supported(feature, return_type=dict)["support"] == "unknown"
     assert server.requests == [None]
