@@ -10,6 +10,11 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
+### Added
+
+- **`save-load.todo.uncomplete`** - whether a completed task can be made pending again: `Todo.uncomplete()` saves it with STATUS:NEEDS-ACTION and without COMPLETED, and the probe loads it back.  GMX keeps it completed.  See https://github.com/python-caldav/caldav/issues/585.
+- **`search.time-range.todo.no-dtstart.no-due`** - whether a date search finds a task with neither DTSTART nor DUE, which RFC 4791 §9.9 has overlap every range.  Zimbra finds a task with DUE only, but not one with neither.  Probed by the same search as `search.time-range.todo.no-dtstart`.  See https://github.com/python-caldav/caldav/issues/585.
+
 ### Fixed
 
 - **`save-load.event.recurrences.exception`** - only what the server answered is graded.  A refused PUT is still `ungraceful`, now with its status; a PUT without an answer (a dropped connection, a gateway error), a failed listing of the calendar, or the event missing from it are `unknown`, with the reason.  A failed listing used to be graded `ungraceful` and a missing event `unsupported`, so Robur was reported `ungraceful` while storing the event correctly.

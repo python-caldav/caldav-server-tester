@@ -3390,15 +3390,23 @@ class CheckTodoNoDtstartSearch(Check):
     Synology) skip any task lacking DTSTART.  Replaces the old
     'vtodo_datesearch_nodtstart_task_is_skipped' flag.
 
+    The same search checks a VTODO with neither DTSTART nor DUE, which section
+    9.9 has overlap every range.  Zimbra finds the first but not the second.
+    Replaces the old 'vtodo_datesearch_notime_task_is_skipped' flag.
+
     Uses the PrepareCalendar fixture csc_simple_task2 (DUE=<base>-01-08, no
-    DTSTART) and a closed window around it.
+    DTSTART) and a closed window around it.  The undated task is the probe's
+    own, stored under a fresh UID and deleted again: a compliant server returns
+    it in every closed range, so as a shared fixture it would break the exact
+    counts of other todo probes.
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"search.time-range.todo.no-dtstart"}
+    features_to_be_checked = {"search.time-range.todo.no-dtstart", "search.time-range.todo.no-dtstart.no-due"}
 
     def _run_check(self) -> None:
         feature = "search.time-range.todo.no-dtstart"
+        no_due = "search.time-range.todo.no-dtstart.no-due"
         tasklist = getattr(self.checker, "tasklist", None)
         if tasklist is None:
             ## Nothing was probed, and this feature's default is "full" - so
@@ -3416,6 +3424,24 @@ class CheckTodoNoDtstartSearch(Check):
         ## fresh _base_year(), so a run that crosses New Year's midnight still
         ## searches the window the fixtures actually live in.
         base = self.checker.fixture_base_year
+        undated_uid = f"csc_task_without_dt_{uuid.uuid4().hex[:8]}"
+        try:
+            undated = tasklist.add_todo(uid=undated_uid, summary="task without dtstart and due")
+        except (DAVError, AuthorizationError) as e:
+            undated = None
+            self.set_feature(
+                no_due, {"support": "unknown", "behaviour": f"cannot test, the undated task could not be stored ({e})"}
+            )
+        try:
+            self._search(tasklist, base, feature, no_due, undated and undated_uid)
+        finally:
+            if undated is not None:
+                try:
+                    undated.delete()
+                except Exception:
+                    pass
+
+    def _search(self, tasklist, base, feature, no_due, undated_uid) -> None:
         try:
             results = tasklist.search(
                 todo=True,
@@ -3437,6 +3463,84 @@ class CheckTodoNoDtstartSearch(Check):
             return
         found = any("csc_simple_task2" in (getattr(o, "data", "") or "") for o in results)
         self.set_feature(feature, found)
+        if undated_uid:
+            self.set_feature(no_due, any(undated_uid in (getattr(o, "data", "") or "") for o in results))
+
+
+class CheckTodoUncomplete(Check):
+    """
+    Checks whether a completed task can be made pending again.
+
+    Todo.uncomplete() saves the task back with STATUS:NEEDS-ACTION and without
+    COMPLETED.  GMX was found keeping such a task completed.  Replaces the old
+    'vtodo-cannot-be-uncompleted' flag.
+
+    The task is stored pending and then completed, as a client would do it:
+    Bedework 5 refuses to store a new task that is already completed (403).
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.todo.uncomplete"}
+
+    def _run_check(self) -> None:
+        feature = "save-load.todo.uncomplete"
+        tasklist = getattr(self.checker, "tasklist", None)
+        if tasklist is None:
+            self.set_feature(feature, {"support": "unknown", "behaviour": "no task calendar to probe against"})
+            return
+        ## Where tasks cannot be stored (or nobody knows whether they can, as
+        ## on Bedework), leave it unset so the parent status propagates.
+        if not self.checker.features_checked.is_supported("save-load.todo"):
+            return
+        try:
+            task = tasklist.add_todo(
+                uid=f"csc_uncomplete_task_{uuid.uuid4().hex[:8]}", summary="completed task to be made pending again"
+            )
+        except (DAVError, AuthorizationError) as exc:
+            self.set_feature(
+                feature, {"support": "unknown", "behaviour": f"cannot test, the task could not be stored ({exc})"}
+            )
+            return
+        try:
+            try:
+                task.complete()
+            except (DAVError, AuthorizationError) as exc:
+                self.set_feature(
+                    feature,
+                    {"support": "unknown", "behaviour": f"cannot test, the task could not be completed ({exc})"},
+                )
+                return
+            try:
+                task.uncomplete()
+            except (DAVError, AuthorizationError) as exc:
+                self.set_feature(feature, graded_refusal(exc, "saving the task back as pending is refused ({answer})"))
+                return
+            task.load()
+            ical = task.icalendar_component
+            status = str(ical.get("STATUS", "NEEDS-ACTION"))
+            if status == "COMPLETED":
+                self.set_feature(
+                    feature,
+                    {
+                        "support": "unsupported",
+                        "behaviour": "the task is saved as pending, but loads back with STATUS:COMPLETED",
+                    },
+                )
+            elif "COMPLETED" in ical:
+                self.set_feature(
+                    feature,
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"the task loads back with STATUS:{status}, but keeps its COMPLETED timestamp",
+                    },
+                )
+            else:
+                self.set_feature(feature)
+        finally:
+            try:
+                task.delete()
+            except Exception:
+                pass
 
 
 def dav_error_status(exc):

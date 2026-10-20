@@ -77,6 +77,73 @@ class TestTodoNoDtstartSearch:
         assert kwargs["post_filter"] is False
         assert kwargs["compatibility_workarounds"] is False
 
+    NO_DUE = "search.time-range.todo.no-dtstart.no-due"
+
+    def _run_both(self, find_simple=True, find_undated=True):
+        """The probe stores its own undated task; the search returns it when asked."""
+        tl = Mock()
+        undated = Mock()
+        tl.add_todo.return_value = undated
+
+        def _search(**kw):
+            found = []
+            if find_simple:
+                found.append(Mock(data="UID:csc_simple_task2\n"))
+            if find_undated:
+                found.append(Mock(data=f"UID:{tl.add_todo.call_args.kwargs['uid']}\n"))
+            return found
+
+        tl.search.side_effect = _search
+        checker = _checker(observed=dict(self.SUPPORTED), tasklist=tl)
+        CheckTodoNoDtstartSearch(checker)._run_check()
+        fs = checker._features_checked
+        return tl, undated, (fs.is_supported(self.FEATURE, str), fs.is_supported(self.NO_DUE, str))
+
+    def test_a_task_without_dtstart_and_due_being_found_is_full(self) -> None:
+        assert self._run_both()[2] == ("full", "full")
+
+    def test_only_tasks_with_due_being_found(self) -> None:
+        """Zimbra: a task with DUE is found, one with neither DTSTART nor DUE is not."""
+        assert self._run_both(find_undated=False)[2] == ("full", "unsupported")
+
+    def test_the_undated_task_is_the_probes_own_and_deleted(self) -> None:
+        """Kept out of the shared tasklist: a compliant server returns it in every
+        closed range, which would break the exact counts of other todo probes."""
+        tl, undated, _ = self._run_both()
+        kwargs = tl.add_todo.call_args.kwargs
+        assert kwargs["uid"].startswith("csc_task_without_dt_")
+        assert not {"dtstart", "due", "duration"} & set(kwargs)
+        undated.delete.assert_called_once()
+
+    def test_the_undated_task_has_a_fresh_uid_per_run(self) -> None:
+        uids = {self._run_both()[0].add_todo.call_args.kwargs["uid"] for _ in range(2)}
+        assert len(uids) == 2
+
+    def test_the_undated_task_is_deleted_when_the_search_raises(self) -> None:
+        tl = Mock()
+        undated = Mock()
+        tl.add_todo.return_value = undated
+        tl.search.side_effect = DAVError("403 Forbidden")
+        checker = _checker(observed=dict(self.SUPPORTED), tasklist=tl)
+        CheckTodoNoDtstartSearch(checker)._run_check()
+        assert checker._features_checked.is_supported(self.NO_DUE, str) == "ungraceful"
+        undated.delete.assert_called_once()
+
+    def test_an_undated_task_that_cannot_be_stored_is_unknown(self) -> None:
+        tl = Mock()
+        tl.add_todo.side_effect = DAVError("500 Internal Server Error")
+        tl.search.return_value = [Mock(data="UID:csc_simple_task2\n")]
+        checker = _checker(observed=dict(self.SUPPORTED), tasklist=tl)
+        CheckTodoNoDtstartSearch(checker)._run_check()
+        fs = checker._features_checked
+        assert fs.is_supported(self.FEATURE, str) == "full"
+        assert fs.is_supported(self.NO_DUE, str) == "unknown"
+
+    def test_no_task_calendar_is_unknown_for_both(self) -> None:
+        checker = _checker(observed=dict(self.SUPPORTED), tasklist=None)
+        CheckTodoNoDtstartSearch(checker)._run_check()
+        assert checker._features_checked.is_supported(self.NO_DUE, str) == "unknown"
+
 
 class TestRescheduleRecurrenceSeries:
     FEATURE = "save-load.event.recurrences.exception.reschedule"
