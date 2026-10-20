@@ -8,6 +8,12 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+### Fixed
+
+- **`save-load.event.recurrences.exception`** - only what the server answered is graded.  A refused PUT is still `ungraceful`, now with its status; a PUT without an answer (a dropped connection, a gateway error), a failed listing of the calendar, or the event missing from it are `unknown`, with the reason.  A failed listing used to be graded `ungraceful` and a missing event `unsupported`, so Robur was reported `ungraceful` while storing the event correctly.
+
 ## 1.6.0 - 2026-10-23
 
 This release works with caldav 3.6.0.

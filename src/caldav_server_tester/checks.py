@@ -2012,6 +2012,92 @@ class PrepareCalendar(Check):
             logging.warning("Server refused %s, an event without an end (%s); adding DTEND", kwargs["uid"], exc)
             return add_if_not_existing(Event, dtend=kwargs["dtstart"] + timedelta(days=1), **kwargs)
 
+    def _store_recurrence_with_exception(self, calendar, add_if_not_existing, base):
+        """Store a monthly event with one exception, and grade
+        save-load.event.recurrences.exception on how it comes back.
+
+        The server should keep the master and the exception VEVENT together as
+        one calendar object resource.  Split into separate objects, or already
+        expanded into more VEVENTs, client-side expansion goes wrong.
+
+        Only what the server answered is graded: a PUT that fails without an
+        answer (a dropped connection, a gateway) and a failed listing say
+        nothing about the feature and are "unknown", with the reason.
+        """
+        feature = "save-load.event.recurrences.exception"
+        exception_uid = "csc_monthly_recurring_with_exception"
+        try:
+            add_if_not_existing(
+                Event,
+                f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//tobixen//Caldav-Server-Tester//en_DK
+BEGIN:VEVENT
+UID:csc_monthly_recurring_with_exception
+DTSTART:{base}0113T120000Z
+DTEND:{base}0113T130000Z
+DTSTAMP:20240429T181103Z
+RRULE:FREQ=MONTHLY
+SUMMARY:Monthly recurring with exception
+END:VEVENT
+BEGIN:VEVENT
+UID:csc_monthly_recurring_with_exception
+RECURRENCE-ID:{base}0213T120000Z
+DTSTART:{base}0213T120000Z
+DTEND:{base}0213T130000Z
+DTSTAMP:20240429T181103Z
+SUMMARY:February recurrence with different summary
+END:VEVENT
+END:VCALENDAR""",
+            )
+        except (DAVError, OSError) as e:
+            self.set_feature(
+                feature, graded_refusal(e, "a master VEVENT with an exception VEVENT is refused ({answer})")
+            )
+            return
+
+        try:
+            listing = calendar.events()
+        except Exception as e:
+            self.set_feature(
+                feature, {"support": "unknown", "behaviour": f"cannot test, listing the calendar failed ({e})"}
+            )
+            return
+
+        def _uid(obj):
+            ## The listing covers the whole test calendar: an object somebody
+            ## else left there that does not parse is not ours to grade
+            try:
+                return obj.icalendar_component.get("UID")
+            except Exception:
+                return None
+
+        ours = [obj for obj in listing if _uid(obj) == exception_uid]
+        if not ours:
+            self.set_feature(
+                feature, {"support": "unknown", "behaviour": "cannot test, the stored event is not in the listing"}
+            )
+        elif len(ours) > 1:
+            self.set_feature(
+                feature,
+                {
+                    "support": "unsupported",
+                    "behaviour": f"the exception is stored as a separate object ({len(ours)} objects with the UID)",
+                },
+            )
+        else:
+            vevents = [c for c in ours[0].icalendar_instance.subcomponents if c.name == "VEVENT"]
+            if len(vevents) == 2:
+                self.set_feature(feature)
+            else:
+                self.set_feature(
+                    feature,
+                    {
+                        "support": "unsupported",
+                        "behaviour": f"stored as one object with {len(vevents)} VEVENTs instead of 2",
+                    },
+                )
+
     def _create_test_events(self, calendar, cal_id, name, add_if_not_existing):
         """Create all the test event/task/journal objects in the calendar.
 
@@ -2236,56 +2322,7 @@ END:VCALENDAR""",
             except DAVError:
                 self.set_feature("save-load.todo.recurrences.count", "ungraceful")
 
-        try:
-            recurring_event_with_exception = add_if_not_existing(
-                Event,
-                f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//tobixen//Caldav-Server-Tester//en_DK
-BEGIN:VEVENT
-UID:csc_monthly_recurring_with_exception
-DTSTART:{base}0113T120000Z
-DTEND:{base}0113T130000Z
-DTSTAMP:20240429T181103Z
-RRULE:FREQ=MONTHLY
-SUMMARY:Monthly recurring with exception
-END:VEVENT
-BEGIN:VEVENT
-UID:csc_monthly_recurring_with_exception
-RECURRENCE-ID:{base}0213T120000Z
-DTSTART:{base}0213T120000Z
-DTEND:{base}0213T130000Z
-DTSTAMP:20240429T181103Z
-SUMMARY:February recurrence with different summary
-END:VEVENT
-END:VCALENDAR""",
-            )
-
-            ## Check whether the server stores exception VEVENTs as part of the same
-            ## calendar object resource as the master VEVENT, or incorrectly (either as
-            ## separate objects or already expanded into 3 VEVENTs instead of 2).
-            ## When stored incorrectly, client-side expansion gives wrong results.
-            try:
-                exception_uid = "csc_monthly_recurring_with_exception"
-                objs_with_exception_uid = [
-                    obj for obj in calendar.events() if obj.icalendar_component.get("UID") == exception_uid
-                ]
-                if len(objs_with_exception_uid) != 1:
-                    ## Multiple objects with the same UID: server split exception into separate object
-                    self.set_feature("save-load.event.recurrences.exception", False)
-                else:
-                    ## One object - check it has exactly 2 VEVENTs (master + exception)
-                    vevents = [
-                        c for c in objs_with_exception_uid[0].icalendar_instance.subcomponents if c.name == "VEVENT"
-                    ]
-                    self.set_feature(
-                        "save-load.event.recurrences.exception",
-                        len(vevents) == 2,
-                    )
-            except Exception:
-                self.set_feature("save-load.event.recurrences.exception", "ungraceful")
-        except DAVError:
-            self.set_feature("save-load.event.recurrences.exception", "ungraceful")
+        self._store_recurrence_with_exception(calendar, add_if_not_existing, base)
 
         ## A second recurrence-with-exception event, identical in shape to the one
         ## above but additionally carrying SEQUENCE on both the master and the
