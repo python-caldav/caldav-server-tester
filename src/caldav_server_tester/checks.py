@@ -4585,6 +4585,102 @@ class CheckRescheduleRecurrenceSeries(Check):
                 pass
 
 
+class CheckCancelledRecurrenceException(Check):
+    """
+    Checks whether an exception VEVENT (with RECURRENCE-ID) marked
+    STATUS:CANCELLED is stored as such, beside its master.
+
+    That is what caldav's ``cancel()`` makes of a single occurrence: one that
+    was planned but will not take place, and is still shown as cancelled.
+    Zimbra stores it as an EXDATE on the master instead, so the occurrence is
+    gone rather than cancelled.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"save-load.event.recurrences.exception.cancelled"}
+
+    FEATURE = "save-load.event.recurrences.exception.cancelled"
+
+    @staticmethod
+    def _verdict(obj, rid):
+        """None if the cancelled exception came back as such, else the verdict."""
+
+        def is_rid(dt):
+            """Floating time (no zone) is compared as the UTC wall clock it was sent as."""
+            if getattr(dt, "tzinfo", None):
+                return dt.astimezone(utc) == rid
+            return dt == rid.replace(tzinfo=None)
+
+        master = None
+        for comp in obj.icalendar_instance.subcomponents:
+            if comp.name != "VEVENT":
+                continue
+            if "RECURRENCE-ID" not in comp:
+                master = comp
+            elif is_rid(comp["RECURRENCE-ID"].dt):
+                status = str(comp.get("STATUS", "")).upper()
+                if status == "CANCELLED":
+                    return None
+                return {
+                    "support": "unsupported",
+                    "behaviour": f"STATUS:CANCELLED on the exception comes back as {status or 'no STATUS'}",
+                }
+        exdates = master.get("EXDATE", []) if master is not None else []
+        if not isinstance(exdates, list):
+            exdates = [exdates]
+        if any(is_rid(d.dt) for x in exdates for d in x.dts):
+            return {"support": "unsupported", "behaviour": "turned into an EXDATE"}
+        return {"support": "unsupported", "behaviour": "the cancelled exception is dropped"}
+
+    def _run_check(self) -> None:
+        feature = self.FEATURE
+        ## Only meaningful when the server keeps master and exception together
+        if not self.feature_checked("save-load.event.recurrences.exception"):
+            self.set_feature(feature, None)
+            return
+
+        cal = self.checker.calendar
+        uid = "csc_cancelled_exception"
+        ## in the future, so a sliding window (OX) keeps it visible
+        start = (datetime.now(tz=utc) + timedelta(days=45)).replace(hour=12, minute=0, second=0, microsecond=0)
+        rid = start + timedelta(days=1)
+
+        def f(dt):
+            return dt.strftime("%Y%m%dT%H%M%SZ")
+
+        hour = timedelta(hours=1)
+        data = (
+            "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//caldav-server-tester//EN\n"
+            f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{f(start)}\n"
+            f"DTSTART:{f(start)}\nDTEND:{f(start + hour)}\n"
+            "RRULE:FREQ=DAILY;COUNT=3\nSUMMARY:cancelled exception check\nEND:VEVENT\n"
+            f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{f(start)}\nRECURRENCE-ID:{f(rid)}\n"
+            f"DTSTART:{f(rid)}\nDTEND:{f(rid + hour)}\nSEQUENCE:1\nSTATUS:CANCELLED\n"
+            "SUMMARY:cancelled exception check\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+        try:
+            cal.add_event(data)
+        except (DAVError, AuthorizationError) as exc:
+            self.set_feature(
+                feature, graded_refusal(exc, "an exception VEVENT with STATUS:CANCELLED is refused ({answer})")
+            )
+            return
+        try:
+            obj = url_object(cal, uid)
+            obj.load()
+            self.set_feature(feature, self._verdict(obj, rid) or True)
+        except (DAVError, AuthorizationError) as exc:
+            self.set_feature(
+                feature,
+                graded_refusal(exc, "the cancelled exception is accepted, but reading it back fails ({answer})"),
+            )
+        finally:
+            try:
+                url_object(cal, uid).delete()
+            except Exception:
+                pass
+
+
 class CheckSearch(Check):
     depends_on = {PrepareCalendar}
     features_to_be_checked = {

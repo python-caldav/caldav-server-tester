@@ -8,6 +8,12 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## [Unreleased]
+
+### Added
+
+- **`save-load.event.recurrences.exception.cancelled`** - whether an exception VEVENT (with RECURRENCE-ID) marked `STATUS:CANCELLED` is stored as such.  caldav's `cancel()` makes one of a single occurrence; Zimbra turns it into an EXDATE on the master instead.  Needs a caldav version with https://github.com/python-caldav/caldav/issues/598; older ones warn about an unknown feature.
+
 ## 1.5.0 - 2026-10-16
 
 This release works with caldav 3.5.0.
