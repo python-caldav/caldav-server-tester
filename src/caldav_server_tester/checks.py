@@ -3929,19 +3929,23 @@ class CheckCalendarProperties(Check):
       * the stored value tracks the input but the server transformed it (e.g. a
         colour name normalised to its hex form) -> full, with a behaviour note
       * the same value comes back regardless of what was set (the property is
-        effectively read-only) -> broken, with a behaviour note
+        effectively read-only) -> broken, with a behaviour note (but
+        unsupported for calendar-color.name, see below)
       * nothing is stored, or the server rejects the property with an error ->
         unsupported (rejecting a nonstandard extension is not an RFC breach)
 
-    calendar-color is probed both with a colour name ("blue") and with a hex
-    value (calendar-color.hex); some servers accept one form but not the other.
+    calendar-color is probed with a hex value, its de facto format.  Colour
+    names ("blue") are probed as calendar-color.name.  A server that ignores
+    them - the same, unchanged colour keeps coming back - is graded
+    unsupported there rather than broken, as hex is all a client can count
+    on anyway.  Rejecting or dropping them is unsupported as for any property.
     """
 
     ## CheckProppatchDelay first: once the delay is recorded, the library
     ## waits out each set_properties() below, and the read-backs see the
     ## new value instead of grading the property read-only.
     depends_on = {PrepareCalendar, CheckProppatchDelay}
-    features_to_be_checked = {"calendar-color", "calendar-color.hex", "calendar-order"}
+    features_to_be_checked = {"calendar-color", "calendar-color.name", "calendar-order"}
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
@@ -3952,11 +3956,11 @@ class CheckCalendarProperties(Check):
         with contextlib.ExitStack() as stack:
             if margin := proppatch_margin(self, measured):
                 stack.enter_context(proppatch_wait(cal.client, {"support": "unsupported", "delay": margin}))
-            self._probe("calendar-color", ical.CalendarColor, "blue", "green", cal)
-            self._probe("calendar-color.hex", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
+            self._probe("calendar-color", ical.CalendarColor, "#FF0000FF", "#00FF00FF", cal)
+            self._probe("calendar-color.name", ical.CalendarColor, "blue", "green", cal, read_only="unsupported")
             self._probe("calendar-order", ical.CalendarOrder, "12", "34", cal)
 
-    def _probe(self, feature, element, v1, v2, cal) -> None:
+    def _probe(self, feature, element, v1, v2, cal, read_only="broken") -> None:
         ## The probe works by *writing* the property, so whatever was there
         ## first has to go back.  --caldav-calendar may well point at the
         ## user's real calendar (it is the documented mode for servers without
@@ -3992,7 +3996,7 @@ class CheckCalendarProperties(Check):
             ## The same value comes back no matter what we set: read-only.
             self.set_feature(
                 feature,
-                {"support": "broken", "behaviour": f"read-only (set {v1!r}/{v2!r}, both return {got1!r})"},
+                {"support": read_only, "behaviour": f"read-only (set {v1!r}/{v2!r}, both return {got1!r})"},
             )
 
     def _set_get(self, element, value, cal):

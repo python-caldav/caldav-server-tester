@@ -8,6 +8,12 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+### Changed
+
+- **`calendar-color`** - probed with a hex value (`#FF0000FF`), the format clients use in practice, so a server that takes hex but not colour names is `full` (Zimbra, SOGo, iCloud, OX App Suite).  Colour names are probed as the new `calendar-color.name`, which replaces `calendar-color.hex`.  A server that ignores names, so that its colour stays unchanged, is now `unsupported` there; OX App Suite and iCloud were graded `broken` (read-only) for it before.
+
 ## 1.5.0 - 2026-10-16
 
 This release works with caldav 3.5.0.
