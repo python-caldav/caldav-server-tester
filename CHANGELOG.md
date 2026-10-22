@@ -8,18 +8,20 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
-## Unreleased
+## 1.6.0 - 2026-10-23
+
+This release works with caldav 3.6.0.
 
 ### Added
 
-- **`save-load.event.recurrences.exception.cancelled`** - whether an exception VEVENT (with RECURRENCE-ID) marked `STATUS:CANCELLED` is stored as such.  caldav's `cancel()` makes one of a single occurrence; Zimbra turns it into an EXDATE on the master instead.  Needs a caldav version with https://github.com/python-caldav/caldav/issues/598; older ones warn about an unknown feature.
+- **`save-load.event.recurrences.exception.cancelled`** - whether an exception VEVENT (with RECURRENCE-ID) marked `STATUS:CANCELLED` is stored as such.  caldav's `cancel()` of a single occurrence makes one; Zimbra turns it into an EXDATE on the master instead.
 - **`save.if-none-match`** - whether a PUT with `If-None-Match: *` (RFC 9110 §13.1.2) refuses to overwrite an existing object with a 412 and creates a missing one.  `unsupported` where it overwrites (Zimbra compares `*` as a literal etag, SOGo ignores the header), `broken` where it refuses to create.  The `save-load.mutable.if-match-wildcard` probe tried it already, but only noted the outcome in its behaviour text, which it no longer does.
-- **`save.no-uid-conflict`** - whether a PUT of an object whose UID another object in the calendar holds is refused (RFC 4791 §5.3.2.1, `CALDAV:no-uid-conflict`).  A refusal without a precondition the caldav library recognises (SOGo's bare 409, Bedework's bare 412, Purelymail's `no-uid-conflict` in the CardDAV namespace) is `ungraceful`.  The caldav library uses both features to skip the UID search on `save(no_overwrite=True)`.
+- **`save.no-uid-conflict`** - whether a PUT of an object whose UID another object in the calendar holds is refused (RFC 4791 §5.3.2.1, `CALDAV:no-uid-conflict`).  A refusal without a precondition the caldav library recognises (SOGo's bare 409, Bedework's bare 412, Purelymail's `no-uid-conflict` in the CardDAV namespace) is `ungraceful`.  The caldav library uses this and `save.if-none-match` to skip the UID search on `save(no_overwrite=True)`.
 
 ### Changed
 
 - **`calendar-color`** - probed with a hex value (`#FF0000FF`), the format clients use in practice, so a server that takes hex but not colour names is `full` (Zimbra, SOGo, iCloud, OX App Suite).  Colour names are probed as the new `calendar-color.name`, which replaces `calendar-color.hex`.  A server that ignores names, so that its colour stays unchanged, is now `unsupported` there; OX App Suite and iCloud were graded `broken` (read-only) for it before.
-- Requires caldav 3.6.0, for `calendar-color.name`, `save.if-none-match` and `save.no-uid-conflict`.
+- Requires caldav 3.6.0.
 
 ## 1.5.0 - 2026-10-16
 
