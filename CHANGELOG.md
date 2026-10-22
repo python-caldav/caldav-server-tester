@@ -10,6 +10,10 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
+### Added
+
+- **`save-load.event.recurrences.exception.cancelled`** - whether an exception VEVENT (with RECURRENCE-ID) marked `STATUS:CANCELLED` is stored as such.  caldav's `cancel()` makes one of a single occurrence; Zimbra turns it into an EXDATE on the master instead.  Needs a caldav version with https://github.com/python-caldav/caldav/issues/598; older ones warn about an unknown feature.
+
 ### Changed
 
 - **`calendar-color`** - probed with a hex value (`#FF0000FF`), the format clients use in practice, so a server that takes hex but not colour names is `full` (Zimbra, SOGo, iCloud, OX App Suite).  Colour names are probed as the new `calendar-color.name`, which replaces `calendar-color.hex`.  A server that ignores names, so that its colour stays unchanged, is now `unsupported` there; OX App Suite and iCloud were graded `broken` (read-only) for it before.
