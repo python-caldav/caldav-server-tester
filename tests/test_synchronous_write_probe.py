@@ -30,7 +30,9 @@ def _checker(monkeypatch, configured=None) -> ServerQuirkChecker:
     client = Mock()
     features = FeatureSet()
     if configured is not None:
-        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False)
+        features.copy_feature_set(
+            {"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False
+        )
     client.features = features
     client.request = Mock(return_value="response")
     checker = ServerQuirkChecker(client, debug_mode=None)

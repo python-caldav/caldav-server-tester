@@ -3752,7 +3752,7 @@ def proppatch_wait(client, node):
     """
     saved = client.features
     replaced = FeatureSet(saved)
-    replaced.copyFeatureSet({"synchronous-write.proppatch": node}, collapse=False)
+    replaced.copy_feature_set({"synchronous-write.proppatch": node}, collapse=False)
     client.features = replaced
     try:
         yield

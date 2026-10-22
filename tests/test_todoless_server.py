@@ -73,13 +73,13 @@ def _todo_hostile_calendar() -> Mock:
 def _checker_for_todo_hostile_server() -> tuple[ServerQuirkChecker, Mock]:
     client = Mock()
     client.features = FeatureSet()
-    client.features.copyFeatureSet({"test-calendar.compatibility-tests": {}}, collapse=False)
+    client.features.copy_feature_set({"test-calendar.compatibility-tests": {}}, collapse=False)
     checker = ServerQuirkChecker(client, debug_mode=None)
     checker.principal = Mock()
     checker.expected_features = client.features
     checker._checks_run.add(CheckGetCurrentUserPrincipal)
     checker._checks_run.add(CheckMakeDeleteCalendar)
-    checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+    checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
     calendar = _todo_hostile_calendar()
     checker.principal.calendar.return_value = calendar

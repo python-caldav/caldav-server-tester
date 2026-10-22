@@ -188,7 +188,7 @@ class TestServerQuirkCheckerReport:
         checker = ServerQuirkChecker(client)
 
         # Add some features (use registered feature names)
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = checker.report(return_what=dict)
 
@@ -244,7 +244,7 @@ class TestServerQuirkCheckerReport:
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=True)
 
@@ -258,7 +258,7 @@ class TestServerQuirkCheckerReport:
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
@@ -313,7 +313,7 @@ class TestServerQuirkCheckerReport:
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {"create-calendar": {"support": "full"}, "delete-calendar": {"support": "unsupported"}},
             collapse=False,
         )
@@ -347,7 +347,7 @@ class TestServerQuirkCheckerReport:
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
         # create-calendar.auto has default=unsupported in FEATURES
-        checker._features_checked.copyFeatureSet({"create-calendar.auto": {"support": "unsupported"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar.auto": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
@@ -362,7 +362,7 @@ class TestServerQuirkCheckerReport:
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
         # create-calendar has default=full in FEATURES
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
@@ -376,7 +376,7 @@ class TestServerQuirkCheckerReport:
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
         # create-calendar.auto has default=unsupported; if server supports it, that's noteworthy
-        checker._features_checked.copyFeatureSet({"create-calendar.auto": {"support": "full"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar.auto": {"support": "full"}}, collapse=False)
 
         result = checker.report(return_what=str, verbose=False)
 
@@ -386,13 +386,13 @@ class TestServerQuirkCheckerReport:
         """report should be able to show diff between expected and observed features"""
         client = Mock()
         expected = FeatureSet()
-        expected.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        expected.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
         client.features = expected
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
         # Observe something different from expected
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "unsupported"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "unsupported"}}, collapse=False)
 
         result = checker.report(return_what=str, show_diff=True)
 
@@ -402,12 +402,12 @@ class TestServerQuirkCheckerReport:
     def _checker_with(self, expected: dict, observed: dict) -> ServerQuirkChecker:
         client = Mock()
         expected_fs = FeatureSet()
-        expected_fs.copyFeatureSet(expected, collapse=False)
+        expected_fs.copy_feature_set(expected, collapse=False)
         client.features = expected_fs
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
         checker = ServerQuirkChecker(client)
-        checker._features_checked.copyFeatureSet(observed, collapse=False)
+        checker._features_checked.copy_feature_set(observed, collapse=False)
         return checker
 
     def test_diff_ignores_matching_observation(self) -> None:
@@ -469,7 +469,7 @@ class TestServerQuirkCheckerCleanup:
         """cleanup(force=False) should check expected_features for cleanup setting"""
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet({"test-calendar.compatibility-tests": {"cleanup": False}}, collapse=False)
+        features.copy_feature_set({"test-calendar.compatibility-tests": {"cleanup": False}}, collapse=False)
         client.features = features
         checker = ServerQuirkChecker(client)
         checker.expected_features = features
@@ -493,7 +493,7 @@ class TestServerQuirkCheckerCleanup:
         checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
         # Set features to indicate calendar creation/deletion is supported
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {
                 "create-calendar": {"support": "full"},
                 "delete-calendar": {"support": "full"},
@@ -519,7 +519,7 @@ class TestServerQuirkCheckerCleanup:
         checker.journallist = mock_calendar  # Same as calendar
         checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {
                 "create-calendar": {"support": "full"},
                 "delete-calendar": {"support": "full"},
@@ -544,7 +544,7 @@ class TestServerQuirkCheckerCleanup:
         checker.journallist = mock_calendar  # Same object
         checker.calendar_was_created = True  # tool created the calendar -> safe to delete
 
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {
                 "create-calendar": {"support": "full"},
                 "delete-calendar": {"support": "full"},
@@ -615,7 +615,7 @@ class TestWriteDelay:
         client = Mock()
         features = FeatureSet()
         if delay is not None:
-            features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
+            features.copy_feature_set({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
         client.features = features
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
@@ -668,7 +668,7 @@ class TestWriteDelay:
     @patch("caldav_server_tester.checker.time.sleep")
     def test_no_delay_when_writes_are_synchronous(self, mock_sleep) -> None:
         client = self._client()
-        client.features.copyFeatureSet({"synchronous-write": {"support": "full", "delay": 10}}, collapse=False)
+        client.features.copy_feature_set({"synchronous-write": {"support": "full", "delay": 10}}, collapse=False)
         original = client.request
         ServerQuirkChecker(client)
         assert client.request is original
@@ -831,7 +831,7 @@ class TestWriteDelaySuspension:
         client = Mock()
         features = FeatureSet()
         if delay is not None:
-            features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
+            features.copy_feature_set({"synchronous-write": {"support": "unsupported", "delay": delay}}, collapse=False)
         client.features = features
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
@@ -915,7 +915,7 @@ class TestSearchCacheDelay:
             config = {"behaviour": "delay", "delay": delay}
             if filtered_only:
                 config["filtered-only"] = True
-            features.copyFeatureSet({"search-cache": config}, collapse=False)
+            features.copy_feature_set({"search-cache": config}, collapse=False)
         client.features = features
         client.server_name = "Test Server"
         client.url = "https://example.com/caldav"
