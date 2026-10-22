@@ -37,7 +37,7 @@ def _checker(monkeypatch, stale_reads: int, configured=None, read_time=0.0) -> t
     client = Mock()
     features = FeatureSet()
     if configured is not None:
-        features.copyFeatureSet(
+        features.copy_feature_set(
             {"synchronous-write.proppatch": {"support": "unsupported", "delay": configured}}, collapse=False
         )
     client.features = features
@@ -140,7 +140,7 @@ class TestProppatchDelay:
         run while measuring, or the delay reads as 0.  The restore is an
         ordinary write again, waited for by the library."""
         checker, state = _checker(monkeypatch, stale_reads=2)
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False
         )
         checker._client_obj._write_delay = 16
@@ -161,7 +161,7 @@ def test_property_probes_give_the_library_a_margin(monkeypatch) -> None:
     """One measurement of a varying delay is too tight a bound for the
     library's wait during the colour and order probes."""
     checker, state = _checker(monkeypatch, stale_reads=0)
-    checker._features_checked.copyFeatureSet(
+    checker._features_checked.copy_feature_set(
         {"synchronous-write.proppatch": {"support": "unsupported", "delay": 10}}, collapse=False
     )
     checker._client_obj.features = checker._features_checked

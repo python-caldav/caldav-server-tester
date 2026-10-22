@@ -700,7 +700,7 @@ class TestPrepareCalendar:
         client = Mock()
         client.features = FeatureSet()
         # Mock expected_features to avoid lookup issues
-        client.features.copyFeatureSet({"test-calendar.compatibility-tests": {}}, collapse=False)
+        client.features.copy_feature_set({"test-calendar.compatibility-tests": {}}, collapse=False)
         checker = ServerQuirkChecker(client, debug_mode=None)
 
         # Mock principal
@@ -713,7 +713,7 @@ class TestPrepareCalendar:
         checker._checks_run.add(CheckMakeDeleteCalendar)
 
         # Mock that create-calendar is supported
-        checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         return checker, client, mock_principal
 
@@ -1576,7 +1576,7 @@ class TestCalendarProbeSuspendsWriteDelay:
 
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
+        features.copy_feature_set({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
         client.features = features
         client.request = Mock(return_value="response")
         checker = ServerQuirkChecker(client, debug_mode=None)
@@ -1608,7 +1608,7 @@ class TestCalendarProbeSuspendsWriteDelay:
         """Otherwise suspending the delay reports a slow server as a broken one."""
         client = Mock()
         features = FeatureSet()
-        features.copyFeatureSet({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
+        features.copy_feature_set({"synchronous-write": {"support": "unsupported", "delay": 16}}, collapse=False)
         client.features = features
         client.request = Mock(return_value="response")
         assert ServerQuirkChecker(client, debug_mode=None).delay_probe_timeout == 32

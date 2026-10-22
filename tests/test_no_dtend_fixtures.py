@@ -68,13 +68,13 @@ def _checker_for_server_refusing(error: Exception) -> tuple[ServerQuirkChecker, 
 
     client = Mock()
     client.features = FeatureSet()
-    client.features.copyFeatureSet({"test-calendar.compatibility-tests": {}}, collapse=False)
+    client.features.copy_feature_set({"test-calendar.compatibility-tests": {}}, collapse=False)
     checker = ServerQuirkChecker(client, debug_mode=None)
     checker.principal = Mock()
     checker.expected_features = client.features
     checker._checks_run.add(CheckGetCurrentUserPrincipal)
     checker._checks_run.add(CheckMakeDeleteCalendar)
-    checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+    checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
     checker.principal.calendar.return_value = calendar
     checker.principal.make_calendar.return_value = calendar
     return checker, saved

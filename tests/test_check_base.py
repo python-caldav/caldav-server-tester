@@ -111,7 +111,7 @@ class TestCheckFeatureChecked:
     def test_feature_checked_delegates_to_featureset(self) -> None:
         """feature_checked should delegate to the FeatureSet.is_supported method"""
         check = self.create_check_instance()
-        check.checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        check.checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = check.feature_checked("create-calendar", bool)
         assert result is True
@@ -119,7 +119,7 @@ class TestCheckFeatureChecked:
     def test_feature_checked_returns_bool_by_default(self) -> None:
         """feature_checked without return_type should return bool"""
         check = self.create_check_instance()
-        check.checker._features_checked.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        check.checker._features_checked.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         result = check.feature_checked("create-calendar")
         assert isinstance(result, bool)
@@ -128,7 +128,7 @@ class TestCheckFeatureChecked:
     def test_feature_checked_can_return_dict(self) -> None:
         """feature_checked with return_type=dict should return dict"""
         check = self.create_check_instance()
-        check.checker._features_checked.copyFeatureSet(
+        check.checker._features_checked.copy_feature_set(
             {"create-calendar": {"support": "full", "behaviour": "test"}}, collapse=False
         )
 
@@ -239,7 +239,7 @@ class TestCheckRunCheck:
     def test_run_check_restores_client_features(self) -> None:
         """run_check should restore original client features after execution"""
         original_features = FeatureSet()
-        original_features.copyFeatureSet({"create-calendar": {"support": "full"}}, collapse=False)
+        original_features.copy_feature_set({"create-calendar": {"support": "full"}}, collapse=False)
 
         class TestCheck(Check):
             features_to_be_checked = set()
@@ -475,11 +475,11 @@ class TestObservedDelayWarning:
         check = Check(checker)
         expected = FeatureSet()
         if configured is not None:
-            expected.copyFeatureSet(
+            expected.copy_feature_set(
                 {"synchronous-write": {"support": "unsupported", "delay": configured}}, collapse=False
             )
         for feature, delay in (own or {}).items():
-            expected.copyFeatureSet({feature: {"support": "unsupported", "delay": delay}}, collapse=False)
+            expected.copy_feature_set({feature: {"support": "unsupported", "delay": delay}}, collapse=False)
         check.expected_features = expected
         return check
 

@@ -37,11 +37,11 @@ def waits_seen(measured: int | None, configured: int | None) -> set:
     checker.calendar = cal
     checker.expected_features = FeatureSet()
     if measured is not None:
-        checker._features_checked.copyFeatureSet(
+        checker._features_checked.copy_feature_set(
             {"synchronous-write.proppatch": {"support": "unsupported", "delay": measured}}, collapse=False
         )
     if configured is not None:
-        checker.expected_features.copyFeatureSet(
+        checker.expected_features.copy_feature_set(
             {"synchronous-write.proppatch": {"support": "unsupported", "delay": configured}}, collapse=False
         )
     CheckCalendarProperties(checker)._run_check()

@@ -286,7 +286,7 @@ media type `image/*`, multiple), `CONFERENCE` (VEVENT and VTODO only,
 SCREEN, VIDEO), `LABEL` on `CONFERENCE` and `IMAGE`.
 
 **What already exists.**  `CheckCalendarProperties` probes `calendar-color`,
-`calendar-color.hex` and `calendar-order` - the Apple/Mozilla *WebDAV* collection
+`calendar-color.name` and `calendar-order` - the Apple/Mozilla *WebDAV* collection
 properties, which are not RFC 7986 and are no longer part of this item.
 `CheckRelatedTo` is the template every probe below follows: PUT a hand-written
 `VCALENDAR`, load it, count what came back, grade it, delete in a `finally`.

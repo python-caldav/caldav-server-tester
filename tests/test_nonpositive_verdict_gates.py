@@ -92,7 +92,7 @@ class TestFragileCreation:
         checker.tasklist = checker.calendar
         checker.journallist = checker.calendar
         checker.calendar_was_created = True
-        checker._client_obj.features.copyFeatureSet(
+        checker._client_obj.features.copy_feature_set(
             {"test-calendar.compatibility-tests": {"cleanup": True}}, collapse=False
         )
         monkeypatch.setattr(checker, "_purge_probe_calendars", lambda: None)
@@ -155,7 +155,7 @@ class TestUngracefulDelete:
         checker.tasklist = checker.calendar
         checker.journallist = checker.calendar
         checker.calendar_was_created = True
-        checker._client_obj.features.copyFeatureSet(
+        checker._client_obj.features.copy_feature_set(
             {"test-calendar.compatibility-tests": {"cleanup": True}}, collapse=False
         )
         monkeypatch.setattr(checker, "_purge_probe_calendars", lambda: None)
@@ -184,7 +184,7 @@ class TestCleanupSurvivesAFailingDelete:
         checker.tasklist = checker.calendar
         checker.journallist = checker.calendar
         checker.calendar_was_created = True
-        checker._client_obj.features.copyFeatureSet(
+        checker._client_obj.features.copy_feature_set(
             {"test-calendar.compatibility-tests": {"cleanup": True}}, collapse=False
         )
         purged = []
