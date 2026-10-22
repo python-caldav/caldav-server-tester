@@ -8,12 +8,14 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
-## Unreleased
+## 1.7.0 - 2026-10-23
+
+This release works with caldav 3.6.0.  1.6.0 was accidentally released without two probes and a grading fix that caldav 3.6.0's server hints were based on.
 
 ### Added
 
 - **`save-load.todo.uncomplete`** - whether a completed task can be made pending again: `Todo.uncomplete()` saves it with STATUS:NEEDS-ACTION and without COMPLETED, and the probe loads it back.  GMX keeps it completed.  See https://github.com/python-caldav/caldav/issues/585.
-- **`search.time-range.todo.no-dtstart.no-due`** - whether a date search finds a task with neither DTSTART nor DUE, which RFC 4791 §9.9 has overlap every range.  Zimbra finds a task with DUE only, but not one with neither.  Probed by the same search as `search.time-range.todo.no-dtstart`.  See https://github.com/python-caldav/caldav/issues/585.
+- **`search.time-range.todo.no-dtstart.no-due`** - whether a date search finds a task with neither DTSTART nor DUE, which RFC 4791 §9.9 has overlap every range.  Zimbra, DAViCal and Stalwart do not find one; Zimbra does find a task with DUE only.  See https://github.com/python-caldav/caldav/issues/585.
 
 ### Fixed
 
@@ -21,7 +23,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## 1.6.0 - 2026-10-23
 
-This release works with caldav 3.6.0.
+This release works with caldav 3.6.0, but lacks two probes and a grading fix that caldav 3.6.0's server hints rely on; see 1.7.0.
 
 ### Added
 
