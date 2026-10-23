@@ -8,6 +8,16 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+Needs a caldav with the three features below in its `compatibility_hints.py`.
+
+### Added
+
+- **`delete.if-match`** - whether a DELETE with an If-Match etag the object no longer has is refused with 412, and one with the current etag goes through.  SOGo refuses a stale If-Match on PUT, but deletes the object on DELETE.
+- **`save-load.event.floating`** - whether an event with a floating DTSTART and DTEND is stored floating.  SOGo gives the times TZID=Etc/UTC (tasks it keeps floating).  The probe reads the server's own text: the icalendar library writes a TZID=Etc/UTC time back with a `Z` after it, which RFC 5545 §3.3.5 forbids.
+- **`save-load.icalendar.attendee-params`** - whether ATTENDEE parameters are stored as sent.  An added RFC 5545 default (PARTSTAT=NEEDS-ACTION and the like) or SCHEDULE-STATUS is fine; SOGo also adds RSVP=TRUE, where the default is FALSE.
+
 ## 1.7.0 - 2026-10-23
 
 This release works with caldav 3.6.0.  1.6.0 was accidentally released without two probes and a grading fix that caldav 3.6.0's server hints were based on.
