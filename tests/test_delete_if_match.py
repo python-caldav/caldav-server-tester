@@ -27,7 +27,18 @@ class VersionedServer:
     header out; ``bump`` False keeps the etag across versions.
     """
 
-    def __init__(self, delete_if_match="rfc", stale_answer=None, etags=True, bump=True, create_status=201):
+    def __init__(
+        self,
+        delete_if_match="rfc",
+        stale_answer=None,
+        etags=True,
+        bump=True,
+        create_status=201,
+        missing_answer=404,
+        missing_plain_answer=404,
+    ):
+        self.missing_answer = missing_answer
+        self.missing_plain_answer = missing_plain_answer
         self.delete_if_match = delete_if_match
         self.stale_answer = stale_answer
         self.etags = etags
@@ -57,7 +68,9 @@ class VersionedServer:
         etag = (headers or {}).get("If-Match")
         self.deletes.append(etag)
         if url not in self.versions:
-            return self._response(404)
+            if etag is not None and isinstance(self.missing_answer, Exception):
+                raise self.missing_answer
+            return self._response(self.missing_answer if etag is not None else self.missing_plain_answer)
         if etag is not None:
             current = etag == self._etag(url)
             if not current and self.stale_answer is not None:
@@ -77,7 +90,7 @@ class VersionedServer:
         return response
 
 
-def _run(server):
+def _run(server, feature=FEATURE):
     checker = Mock()
     checker._features_checked = FeatureSet()
     checker.debug_mode = None
@@ -85,14 +98,15 @@ def _run(server):
     checker.fixture_base_year = 2027
     checker.calendar.url.join.side_effect = lambda name: BASE + name
     CheckDeleteIfMatch(checker)._run_check()
-    return checker._features_checked.is_supported(FEATURE, return_type=dict)
+    return checker._features_checked.is_supported(feature, return_type=dict)
 
 
 def test_stale_refused_and_current_taken_is_full():
     server = VersionedServer()
     assert _run(server)["support"] == "full"
     ## The stale etag first, then the current one
-    assert server.deletes[:2] == ['"v0"', '"v1"']
+    stale = server.deletes.index('"v0"')
+    assert server.deletes[stale : stale + 2] == ['"v0"', '"v1"']
     assert not server.versions
 
 
@@ -138,3 +152,59 @@ def test_the_object_is_deleted_whatever_the_verdict():
     server = VersionedServer(delete_if_match="never")
     _run(server)
     assert not server.versions
+
+
+MISSING = "delete.missing.if-match"
+PLAIN = "delete.missing"
+
+
+def test_a_conditional_delete_of_a_missing_object_answered_404_is_full():
+    assert _run(VersionedServer(), MISSING) == {"support": "full"}
+
+
+def test_a_conditional_delete_of_a_missing_object_answered_412_is_unsupported():
+    """Baikal, Robur"""
+    verdict = _run(VersionedServer(missing_answer=412), MISSING)
+    assert verdict["support"] == "unsupported"
+    assert verdict["behaviour"] == "a DELETE with If-Match on a missing object answered 412"
+
+
+def test_a_conditional_delete_of_a_missing_object_answered_otherwise_is_ungraceful():
+    assert _run(VersionedServer(missing_answer=500), MISSING)["support"] == "ungraceful"
+
+
+def test_the_missing_object_is_probed_whatever_the_stale_verdict():
+    """It needs no etag, so a server without one still gets a verdict."""
+    assert _run(VersionedServer(etags=False, missing_answer=412), MISSING)["support"] == "unsupported"
+
+
+def test_a_conditional_delete_answered_as_the_plain_one_is_full():
+    """RFC 9110 section 13.2.1: the precondition is ignored where the request
+    would fail without it, so a 403 for both is right"""
+    verdict = _run(VersionedServer(missing_plain_answer=403, missing_answer=403), MISSING)
+    assert verdict == {"support": "full", "behaviour": "answered 403, as a plain DELETE of a missing object is"}
+
+
+def test_a_conditional_delete_answered_412_where_the_plain_one_is_refused_is_unsupported():
+    verdict = _run(VersionedServer(missing_plain_answer=403, missing_answer=412), MISSING)
+    assert verdict["support"] == "unsupported"
+
+
+def test_a_conditional_delete_is_not_graded_where_the_plain_one_succeeds():
+    """With nothing to fail, the condition decides, and a 412 is right"""
+    verdict = _run(VersionedServer(missing_plain_answer=204, missing_answer=412), MISSING)
+    assert verdict["support"] == "unknown"
+
+
+def test_a_plain_delete_of_a_missing_object_answered_404_is_full():
+    assert _run(VersionedServer(missing_answer=412), PLAIN) == {"support": "full"}
+
+
+@pytest.mark.parametrize("status", [204, 200])
+def test_a_plain_delete_of_a_missing_object_succeeding_is_unsupported(status):
+    verdict = _run(VersionedServer(missing_plain_answer=status), PLAIN)
+    assert verdict == {"support": "unsupported", "behaviour": f"a DELETE of a missing object answered {status}"}
+
+
+def test_a_plain_delete_of_a_missing_object_answered_otherwise_is_ungraceful():
+    assert _run(VersionedServer(missing_plain_answer=403), PLAIN)["support"] == "ungraceful"

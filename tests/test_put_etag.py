@@ -57,7 +57,14 @@ class EtagServer:
         create_status=201,
         create_raises=None,
         answers=None,
+        rewrite=None,
+        rewrite_updates=None,
+        raw_body=True,
     ):
+        self.rewrite = rewrite
+        self.rewrite_updates = rewrite_updates
+        self.raw_body = raw_body
+        self.bodies = {}
         self.put_etag = put_etag
         self.get_etag = put_etag if get_etag is None else get_etag
         self.accepts = {put_etag} if accepts is None else set(accepts)
@@ -95,6 +102,8 @@ class EtagServer:
         if not holds:
             return self._response(412)
         self.objects.add(url)
+        rewrite = self.rewrite_updates if exists and self.rewrite_updates else self.rewrite
+        self.bodies[url] = rewrite(body) if rewrite else body
         return self._response(204 if exists else 201)
 
     def _response(self, status):
@@ -107,6 +116,11 @@ class EtagServer:
         response = Mock()
         response.status = 200 if url in self.objects else 404
         response.headers = {"Etag": self.get_etag} if response.status == 200 and self.get_etag else {}
+        ## DAVResponse keeps the bytes as received, and turns CRLF into LF in .raw
+        body = self.bodies.get(url, "")
+        if self.raw_body:
+            response._raw_body = body.encode()
+        response.raw = body.replace("\r\n", "\n")
         return response
 
     def delete(self, url):
@@ -403,3 +417,87 @@ def test_object_that_cannot_be_created_grades_nothing(server):
     for feature in ("save.etag", "save-load.mutable.if-match-wildcard", "save.if-none-match"):
         assert fs.is_supported(feature, return_type=dict)["support"] == "unknown"
     assert server.requests == [None]
+
+
+STORED = "save.etag.matches-stored"
+
+
+def _add_dtstamp_last(body):
+    """Radicale and Baikal add or move DTSTAMP; here it goes to the end."""
+    lines = body.split("\r\n")
+    dtstamp = next(line for line in lines if line.startswith("DTSTAMP"))
+    lines.remove(dtstamp)
+    lines.insert(lines.index("END:VEVENT"), dtstamp)
+    return "\r\n".join(lines)
+
+
+def test_stored_as_sent_is_full():
+    assert _run_all(EtagServer()).is_supported(STORED, return_type=dict) == {"support": "full"}
+
+
+def test_stored_differently_with_a_strong_etag_is_broken():
+    """Radicale, Xandikos"""
+    verdict = _run_all(EtagServer(rewrite=_add_dtstamp_last)).is_supported(STORED, return_type=dict)
+    assert verdict == {
+        "support": "broken",
+        "behaviour": "stored with its properties reordered, yet the PUT answered with a strong ETag",
+    }
+
+
+def test_line_endings_rewritten_with_a_strong_etag_is_broken():
+    verdict = _run_all(EtagServer(rewrite=lambda body: body.replace("\r\n", "\n"))).is_supported(
+        STORED, return_type=dict
+    )
+    assert verdict["support"] == "broken"
+    assert verdict["behaviour"].startswith("stored with other line endings")
+
+
+def test_stored_with_lines_added_names_them():
+    verdict = _run_all(
+        EtagServer(rewrite=lambda body: body.replace("END:VEVENT", "CLASS:PUBLIC\r\nEND:VEVENT"))
+    ).is_supported(STORED, return_type=dict)
+    assert verdict["behaviour"].startswith("stored with CLASS added")
+
+
+def test_stored_differently_without_an_etag_is_full():
+    """Baikal leaves the ETag out when it rewrites."""
+    verdict = _run_all(EtagServer(put_etag=None, get_etag='"g"', rewrite=_add_dtstamp_last)).is_supported(
+        STORED, return_type=dict
+    )
+    assert verdict["support"] == "full"
+
+
+def test_stored_differently_with_a_weak_etag_is_full():
+    verdict = _run_all(EtagServer(put_etag='W/"w"', rewrite=_add_dtstamp_last)).is_supported(STORED, return_type=dict)
+    assert verdict["support"] == "full"
+
+
+def test_line_endings_are_compared_on_the_bytes_received():
+    """caldav's .raw has LF where the server sent CRLF; that is not a rewrite."""
+    server = EtagServer(rewrite=lambda body: body.replace("\r\n", "\n"))
+    assert _run_all(server).is_supported(STORED, return_type=dict)["support"] == "broken"
+
+
+def test_without_the_bytes_received_line_endings_are_not_compared():
+    """An older caldav keeps only .raw, with CRLF turned into LF"""
+    server = EtagServer(raw_body=False, rewrite=lambda body: body.replace("\r\n", "\n"))
+    assert _run_all(server).is_supported(STORED, return_type=dict) == {"support": "full"}
+
+
+def test_without_the_bytes_received_a_rewrite_is_still_seen():
+    verdict = _run_all(EtagServer(raw_body=False, rewrite=_add_dtstamp_last)).is_supported(STORED, return_type=dict)
+    assert verdict["support"] == "broken"
+
+
+def test_a_rewrite_on_update_only_is_not_blamed_on_the_create():
+    """The probe PUTs the object again for the If-Match checks; what an update
+    adds (LAST-MODIFIED, SEQUENCE) says nothing about the create's ETag"""
+    server = EtagServer(rewrite_updates=_add_dtstamp_last)
+    assert _run_all(server).is_supported(STORED, return_type=dict) == {"support": "full"}
+
+
+def test_an_unusable_etag_is_not_asked_whether_it_matches():
+    """Robur: the ETag is malformed, so whether it matches the stored object is moot."""
+    fs = _run_all(EtagServer(put_etag="a22ccfb2985aed13f50b4991a110d32253fd99aa"))
+    assert fs.is_supported(STORED, return_type=dict) == fs.is_supported("save.etag", return_type=dict)
+    assert fs.is_supported(STORED, return_type=dict)["support"] == "broken"
