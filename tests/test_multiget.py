@@ -33,8 +33,16 @@ class MultigetServer:
     response-level status code."""
 
     def __init__(
-        self, omit_missing=False, cap=None, cap_marker=True, report_status=207, propfind_raises=None, missing_as=None
+        self,
+        omit_missing=False,
+        cap=None,
+        cap_marker=True,
+        report_status=207,
+        propfind_raises=None,
+        missing_as=None,
+        propfind_status=None,
     ):
+        self.propfind_status = propfind_status
         self.missing_as = missing_as
         self.propfind_raises = propfind_raises
         self.omit_missing = omit_missing
@@ -67,9 +75,21 @@ class MultigetServer:
         return self._answer(entries)
 
     def propfind(self, url, props=None, depth=0):
+        """caldav parses the answer at once, and raises on the collection's 507"""
+        answer = self.request(url, "PROPFIND")
+        if b"507" in etree.tostring(answer.tree):
+            raise ResponseError("HTTP/1.1 507 Insufficient Storage")
+        return answer
+
+    def request(self, url, method="GET", body="", headers=None):
+        """The raw answer, left unparsed"""
+        assert method == "PROPFIND"
         if self.propfind_raises:
             raise self.propfind_raises
-        return self._answer([("", None)] + [(n, None) for n in sorted(self.objects)])
+        if self.propfind_status:
+            return Mock(status=self.propfind_status, tree=None, raw="")
+        ## Last, so that a cap drops it, as on Stalwart: its members, then a 507
+        return self._answer([(n, None) for n in sorted(self.objects)] + [("", None)])
 
     def _answer(self, entries):
         truncated = self.cap is not None and len(entries) > self.cap
@@ -170,8 +190,16 @@ def test_no_limit_up_to_the_objects_stored(monkeypatch):
 def test_a_cap_with_a_507_is_unsupported(monkeypatch):
     """Stalwart"""
     verdicts = _run(MultigetServer(cap=5), monkeypatch, objects=12)
-    assert verdicts[LIMIT] == {"support": "unsupported", "behaviour": "stops at 5 of 12 objects, with a 507"}
-    assert verdicts[PROPFIND]["support"] == "unsupported"
+    assert verdicts[LIMIT] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
+    assert verdicts[PROPFIND] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
+
+
+def test_a_propfind_cap_counts_every_member_listed(monkeypatch):
+    """A server's cap counts the calendar's other members too"""
+    server = MultigetServer(cap=5)
+    server.objects.update({"aa_other_1.ics", "aa_other_2.ics"})  # listed first
+    verdicts = _run(server, monkeypatch, objects=12)
+    assert verdicts[PROPFIND] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
 
 
 def test_a_cap_without_a_507_is_broken(monkeypatch):
@@ -195,10 +223,14 @@ def test_an_unusable_object_count_does_not_probe(monkeypatch, value):
 
 
 def test_a_propfind_answered_507_as_a_whole_is_unsupported(monkeypatch):
-    """Stalwart answers a PROPFIND past its maxResults with a bare 507."""
-    server = MultigetServer(propfind_raises=ResponseError("HTTP/1.1 507 Insufficient Storage"))
-    verdict = _run(server, monkeypatch, objects=12)[PROPFIND]
-    assert verdict == {"support": "unsupported", "behaviour": "answered 507 Insufficient Storage with 12 objects"}
+    """No member listed at all, the HTTP status itself a 507"""
+    verdict = _run(MultigetServer(propfind_status=507), monkeypatch, objects=12)[PROPFIND]
+    assert verdict == {"support": "unsupported", "behaviour": "the whole answer was a 507, with 12 objects"}
+
+
+def test_a_multiget_answered_507_as_a_whole_is_unsupported(monkeypatch):
+    verdict = _run(MultigetServer(report_status=507), monkeypatch, objects=12)[LIMIT]
+    assert verdict == {"support": "unsupported", "behaviour": "the whole answer was a 507, with 12 objects"}
 
 
 def test_another_failure_is_ungraceful(monkeypatch):

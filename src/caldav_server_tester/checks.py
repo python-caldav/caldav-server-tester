@@ -7334,30 +7334,35 @@ class CheckMultiget(_RawPut, _RawSync, Check):
                 try:
                     (entries, truncated) = request()
                 except (DAVError, ReportError) as e:
-                    ## Stalwart answers a PROPFIND past its limit with a bare 507
-                    if re.search(r"HTTP/1\.\d 507\b", str(e)) or dav_error_status(e) == 507:
-                        verdict = self._graded("unsupported", f"answered 507 Insufficient Storage with {count} objects")
+                    ## A server refusing the whole listing; Stalwart lists up
+                    ## to its limit and adds a 507 for the collection instead
+                    if re.search(r"answered 507\b", str(e)) or dav_error_status(e) == 507:
+                        verdict = self._graded("unsupported", f"the whole answer was a 507, with {count} objects")
                     else:
                         verdict = self._graded("ungraceful", f"failed with {count} objects: {e}")
                     self.set_feature(feature, verdict)
                     continue
                 seen = len({name for name, status in entries if name in mine and status is None})
-                self.set_feature(feature, self._grade_limit(seen, count, truncated))
+                ## A cap counts the calendar's other members too
+                listed = len({name for name, status in entries if name != self.COLLECTION and status is None})
+                self.set_feature(feature, self._grade_limit(seen, count, truncated, listed))
         finally:
             for name in names:
                 self._delete(self._url(name))
 
     def _propfind(self):
-        response = self.client.propfind(str(self.cal_url), self.PROPFIND, depth=1)
+        ## Raw, as for the multiget: caldav's propfind() parses at once and
+        ## raises on the collection's 507, hiding the members listed before it
+        response = self.client.request(str(self.cal_url), "PROPFIND", self.PROPFIND, {"Depth": "1"})
         if response.status not in (200, 207) or response.tree is None:
             raise ReportError(f"PROPFIND answered {response.status}")
         return self._parse_entries(response)
 
-    def _grade_limit(self, seen, count, truncated):
+    def _grade_limit(self, seen, count, truncated, listed):
         if seen >= count:
             return self._graded("full", f"no limit up to {count} objects")
         if truncated:
-            return self._graded("unsupported", f"stops at {seen} of {count} objects, with a 507")
+            return self._graded("unsupported", f"stops at {listed} members, with a 507")
         return self._graded("broken", f"lists {seen} of {count} objects, without a 507")
 
 
