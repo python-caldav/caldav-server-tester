@@ -4252,8 +4252,11 @@ class _RawPut:
     def _url(self, name):
         return str(self.checker.calendar.url.join(f"{name}.ics"))
 
-    def _ical(self, uid):
+    def _ical(self, uid, summary=None, floating=False, extra=""):
+        """An event at the fixture year's 20 January 12:00 UTC, or at 12:00
+        wherever the user is with ``floating``; ``extra`` is more lines."""
         year = self.checker.fixture_base_year
+        utc = "" if floating else "Z"
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
@@ -4261,22 +4264,37 @@ class _RawPut:
             "BEGIN:VEVENT\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0120T120000Z\r\n"
-            f"DTSTART:{year}0120T120000Z\r\n"
-            f"DTEND:{year}0120T130000Z\r\n"
-            f"SUMMARY:{self.LABEL} probe\r\n"
+            f"DTSTART:{year}0120T120000{utc}\r\n"
+            f"DTEND:{year}0120T130000{utc}\r\n"
+            f"SUMMARY:{summary or self.LABEL + ' probe'}\r\n"
+            f"{extra}"
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
 
-    def _get_etag(self, url):
-        """The ETag header a GET answers with, or None."""
+    def _get(self, url):
+        """The answer to a GET, or None where it failed."""
         try:
             response = self.client.request(url)
         except (DAVError, OSError):
             return None
-        if not self._ok(response):
+        return response if self._ok(response) else None
+
+    def _get_etag(self, url):
+        """The ETag header a GET answers with, or None."""
+        response = self._get(url)
+        return response.headers.get("Etag") if response is not None else None
+
+    @staticmethod
+    def _answer(request, *args):
+        try:
+            return request(*args)
+        except AuthorizationError as exc:
+            ## 401/403 are raised before a response exists, but they are answers.
+            return _StatusOnly(dav_error_status(exc) or _Unauthorized(), tuple(getattr(exc, "preconditions", ())))
+        except (DAVError, OSError):
+            ## Rate limited for longer than the client waits, or no answer at all.
             return None
-        return response.headers.get("Etag")
 
     def _put(self, url, ical, if_match=None, if_none_match=None):
         headers = {"Content-Type": "text/calendar; charset=utf-8"}
@@ -4284,14 +4302,10 @@ class _RawPut:
             headers["If-Match"] = if_match
         if if_none_match is not None:
             headers["If-None-Match"] = if_none_match
-        try:
-            return self.client.put(url, ical, headers)
-        except AuthorizationError as exc:
-            ## 401/403 are raised before a response exists, but they are answers.
-            return _StatusOnly(dav_error_status(exc) or _Unauthorized(), tuple(getattr(exc, "preconditions", ())))
-        except (DAVError, OSError):
-            ## Rate limited for longer than the client waits, or no answer at all.
-            return None
+        return self._answer(self.client.put, url, ical, headers)
+
+    def _delete_if_match(self, url, etag):
+        return self._answer(self.client.delete, url, {"If-Match": etag})
 
     def _delete(self, url):
         try:
@@ -4563,6 +4577,220 @@ class CheckNoUidConflict(_RawPut, Check):
                 "ungraceful", f"refused with {status}, but without the CALDAV:no-uid-conflict precondition"
             )
         return self._graded("ungraceful", f"a second object with the same UID was answered with {status}")
+
+
+class CheckDeleteIfMatch(_RawPut, Check):
+    """
+    Checks whether a DELETE carrying an If-Match etag the object no longer
+    has is refused, and one carrying the current etag goes through.
+
+    RFC 9110 section 13.1.1 has the server refuse it with 412.  SOGo refuses
+    a stale If-Match on PUT, but on DELETE it deletes the object anyway.
+    The etags are read with GET, as delete(if_match=True) sends the one the
+    object was loaded with.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "delete-if-match"
+    FEATURE = "delete.if-match"
+    features_to_be_checked = {FEATURE}
+
+    def _run_check(self) -> None:
+        url = self._url("csc_delete_if_match")
+        ical = self._ical("csc_delete_if_match")
+        try:
+            if not self._ok(self._put(url, ical)):
+                self.set_feature(self.FEATURE, None)
+                return
+            stale = self._get_etag(url)
+            changed = self._put(url, self._ical("csc_delete_if_match", summary=f"{self.LABEL} probe changed"))
+            current = self._get_etag(url) if self._ok(changed) else None
+            self.set_feature(self.FEATURE, self._grade(url, stale, current))
+        finally:
+            self._delete(url)
+
+    def _grade(self, url, stale, current):
+        for etag in (stale, current):
+            if not etag or not ENTITY_TAG.fullmatch(etag) or etag.startswith("W/"):
+                return self._graded("unknown", "cannot test, no strong etag for the object")
+        if stale == current:
+            return self._graded("unknown", "cannot test, the etag did not change when the object did")
+        status = self._status(self._delete_if_match(url, stale))
+        if status is None:
+            return self._graded("unknown", "cannot test, a DELETE with a stale If-Match got no answer")
+        if 200 <= status < 300:
+            if self._get(url) is None:
+                return self._graded("broken", f"a DELETE with a stale If-Match deleted the object ({status})")
+            return self._graded("ungraceful", f"a DELETE with a stale If-Match answered {status}, but kept the object")
+        if status != 412:
+            return self._graded("ungraceful", f"a DELETE with a stale If-Match answered {status} rather than 412")
+        status = self._status(self._delete_if_match(url, current))
+        if status is None:
+            return self._graded("unknown", "cannot test, a DELETE with the current If-Match got no answer")
+        if status == 412:
+            return self._graded("unsupported", "a DELETE with the current If-Match is refused with 412 too")
+        if not 200 <= status < 300:
+            return self._graded("ungraceful", f"a DELETE with the current If-Match answered {status}")
+        return "full"
+
+
+def unfolded_lines(ical):
+    """The content lines of an iCalendar text, unfolded (RFC 5545 section 3.1)."""
+    return re.sub(r"\r?\n[ \t]", "", ical).splitlines()
+
+
+def component_lines(ical, name):
+    """The content lines of the first ``name`` component, BEGIN and END left out."""
+    lines = unfolded_lines(ical)
+    try:
+        start = lines.index(f"BEGIN:{name}")
+        return lines[start + 1 : lines.index(f"END:{name}", start)]
+    except ValueError:
+        return []
+
+
+class CheckFloatingEvent(_RawPut, Check):
+    """
+    Checks whether an event with a floating DTSTART and DTEND (RFC 5545
+    section 3.3.5: neither TZID nor 'Z') is stored floating.
+
+    SOGo adds a VTIMEZONE for Etc/UTC and gives the times TZID=Etc/UTC.  The
+    server's own text is read rather than a parsed object: the icalendar
+    library writes a TZID=Etc/UTC time back with a 'Z', which the section
+    forbids, so a re-serialised object would look broken where SOGo's is not.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "floating"
+    FEATURE = "save-load.event.floating"
+    features_to_be_checked = {FEATURE}
+    PROPERTY = re.compile(r"(DTSTART|DTEND)((?:;[^:]*)?):(.*)")
+
+    def _run_check(self) -> None:
+        url = self._url("csc_floating_event")
+        try:
+            stored = self._put(url, self._ical("csc_floating_event", floating=True))
+            status = self._status(stored)
+            if status is None:
+                self.set_feature(self.FEATURE, self._graded("unknown", "cannot test, a floating event got no answer"))
+            elif not 200 <= status < 300:
+                self.set_feature(
+                    self.FEATURE, self._graded("ungraceful", f"an event with a floating time is refused ({status})")
+                )
+            else:
+                self.set_feature(self.FEATURE, self._grade(self._get(url)))
+        finally:
+            self._delete(url)
+
+    def _grade(self, response):
+        if response is None:
+            return self._graded("unknown", "cannot test, the floating event could not be read back")
+        times = [
+            match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(response.raw, "VEVENT")) if match
+        ]
+        if not times:
+            return self._graded("unknown", "cannot test, the event came back without DTSTART")
+        for _, params, value in times:
+            tzid = re.search(r";TZID=([^;]*)", params, re.IGNORECASE)
+            if tzid and value.endswith("Z"):
+                return self._graded(
+                    "broken",
+                    f"a floating time is stored with TZID={tzid[1]} and a 'Z' both, which RFC 5545 section 3.3.5 forbids",
+                )
+            if tzid:
+                return self._graded("unsupported", f"a floating time is stored with TZID={tzid[1]}")
+            if value.endswith("Z"):
+                return self._graded("unsupported", "a floating time is stored as UTC")
+        return "full"
+
+
+class CheckAttendeeParams(_RawPut, Check):
+    """
+    Checks whether the parameters of an ATTENDEE are stored as sent.
+
+    A parameter added with RFC 5545's default value changes nothing, nor does
+    SCHEDULE-STATUS, which RFC 6638 has the server set.  SOGo adds RSVP=TRUE,
+    where the default is FALSE.  The event has no ORGANIZER, so it is not a
+    scheduling object resource and the server has no iTIP reason to touch it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "attendee-params"
+    FEATURE = "save-load.icalendar.attendee-params"
+    features_to_be_checked = {FEATURE}
+    ## RFC 5545 section 3.2
+    DEFAULTS = {"PARTSTAT": "NEEDS-ACTION", "ROLE": "REQ-PARTICIPANT", "CUTYPE": "INDIVIDUAL", "RSVP": "FALSE"}
+    ## RFC 6638 section 7.3
+    SERVER_SET = {"SCHEDULE-STATUS"}
+    ATTENDEES = {
+        "mailto:csc-bob@attendee.example.com": {"CN": "Bob"},
+        "mailto:csc-ase@attendee.example.com": {"CN": "Åse", "PARTSTAT": "ACCEPTED"},
+    }
+
+    def _run_check(self) -> None:
+        url = self._url("csc_attendee_params")
+        lines = "".join(
+            "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
+            for address, params in self.ATTENDEES.items()
+        )
+        try:
+            stored = self._put(url, self._ical("csc_attendee_params", extra=lines))
+            status = self._status(stored)
+            if status is None:
+                self.set_feature(
+                    self.FEATURE, self._graded("unknown", "cannot test, an event with attendees got no answer")
+                )
+            elif not 200 <= status < 300:
+                self.set_feature(
+                    self.FEATURE, self._graded("ungraceful", f"an event with attendees is refused ({status})")
+                )
+            else:
+                self.set_feature(self.FEATURE, self._grade(self._get(url)))
+        finally:
+            self._delete(url)
+
+    @staticmethod
+    def _parse(line):
+        """The address and parameters of an ATTENDEE line."""
+        match = re.fullmatch(r"ATTENDEE((?:;(?:[^:;\"]|\"[^\"]*\")*)*):(.*)", line, re.IGNORECASE)
+        if not match:
+            return None, {}
+        params = {}
+        for param in re.findall(r';((?:[^;"]|"[^"]*")*)', match[1]):
+            name, _, value = param.partition("=")
+            params[name.upper()] = value.strip('"')
+        return match[2].lower(), params
+
+    def _grade(self, response):
+        if response is None:
+            return self._graded("unknown", "cannot test, the event with attendees could not be read back")
+        stored = dict(
+            self._parse(line) for line in component_lines(response.raw, "VEVENT") if line.upper().startswith("ATTENDEE")
+        )
+        changes, defaults = [], []
+        for address, sent in self.ATTENDEES.items():
+            if address not in stored:
+                changes.append(f"ATTENDEE {address} is dropped")
+                continue
+            got = stored[address]
+            for name, value in sent.items():
+                if name not in got:
+                    changes.append(f"{name}={value} is dropped")
+                elif got[name] != value and not (name != "CN" and got[name].upper() == value.upper()):
+                    changes.append(f"{name}={value} is changed to {got[name]}")
+            for name, value in got.items():
+                if name in sent:
+                    continue
+                note = f"{name}={value} is added"
+                if name in self.SERVER_SET or self.DEFAULTS.get(name) == value.upper():
+                    defaults.append(f"{name}={value}" if name in self.SERVER_SET else note)
+                else:
+                    changes.append(note)
+        ## Each attendee may get the same addition; say it once
+        changes, defaults = list(dict.fromkeys(changes)), list(dict.fromkeys(defaults))
+        if changes:
+            return self._graded("unsupported", *changes, *defaults)
+        return self._graded("full", *defaults)
 
 
 class CheckAttendeePartstat(Check):
