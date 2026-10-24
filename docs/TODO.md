@@ -497,3 +497,29 @@ a production Zimbra, not the podman one):
   xandikos.  Reproduce: is it the number of UIDs, Zimbra's UID search (it
   ignores text-match, so each lookup fetches the whole list), or plann's
   handling of several UIDs?
+
+# Expired sync tokens: worth a probe at all?
+
+(Noted 2026-10-24, from calendaring-sync's evidence branch.  Undecided.)
+
+RFC 6578 section 3.2 has a server refuse a token whose change history it
+discarded, with `DAV:valid-sync-token`.  `sync-token.invalid-token` only
+covers tokens the server never issued; a token that was valid and expired is
+not probed, and a client that keeps tokens for days is the one that meets it.
+
+Stalwart can be made to expire tokens: calendaring-sync shrank
+`DataRetention.maxChangesHistory` to 1 and then ran an `AccountMaintenance`
+purge (https://github.com/PyCalendar/calendaring-sync/tree/evidence, under
+`sync-design/servers/stalwart_admin.py`).
+
+Against it:
+
+* The purge is an admin JMAP call.  The checker is a client; it would need a
+  server-side hook, i.e. a Stalwart special case, and the checker shouldn't
+  grow many of those.
+* A low `maxChangesHistory` in caldav's shared Stalwart container expires
+  tokens under caldav's own sync tests whenever a purge runs.
+
+If it is done, the generic shape is a hook in the test-server definition
+("expire the change history now"), with the probe `unknown` wherever no hook
+is defined; Stalwart would be the only server with one.
