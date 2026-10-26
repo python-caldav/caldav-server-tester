@@ -8,6 +8,18 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+### Added
+
+- **`supported-components.property-exists`** (the former `get-supported-components`, now probed), **`supported-components.honoured`** and **`create-calendar.with-supported-component-types.multiple`** - whether a calendar reports the component set, whether it takes exactly the types it lists (and every type where it lists none, RFC 4791 §5.2.3), and whether a MKCALENDAR naming several types gives a calendar taking all of them.  A calendar that reports `[VTODO]` and still takes a VEVENT is `broken` on `.honoured` (Bedework 3.10, DAViCal, Stalwart); CCS refuses a set of several components the §5.3.1.1 way and is `unsupported` on `.multiple`.
+
+### Fixed
+
+- **`create-calendar.with-supported-component-types`** - back to asking whether a MKCALENDAR naming `VTODO` gives a calendar with that set.  Bedework 5 and SOGo report another set and are `unsupported`; a calendar that reports the set and ignores it is a matter for `.honoured`.
+
+Needs caldav 3.7.0, which has the `supported-components.*` features.
+
 ## 1.7.0 - 2026-10-23
 
 This release works with caldav 3.6.0.  1.6.0 was accidentally released without two probes and a grading fix that caldav 3.6.0's server hints were based on.

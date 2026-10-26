@@ -26,7 +26,7 @@ classifiers = [
 ]
 keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
-    "caldav>=3.6.0",
+    "caldav>=3.7.0",
     "click",
     "pyyaml",
 ]

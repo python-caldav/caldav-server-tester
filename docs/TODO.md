@@ -230,8 +230,9 @@ cases apart in the probe.
 
 (Clean-context review 2026-09-14, filed rather than fixed.)
 
-`CheckSupportedComponentSet._delete_probe_calendar` deletes
-`principal.calendar(cal_id=CAL_ID)`, although the check itself notes that the
+`CheckSupportedComponentSet._delete_probe_calendars` deletes
+`principal.calendar(cal_id=...)` for both its probe calendars (`CAL_ID` and
+`CAL_ID_MULTIPLE`), although the check itself notes that the
 `cal_id` is not the collection's address on a server that relocates it.  The
 probe calendar has no display name either, so a prefix sweep may miss it too.
 No server is known to leak one - OX, the relocating server, also answers at the
