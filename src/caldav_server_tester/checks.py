@@ -4249,30 +4249,34 @@ class _RawPut:
 
     ## Names the probe in the objects it stores, should one be left behind
     LABEL = "put-etag"
+    ## The checker attribute holding the calendar the probe stores in
+    CALENDAR = "calendar"
 
     def _url(self, name):
-        return str(self.checker.calendar.url.join(f"{name}.ics"))
+        return str(getattr(self.checker, self.CALENDAR).url.join(f"{name}.ics"))
 
-    def _ical(self, uid, summary=None, floating=False, extra="", vtimezone=None):
+    def _ical(self, uid, summary=None, floating=False, extra="", vtimezone=None, todo=False):
         """An event at the fixture year's 20 January 12:00 UTC, or at 12:00
         wherever the user is with ``floating``, or in the time zone of the
-        ``vtimezone`` text, which goes along; ``extra`` is more lines."""
+        ``vtimezone`` text, which goes along; ``extra`` is more lines.  With
+        ``todo``, a task starting then and due an hour later."""
         year = self.checker.fixture_base_year
         utc = "" if floating or vtimezone else "Z"
         tzid = f";TZID={re.search(r'^TZID:(.*)$', vtimezone, re.MULTILINE)[1].strip()}" if vtimezone else ""
+        component = "VTODO" if todo else "VEVENT"
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
             f"PRODID:-//caldav-server-tester//{self.LABEL} probe//EN\r\n"
             f"{vtimezone or ''}"
-            "BEGIN:VEVENT\r\n"
+            f"BEGIN:{component}\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0120T120000Z\r\n"
             f"DTSTART{tzid}:{year}0120T120000{utc}\r\n"
-            f"DTEND{tzid}:{year}0120T130000{utc}\r\n"
+            f"{'DUE' if todo else 'DTEND'}{tzid}:{year}0120T130000{utc}\r\n"
             f"SUMMARY:{summary or self.LABEL + ' probe'}\r\n"
             f"{extra}"
-            "END:VEVENT\r\n"
+            f"END:{component}\r\n"
             "END:VCALENDAR\r\n"
         )
 
@@ -4749,35 +4753,93 @@ def component_lines(ical, name):
 
 
 class _RoundTrip(_RawPut):
-    """Stores the event ``_body()`` gives, reads it back, and has ``_grade()``
-    judge the server's own text.  Refused is "ungraceful"."""
+    """Stores the object ``_body()`` gives, reads it back, and has ``_grade()``
+    judge the server's own text.  Refused is "ungraceful".
+
+    One object for each of ``COMPONENTS``, the first verdict that is not
+    "full" being the feature's.  A task goes to the task calendar, which is
+    the event calendar where the two mix, and is not probed where tasks cannot
+    be stored: a save-load.todo feature probing tasks only is then left unset,
+    so save-load.todo's status propagates to it, and any other is "unknown",
+    as is every one where there is no task calendar at all."""
 
     ## The probe object's UID and name, and what it is, for the behaviour notes
     UID = "csc_round_trip"
     WHAT = "the event"
-    ## More lines for the VEVENT
+    ## More lines for the VEVENT or VTODO
     EXTRA = ""
+    COMPONENTS = ("VEVENT",)
+    ## The one being probed
+    component = "VEVENT"
+    CANNOT_STORE = "tasks cannot be stored"
+
+    @property
+    def uid(self):
+        """The UID and name of the object probed now: one per component, so a
+        task never lands where the event was just deleted"""
+        return self.UID if len(self.COMPONENTS) == 1 else f"{self.UID}_{self.component.lower()}"
 
     def _body(self):
-        return self._ical(self.UID, extra=self.EXTRA)
+        return self._ical(self.uid, extra=self.EXTRA, todo=self.component == "VTODO")
 
     def _run_check(self) -> None:
-        url = self._url(self.UID)
+        verdict, skipped = None, None
+        for component in self.COMPONENTS:
+            if component == "VTODO":
+                skipped = self._tasks_unstorable()
+                if skipped:
+                    continue
+            self.component = component
+            verdict = self._round_trip()
+            if verdict != "full":
+                if len(self.COMPONENTS) > 1 and isinstance(verdict, dict):
+                    kind = "a task" if component == "VTODO" else "an event"
+                    verdict = {**verdict, "behaviour": f"{verdict['behaviour']}, in {kind}"}
+                break
+        if verdict == "full" and skipped:
+            verdict = self._graded("full", f"probed in an event only, {skipped}")
+        elif verdict is None and (skipped != self.CANNOT_STORE or not self.FEATURE.startswith("save-load.todo.")):
+            verdict = self._graded("unknown", f"cannot test, {skipped}")
+        if verdict is not None:
+            self.set_feature(self.FEATURE, verdict)
+
+    def _tasks_unstorable(self):
+        """Why no task can be probed, or None where one can"""
+        if getattr(self.checker, "tasklist", None) is None:
+            return "there is no task calendar"
+        if not self.checker.features_checked.is_supported("save-load.todo"):
+            return self.CANNOT_STORE
+        return None
+
+    def _round_trip(self):
+        url = self._url(self.uid)
         try:
             status = self._status(self._put(url, self._body()))
             if status is None:
-                verdict = self._graded("unknown", f"cannot test, {self.WHAT} got no answer")
-            elif not 200 <= status < 300:
-                verdict = self._graded("ungraceful", f"{self.WHAT} is refused ({status})")
-            else:
-                response = self._get(url)
-                if response is None:
-                    verdict = self._graded("unknown", f"cannot test, {self.WHAT} could not be read back")
-                else:
-                    verdict = self._grade(response.raw)
-            self.set_feature(self.FEATURE, verdict)
+                return self._graded("unknown", f"cannot test, {self.WHAT} got no answer")
+            if not 200 <= status < 300:
+                return self._graded("ungraceful", f"{self.WHAT} is refused ({status})")
+            response = self._answer(self.client.request, url)
+            if self._ok(response):
+                return self._grade(response.raw)
+            return self._unreadable(self._status(response))
         finally:
             self._delete(url)
+
+    @property
+    def CALENDAR(self):
+        return "tasklist" if self.component == "VTODO" else "calendar"
+
+    def _unreadable(self, status):
+        """The verdict where the stored object cannot be read back"""
+        answer = f" ({status})" if status else ""
+        return self._graded("unknown", f"cannot test, {self.WHAT} could not be read back{answer}")
+
+    def _kept(self, raw, name):
+        """``_grade()`` for a probe asking whether property ``name`` is kept"""
+        if any(re.match(rf"{name}[;:]", line, re.IGNORECASE) for line in component_lines(raw, self.component)):
+            return "full"
+        return self._graded("unsupported", f"{name} is dropped")
 
 
 class CheckFloatingEvent(_RoundTrip, Check):
@@ -4800,7 +4862,7 @@ class CheckFloatingEvent(_RoundTrip, Check):
     PROPERTY = re.compile(r"(DTSTART|DTEND)((?:;[^:]*)?):(.*)")
 
     def _body(self):
-        return self._ical(self.UID, floating=True)
+        return self._ical(self.uid, floating=True)
 
     def _grade(self, raw):
         times = [match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(raw, "VEVENT")) if match]
@@ -4956,7 +5018,7 @@ class CheckVtimezone(_RoundTrip, Check):
     )
 
     def _body(self):
-        return self._ical(self.UID, vtimezone=self.VTIMEZONE)
+        return self._ical(self.uid, vtimezone=self.VTIMEZONE)
 
     def _grade(self, raw):
         dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
@@ -4973,6 +5035,104 @@ class CheckVtimezone(_RoundTrip, Check):
         if tzid in defined:
             return "full"
         return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
+
+
+class CheckXProperty(_RoundTrip, Check):
+    """
+    Checks whether an X- property (RFC 5545 section 3.8.8.2) is stored, in an
+    event and in a task.  Ox keeps it in an event and drops it from a task.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "x-property"
+    FEATURE = "save-load.icalendar.x-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_x_property_event"
+    WHAT = "an object with an X- property"
+    EXTRA = "X-CALDAV-SERVER-TESTER:kept\r\n"
+    COMPONENTS = ("VEVENT", "VTODO")
+
+    def _grade(self, raw):
+        return self._kept(raw, "X-CALDAV-SERVER-TESTER")
+
+
+class CheckUnknownProperty(_RoundTrip, Check):
+    """
+    Checks whether a property that is neither in RFC 5545 nor an X- one is
+    stored, using ESTIMATED-DURATION on a task.  Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "unknown-property"
+    FEATURE = "save-load.icalendar.unknown-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_unknown_property_task"
+    WHAT = "a task with ESTIMATED-DURATION"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ESTIMATED-DURATION:PT2H\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ESTIMATED-DURATION")
+
+
+class CheckTodoAttendee(_RoundTrip, Check):
+    """
+    Checks whether a task with an ATTENDEE is stored with it.  Ox answers the
+    PUT with 201 and the GET with 404: the task is gone, which is "broken",
+    since the server said it was stored.  A 404 counts only where the same
+    task without the ATTENDEE reads back.  There is no ORGANIZER, so the
+    server has no scheduling reason to touch it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-attendee"
+    FEATURE = "save-load.todo.attendee"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_task"
+    WHAT = "a task with an ATTENDEE"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ATTENDEE;CN=Bob:mailto:csc-bob@attendee.example.com\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ATTENDEE")
+
+    def _unreadable(self, status):
+        if status == 404 and self._plain_task_kept():
+            return self._graded("broken", "the task is accepted, then gone (404)")
+        return super()._unreadable(status)
+
+    def _plain_task_kept(self):
+        """Whether the same task without the ATTENDEE can be read back"""
+        uid = f"{self.UID}_control"
+        url = self._url(uid)
+        try:
+            if not self._ok(self._put(url, self._ical(uid, todo=True))):
+                return False
+            return self._ok(self._answer(self.client.request, url))
+        finally:
+            self._delete(url)
+
+
+class CheckCompletedWithoutStatus(_RoundTrip, Check):
+    """
+    Checks whether a task with COMPLETED but no STATUS keeps its COMPLETED.
+    Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "completed-without-status"
+    FEATURE = "save-load.todo.completed-without-status"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_completed_task"
+    WHAT = "a task with COMPLETED but no STATUS"
+    COMPONENTS = ("VTODO",)
+
+    @property
+    def EXTRA(self):
+        return f"COMPLETED:{self.checker.fixture_base_year}0120T130000Z\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "COMPLETED")
 
 
 class CheckAttendeePartstat(Check):
