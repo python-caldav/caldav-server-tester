@@ -523,3 +523,28 @@ Against it:
 If it is done, the generic shape is a hook in the test-server definition
 ("expire the change history now"), with the probe `unknown` wherever no hook
 is defined; Stalwart would be the only server with one.
+
+# Bedework refuses TZIDs that are tzdata link names
+
+Bedework answers 403 `unknownTimezone` for a TZID that is a tzdata link name
+(Europe/Oslo, Europe/Stockholm, Europe/Amsterdam, Europe/Kiev), even with a
+matching VTIMEZONE in the object.  Canonical names (Europe/Berlin,
+Europe/Paris, America/New_York) are accepted.  Seen 2026-10-26 on the
+Bedework3 docker server.
+
+No probe or hint covers it.  The `save-load.icalendar.vtimezone` probe
+already sidesteps it by using Europe/Berlin, which is deliberate; only
+Bedework 3 was tried, Bedework 5 was not.  A probe would save an event with a
+link-name TZID (with and without VTIMEZONE) next to a canonical-name control,
+and grade the refusal `ungraceful`; it belongs with that probe
+(https://github.com/python-caldav/caldav-server-tester/issues/39).
+
+# `delete.if-match: broken` has no consumer
+
+The hint is set for Zimbra, SOGo, Bedework 3 and 5, and Posteo, but nothing
+acts on it: caldav's `delete(if_match=)` does not read it, and neither, as far
+as known, does https://github.com/PyCalendar/calendaring.  `broken` means the
+server deletes whatever the etag says, so skipping the header would change
+nothing.  Decide whether `delete(if_match=True)` should warn or raise when the
+hint says `broken`, or emulate the check with a GET and an etag compare
+before the DELETE (racy, but closer to what was asked for).
