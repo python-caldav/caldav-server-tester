@@ -10,10 +10,11 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
-Needs a caldav with the features below in its `compatibility_hints.py`.
+Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`.
 
 ### Added
 
+- **`supported-components.property-exists`** (the former `get-supported-components`, now probed), **`supported-components.honoured`** and **`create-calendar.with-supported-component-types.multiple`** - whether a calendar reports the component set, whether it takes exactly the types it lists (and every type where it lists none, RFC 4791 §5.2.3), and whether a MKCALENDAR naming several types gives a calendar taking all of them.  A calendar that reports `[VTODO]` and still takes a VEVENT is `broken` on `.honoured` (Bedework 3.10, DAViCal, Stalwart); CCS refuses a set of several components the §5.3.1.1 way and is `unsupported` on `.multiple`.
 - **`delete.if-match`** - whether a DELETE with an If-Match etag the object no longer has is refused with 412, and one with the current etag goes through.  SOGo refuses a stale If-Match on PUT, but deletes the object on DELETE.
 - **`save-load.event.floating`** - whether an event with a floating DTSTART and DTEND is stored floating.  SOGo gives the times TZID=Etc/UTC (tasks it keeps floating).  The probe reads the server's own text: the icalendar library writes a TZID=Etc/UTC time back with a `Z` after it, which RFC 5545 §3.3.5 forbids.
 - **`save-load.icalendar.attendee-params`** - whether ATTENDEE parameters are stored as sent.  An added RFC 5545 default (PARTSTAT=NEEDS-ACTION and the like) or SCHEDULE-STATUS is fine; SOGo also adds RSVP=TRUE, where the default is FALSE.
@@ -27,6 +28,10 @@ Needs a caldav with the features below in its `compatibility_hints.py`.
 - **`multiget.limit`**, **`propfind.limit`** and **`search.limit`** - whether a calendar-multiget, a Depth: 1 PROPFIND or a calendar-query answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
 
 The behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
+
+### Fixed
+
+- **`create-calendar.with-supported-component-types`** - back to asking whether a MKCALENDAR naming `VTODO` gives a calendar with that set.  Bedework 5 and SOGo report another set and are `unsupported`; a calendar that reports the set and ignores it is a matter for `.honoured`.
 
 ## 1.7.0 - 2026-10-23
 

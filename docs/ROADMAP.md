@@ -185,12 +185,12 @@ library *declares* but nothing measures, and quirks that predate the feature
 database entirely and still live in the old flat flag list.
 
 At the baseline nine features were defined in `compatibility_hints.py` and probed
-by nothing.  Eight still are: `get-supported-components`, `save-load.reuse-deleted-uid`,
+by nothing.  Seven still are: `save-load.reuse-deleted-uid`,
 `save-load.todo.recurrences.thisandfuture`, `search.time-range.accurate`,
 `search.time-range.journal`, `search.text.category.substring`,
 `wrong-password-check` and `http.multiplexing`.  Every one of them is currently
 reported from its default rather than from evidence - which is exactly the
-failure mode constraint 2 is about, at eight known sites.  The ninth,
+failure mode constraint 2 is about, at seven known sites.  The ninth,
 `create-calendar.with-supported-component-types`, got its probe on 2026-09-13,
 after Bedework 5 turned out to ignore the component set - the first server where
 the default was wrong.
