@@ -23,7 +23,7 @@ Needs a caldav with the features below in its `compatibility_hints.py`.
 - **`save.etag.matches-stored`** - whether a strong ETag in a PUT answer belongs to what was stored: RFC 4791 §5.3.4 lets a server rewrite the object, but not answer with a strong ETag then.  The behaviour says what the server changed.
 - **`sync-token.initial-sync`**, **`sync-token.delete.created-and-deleted`** and **`sync-token.recreated`** - which members a sync-collection report lists: an initial sync with deleted members or the collection itself in it, a member created and deleted between two reports left out, and a re-created member reported twice, or only as removed (Nextcloud, Synology).
 - **`multiget.missing-href`** - whether a calendar-multiget answers a missing href with a 404 entry; Baïkal, Nextcloud, DAViCal, Davis and Infomaniak leave it out, Posteo fails the whole multiget with a 404, and an entry claiming the object exists is broken.
-- **`multiget.limit`** and **`propfind.limit`** - whether a calendar-multiget or a Depth: 1 PROPFIND answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
+- **`multiget.limit`**, **`propfind.limit`** and **`search.limit`** - whether a calendar-multiget, a Depth: 1 PROPFIND or a calendar-query answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
 
 The behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
 

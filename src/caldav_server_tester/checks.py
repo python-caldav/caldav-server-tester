@@ -7326,13 +7326,14 @@ class CheckSyncMembers(_RawPut, _RawSync, Check):
 class CheckMultiget(_RawPut, _RawSync, Check):
     """
     Checks calendar-multiget for a missing href, and limits on how many
-    members a multiget or a Depth: 1 PROPFIND answers.
+    members a multiget, a Depth: 1 PROPFIND or a calendar-query answers.
 
     RFC 4791 section 7.9 gives every requested href an entry, a 404 for a
     missing one; Baikal leaves it out.  Stalwart answers at most its
     WebDav.maxResults (2000 by default) members with a 507 for the collection,
-    even to a multiget that asked for fewer than it holds.  Neither request has
-    a client-side limit to provoke that with, so the probe has to store more
+    even to a multiget that asked for fewer than it holds, and to a
+    calendar-query matching more.  None of the requests has a
+    client-side limit to provoke that with, so the probe has to store more
     objects than the server's limit: CALDAV_SERVER_TESTER_LIMIT_OBJECTS says
     how many, and without it the limits are not probed.
     """
@@ -7342,7 +7343,8 @@ class CheckMultiget(_RawPut, _RawSync, Check):
     MISSING_HREF = "multiget.missing-href"
     LIMIT = "multiget.limit"
     PROPFIND_LIMIT = "propfind.limit"
-    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT}
+    SEARCH_LIMIT = "search.limit"
+    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
     ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
     PRESENT = "csc_multiget_present"
     ABSENT = "csc_multiget_missing"
@@ -7364,7 +7366,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
             self._delete(present)
         count = self._object_count()
         if not count:
-            for feature in (self.LIMIT, self.PROPFIND_LIMIT):
+            for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
                 self.set_feature(
                     feature, {"support": "unknown", "behaviour": f"not probed: set {self.ENV} to a number of objects"}
                 )
@@ -7409,13 +7411,17 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         try:
             stored = sum(self._ok(self._put(self._url(name), self._ical(name))) for name in names)
             if stored < count:
-                for feature in (self.LIMIT, self.PROPFIND_LIMIT):
+                for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
                     self.set_feature(
                         feature, self._graded("unknown", f"cannot test, only {stored} of {count} objects were stored")
                     )
                 return
             mine = {f"{name}.ics" for name in names}
-            requests = ((self.LIMIT, lambda: self._multiget(names)), (self.PROPFIND_LIMIT, self._propfind))
+            requests = (
+                (self.LIMIT, lambda: self._multiget(names)),
+                (self.PROPFIND_LIMIT, self._propfind),
+                (self.SEARCH_LIMIT, self._calendar_query),
+            )
             for feature, request in requests:
                 try:
                     (entries, truncated) = request()
@@ -7435,6 +7441,20 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         finally:
             for name in names:
                 self._delete(self._url(name))
+
+    def _calendar_query(self):
+        """Every event in the calendar, raw for the same reason as the multiget"""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            "<D:prop><D:getetag/></D:prop>"
+            '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter>'
+            "</C:calendar-query>"
+        )
+        response = self.client.report(str(self.cal_url), body, depth=1)
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"calendar-query answered {response.status}")
+        return self._parse_entries(response, propstat_status=True)
 
     def _propfind(self):
         ## Raw, as for the multiget: caldav's propfind() parses at once and
