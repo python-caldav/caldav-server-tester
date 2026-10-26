@@ -4253,20 +4253,23 @@ class _RawPut:
     def _url(self, name):
         return str(self.checker.calendar.url.join(f"{name}.ics"))
 
-    def _ical(self, uid, summary=None, floating=False, extra=""):
+    def _ical(self, uid, summary=None, floating=False, extra="", vtimezone=None):
         """An event at the fixture year's 20 January 12:00 UTC, or at 12:00
-        wherever the user is with ``floating``; ``extra`` is more lines."""
+        wherever the user is with ``floating``, or in the time zone of the
+        ``vtimezone`` text, which goes along; ``extra`` is more lines."""
         year = self.checker.fixture_base_year
-        utc = "" if floating else "Z"
+        utc = "" if floating or vtimezone else "Z"
+        tzid = f";TZID={re.search(r'^TZID:(.*)$', vtimezone, re.MULTILINE)[1].strip()}" if vtimezone else ""
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
             f"PRODID:-//caldav-server-tester//{self.LABEL} probe//EN\r\n"
+            f"{vtimezone or ''}"
             "BEGIN:VEVENT\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0120T120000Z\r\n"
-            f"DTSTART:{year}0120T120000{utc}\r\n"
-            f"DTEND:{year}0120T130000{utc}\r\n"
+            f"DTSTART{tzid}:{year}0120T120000{utc}\r\n"
+            f"DTEND{tzid}:{year}0120T130000{utc}\r\n"
             f"SUMMARY:{summary or self.LABEL + ' probe'}\r\n"
             f"{extra}"
             "END:VEVENT\r\n"
@@ -4745,7 +4748,39 @@ def component_lines(ical, name):
         return []
 
 
-class CheckFloatingEvent(_RawPut, Check):
+class _RoundTrip(_RawPut):
+    """Stores the event ``_body()`` gives, reads it back, and has ``_grade()``
+    judge the server's own text.  Refused is "ungraceful"."""
+
+    ## The probe object's UID and name, and what it is, for the behaviour notes
+    UID = "csc_round_trip"
+    WHAT = "the event"
+    ## More lines for the VEVENT
+    EXTRA = ""
+
+    def _body(self):
+        return self._ical(self.UID, extra=self.EXTRA)
+
+    def _run_check(self) -> None:
+        url = self._url(self.UID)
+        try:
+            status = self._status(self._put(url, self._body()))
+            if status is None:
+                verdict = self._graded("unknown", f"cannot test, {self.WHAT} got no answer")
+            elif not 200 <= status < 300:
+                verdict = self._graded("ungraceful", f"{self.WHAT} is refused ({status})")
+            else:
+                response = self._get(url)
+                if response is None:
+                    verdict = self._graded("unknown", f"cannot test, {self.WHAT} could not be read back")
+                else:
+                    verdict = self._grade(response.raw)
+            self.set_feature(self.FEATURE, verdict)
+        finally:
+            self._delete(url)
+
+
+class CheckFloatingEvent(_RoundTrip, Check):
     """
     Checks whether an event with a floating DTSTART and DTEND (RFC 5545
     section 3.3.5: neither TZID nor 'Z') is stored floating.
@@ -4760,30 +4795,15 @@ class CheckFloatingEvent(_RawPut, Check):
     LABEL = "floating"
     FEATURE = "save-load.event.floating"
     features_to_be_checked = {FEATURE}
+    UID = "csc_floating_event"
+    WHAT = "an event with a floating time"
     PROPERTY = re.compile(r"(DTSTART|DTEND)((?:;[^:]*)?):(.*)")
 
-    def _run_check(self) -> None:
-        url = self._url("csc_floating_event")
-        try:
-            stored = self._put(url, self._ical("csc_floating_event", floating=True))
-            status = self._status(stored)
-            if status is None:
-                self.set_feature(self.FEATURE, self._graded("unknown", "cannot test, a floating event got no answer"))
-            elif not 200 <= status < 300:
-                self.set_feature(
-                    self.FEATURE, self._graded("ungraceful", f"an event with a floating time is refused ({status})")
-                )
-            else:
-                self.set_feature(self.FEATURE, self._grade(self._get(url)))
-        finally:
-            self._delete(url)
+    def _body(self):
+        return self._ical(self.UID, floating=True)
 
-    def _grade(self, response):
-        if response is None:
-            return self._graded("unknown", "cannot test, the floating event could not be read back")
-        times = [
-            match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(response.raw, "VEVENT")) if match
-        ]
+    def _grade(self, raw):
+        times = [match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(raw, "VEVENT")) if match]
         if not times:
             return self._graded("unknown", "cannot test, the event came back without DTSTART")
         for _, params, value in times:
@@ -4800,7 +4820,7 @@ class CheckFloatingEvent(_RawPut, Check):
         return "full"
 
 
-class CheckAttendeeParams(_RawPut, Check):
+class CheckAttendeeParams(_RoundTrip, Check):
     """
     Checks whether the parameters of an ATTENDEE are stored as sent.
 
@@ -4814,6 +4834,8 @@ class CheckAttendeeParams(_RawPut, Check):
     LABEL = "attendee-params"
     FEATURE = "save-load.icalendar.attendee-params"
     features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_params"
+    WHAT = "an event with attendees"
     ## RFC 5545 section 3.2
     DEFAULTS = {"PARTSTAT": "NEEDS-ACTION", "ROLE": "REQ-PARTICIPANT", "CUTYPE": "INDIVIDUAL", "RSVP": "FALSE"}
     ## RFC 6638 section 7.3
@@ -4823,27 +4845,10 @@ class CheckAttendeeParams(_RawPut, Check):
         "mailto:csc-ase@attendee.example.com": {"CN": "Åse", "PARTSTAT": "ACCEPTED"},
     }
 
-    def _run_check(self) -> None:
-        url = self._url("csc_attendee_params")
-        lines = "".join(
-            "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
-            for address, params in self.ATTENDEES.items()
-        )
-        try:
-            stored = self._put(url, self._ical("csc_attendee_params", extra=lines))
-            status = self._status(stored)
-            if status is None:
-                self.set_feature(
-                    self.FEATURE, self._graded("unknown", "cannot test, an event with attendees got no answer")
-                )
-            elif not 200 <= status < 300:
-                self.set_feature(
-                    self.FEATURE, self._graded("ungraceful", f"an event with attendees is refused ({status})")
-                )
-            else:
-                self.set_feature(self.FEATURE, self._grade(self._get(url)))
-        finally:
-            self._delete(url)
+    EXTRA = "".join(
+        "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
+        for address, params in ATTENDEES.items()
+    )
 
     @staticmethod
     def _parse(line):
@@ -4857,11 +4862,9 @@ class CheckAttendeeParams(_RawPut, Check):
             params[name.upper()] = value.strip('"')
         return match[2].lower(), params
 
-    def _grade(self, response):
-        if response is None:
-            return self._graded("unknown", "cannot test, the event with attendees could not be read back")
+    def _grade(self, raw):
         stored = dict(
-            self._parse(line) for line in component_lines(response.raw, "VEVENT") if line.upper().startswith("ATTENDEE")
+            self._parse(line) for line in component_lines(raw, "VEVENT") if line.upper().startswith("ATTENDEE")
         )
         changes, defaults = [], []
         for address, sent in self.ATTENDEES.items():
@@ -4887,6 +4890,89 @@ class CheckAttendeeParams(_RawPut, Check):
         if changes:
             return self._graded("unsupported", *changes, *defaults)
         return self._graded("full", *defaults)
+
+
+class CheckParticipant(_RoundTrip, Check):
+    """
+    Checks whether a PARTICIPANT component (RFC 9073 section 7.1) inside a
+    VEVENT is stored.  CCS and Bedework 3 refuse the event with 403, robur
+    with 400, GMX and Ox with 500 (and Zimbra, reportedly).
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "participant"
+    FEATURE = "save-load.icalendar.participant"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_participant_event"
+    WHAT = "an event with a PARTICIPANT"
+    ## UID and PARTICIPANT-TYPE are the properties section 7.1 requires
+    EXTRA = (
+        "BEGIN:PARTICIPANT\r\n"
+        "UID:csc_participant_1\r\n"
+        "PARTICIPANT-TYPE:ACTIVE\r\n"
+        "CALENDAR-ADDRESS:mailto:csc-participant@attendee.example.com\r\n"
+        "END:PARTICIPANT\r\n"
+    )
+
+    def _grade(self, raw):
+        if "BEGIN:PARTICIPANT" in (line.upper() for line in component_lines(raw, "VEVENT")):
+            return "full"
+        return self._graded("unsupported", "the event is stored without its PARTICIPANT")
+
+
+class CheckVtimezone(_RoundTrip, Check):
+    """
+    Checks whether the VTIMEZONE sent with an event comes back with it.  CCS
+    returns the event's TZID without the VTIMEZONE that defines it.
+
+    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework refuses
+    TZIDs that are tzdata link names, which would hide what is asked here.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "vtimezone"
+    FEATURE = "save-load.icalendar.vtimezone"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_vtimezone_event"
+    WHAT = "an event with a VTIMEZONE"
+    VTIMEZONE = (
+        "BEGIN:VTIMEZONE\r\n"
+        "TZID:Europe/Berlin\r\n"
+        "BEGIN:DAYLIGHT\r\n"
+        "TZOFFSETFROM:+0100\r\n"
+        "TZOFFSETTO:+0200\r\n"
+        "TZNAME:CEST\r\n"
+        "DTSTART:19700329T020000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+        "END:DAYLIGHT\r\n"
+        "BEGIN:STANDARD\r\n"
+        "TZOFFSETFROM:+0200\r\n"
+        "TZOFFSETTO:+0100\r\n"
+        "TZNAME:CET\r\n"
+        "DTSTART:19701025T030000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+        "END:STANDARD\r\n"
+        "END:VTIMEZONE\r\n"
+    )
+
+    def _body(self):
+        return self._ical(self.UID, vtimezone=self.VTIMEZONE)
+
+    def _grade(self, raw):
+        dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
+        tzid = re.search(r";TZID=([^;:]*)", dtstart, re.IGNORECASE)
+        if not tzid:
+            return self._graded("unknown", "cannot test, the event came back without a TZID")
+        tzid = tzid[1].strip('"')
+        defined, inside = set(), False
+        for line in unfolded_lines(raw):
+            if line.upper() in ("BEGIN:VTIMEZONE", "END:VTIMEZONE"):
+                inside = line.upper() == "BEGIN:VTIMEZONE"
+            elif inside and line.upper().startswith("TZID:"):
+                defined.add(line[len("TZID:") :])
+        if tzid in defined:
+            return "full"
+        return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
 
 
 class CheckAttendeePartstat(Check):
