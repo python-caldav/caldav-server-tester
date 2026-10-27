@@ -4941,6 +4941,7 @@ class CheckSearch(Check):
         "search.time-range.event",
         "search.time-range.event.old-dates",
         "search.text.category",
+        "search.text.uid",
         "search.time-range.todo",
         "search.time-range.todo.old-dates",
         "search.comp-type",
@@ -4950,6 +4951,33 @@ class CheckSearch(Check):
         "search.combined-is-logical-and",
         "search.unlimited-time-range",
     }  ## TODO: we can do so much better than this
+
+    def _probe_text_uid(self):
+        """search.text.uid: does a calendar-query with a UID filter answer
+        the one object with that UID?
+
+        iCloud answers any UID filter with 412 (caldav issue 783); a server
+        ignoring the filter returns the whole calendar.  Uses the fixture
+        event csc_event_with_categories, which no other UID contains.
+        """
+        uid = "csc_event_with_categories"
+        try:
+            events = self.checker.calendar.search(uid=uid, event=True, post_filter=False)
+        except (ReportError, AuthorizationError, DAVError):
+            self.set_feature("search.text.uid", "ungraceful")
+            return
+        if len(events) == 1 and str(events[0].icalendar_component.get("UID")) == uid:
+            self.set_feature("search.text.uid", True)
+        elif len(events) > 1:
+            self.set_feature(
+                "search.text.uid",
+                {"support": "unsupported", "behaviour": "objects not matching the UID come back"},
+            )
+        else:
+            self.set_feature(
+                "search.text.uid",
+                {"support": "broken", "behaviour": "the object is not found by its UID"},
+            )
 
     def _check_time_range_with_recent_data(self, cal, tasklist):
         """Test time-range searches using temporary near-future objects.
@@ -5288,6 +5316,7 @@ class CheckSearch(Check):
             self.set_feature("search.text.category", len(events) == 1)
         except (ReportError, AuthorizationError, DAVError):
             self.set_feature("search.text.category", "ungraceful")
+        self._probe_text_uid()
         ## search.combined - category "hands" AND a time-range.  Uses the
         ## in-window "hands" fixture (csc_event_with_categories, <base>-01-07), so
         ## it works regardless of old-date support; only category search is needed.
