@@ -8,6 +8,14 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+Needs a caldav with `forces_uid_ics` documented on `save-load.stable-url` in its `compatibility_hints.py`.
+
+### Fixed
+
+- **`save-load.stable-url`** was probed by storing `<uid>.ics`, which a server that names every object `<uid>.ics` passes.  An object is now also stored under another name.  A server naming it differently is `unsupported`, and `forces_uid_ics: True` is set when the name is `<uid>.ics`, so `get_object_by_uid()` can skip the full scan when a GET of `<uid>.ics` misses.  A PUT that is refused (Zimbra) leaves the verdict as before.
+
 ## 1.7.0 - 2026-10-23
 
 This release works with caldav 3.6.0.  1.6.0 was accidentally released without two probes and a grading fix that caldav 3.6.0's server hints were based on.
