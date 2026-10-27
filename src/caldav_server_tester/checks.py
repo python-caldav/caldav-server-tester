@@ -104,6 +104,10 @@ ENCODE_AT_PROPFIND_BODY = (
     '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>'
 )
 
+## save-load.stable-url: an object stored under a name that is not its UID
+STABLE_URL_PROBE_UID = "csc_stable_url_probe"
+STABLE_URL_PROBE_NAME = "csc_stable_url_probe_name.ics"
+
 
 ## What the report calls a creation answered by a status-less multistatus.
 ## Kept as a constant because the same string is what the server profiles
@@ -2478,6 +2482,23 @@ END:VCALENDAR""",
                 return uid
         return False
 
+    def _probe_ical(self, uid, label):
+        """The one-event calendar the PUT-based probes store, in the fixture window."""
+        year = self.checker.fixture_base_year
+        return (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            f"PRODID:-//caldav-server-tester//{label} probe//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            f"DTSTAMP:{year}0119T120000Z\r\n"
+            f"DTSTART:{year}0119T120000Z\r\n"
+            f"DTEND:{year}0119T130000Z\r\n"
+            f"SUMMARY:{label} probe\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
     def _put_probe_object(self, url, uid):
         """PUT an encode-at probe object at ``url``.
 
@@ -2485,20 +2506,7 @@ END:VCALENDAR""",
         ownCloud shape this probe exists for), and ``None`` when the request
         said nothing either way - ``_encode_at_request`` draws that line.
         """
-        year = self.checker.fixture_base_year
-        ical = (
-            "BEGIN:VCALENDAR\r\n"
-            "VERSION:2.0\r\n"
-            "PRODID:-//caldav-server-tester//url.encode-at probe//EN\r\n"
-            "BEGIN:VEVENT\r\n"
-            f"UID:{uid}\r\n"
-            f"DTSTAMP:{year}0119T120000Z\r\n"
-            f"DTSTART:{year}0119T120000Z\r\n"
-            f"DTEND:{year}0119T130000Z\r\n"
-            "SUMMARY:url.encode-at probe\r\n"
-            "END:VEVENT\r\n"
-            "END:VCALENDAR\r\n"
-        )
+        ical = self._probe_ical(uid, "url.encode-at")
         return self._encode_at_ok(lambda: self.client.put(url, ical, {"Content-Type": "text/calendar; charset=utf-8"}))
 
     def _record_encode_at(self, *observations):
@@ -3253,8 +3261,59 @@ END:VCALENDAR""",
             )
             return
 
+        renamed = self._probe_stored_name(calendar)
+        if renamed is not None:
+            stored_name, reported_name = renamed
+            forced = reported_name == f"{STABLE_URL_PROBE_UID}.ics"
+            consequence = (
+                "only the name <uid>.ics can be constructed"
+                if forced
+                else "a client cannot construct the URL of an object it saved"
+            )
+            node = {
+                "support": "unsupported",
+                "behaviour": (
+                    f"the object stored as {stored_name!r} is reported under the name {reported_name!r}; {consequence}"
+                ),
+            }
+            if forced:
+                ## every object is named <uid>.ics, so a GET of <uid>.ics that
+                ## misses means the object is not there
+                node["forces_uid_ics"] = True
+            self.set_feature("save-load.stable-url", node)
+            return
+
         client_url = calendar.url.join(stored_as)
         self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
+
+    def _probe_stored_name(self, calendar):
+        """Does the server keep the name an object was PUT under?
+
+        Storing ``<uid>.ics`` cannot tell a server that keeps the name from
+        one that names every object ``<uid>.ics``, as the two agree.  So an
+        object is stored under a name that is not its UID, and looked up by
+        UID.  Returns ``(stored name, reported name)`` if the server named it
+        otherwise, and ``None`` if it kept the name or the probe could not
+        tell (a refused PUT, a lookup that finds nothing).
+        """
+        ical = self._probe_ical(STABLE_URL_PROBE_UID, "save-load.stable-url")
+        urls = [calendar.url.join(STABLE_URL_PROBE_NAME), calendar.url.join(f"{STABLE_URL_PROBE_UID}.ics")]
+        try:
+            self.client.put(str(urls[0]), ical, {"Content-Type": "text/calendar; charset=utf-8"})
+            reported = str(calendar.object_by_uid(STABLE_URL_PROBE_UID).url)
+            reported_name = unquote(urlsplit(reported).path).rstrip("/").rsplit("/", 1)[-1]
+            urls.append(calendar.url.join(reported_name))
+        except Exception:
+            return None
+        finally:
+            for url in urls:
+                try:
+                    self.client.delete(str(url))
+                except Exception:
+                    pass
+        if reported_name == STABLE_URL_PROBE_NAME:
+            return None
+        return STABLE_URL_PROBE_NAME, reported_name
 
     @staticmethod
     def _fixtures_by_uid(objects, base):

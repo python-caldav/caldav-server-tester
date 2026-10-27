@@ -57,6 +57,8 @@ def _calendar(handle_url, reported_object_url=None, raises=None) -> Mock:
         url = reported_object_url or handle_url + UID + ".ics"
 
         def object_by_uid(uid):
+            if uid != UID:
+                raise NotFoundError(uid)
             obj = Mock()
             obj.url = URL.objectify(url)
             return obj
@@ -197,3 +199,97 @@ class TestTheRelocationIsDescribedAsTheServerDidIt:
         behaviour = self._behaviour({"support": "unsupported"})
         assert "create-calendar.stable-url" in behaviour
         assert "keeps the name it was stored under" in behaviour
+
+
+NAME_PROBE_UID = "csc_stable_url_probe"
+NAME_PROBE_NAME = "csc_stable_url_probe_name.ics"
+
+
+def _name_probe_calendar(reported_as, put_fails=False, lookup_misses=False, put_status=None) -> tuple[Mock, Mock]:
+    """A calendar that reports the object PUT as the probe's arbitrary name
+    under ``reported_as``, besides the ordinary fixture.  Returns the
+    calendar and the client the PUT and DELETE go through."""
+    calendar = _calendar(ALIAS)
+    ordinary = calendar.object_by_uid
+
+    def object_by_uid(uid):
+        if uid != NAME_PROBE_UID:
+            return ordinary(uid)
+        if lookup_misses:
+            raise NotFoundError(uid)
+        obj = Mock()
+        obj.url = URL.objectify(ALIAS + reported_as)
+        return obj
+
+    calendar.object_by_uid = object_by_uid
+    client = Mock()
+    if put_fails:
+        client.put.side_effect = NotFoundError("refused")
+    if put_status is not None:
+        ## DAVClient.put hands back a refusal as a response, it does not raise
+        client.put.return_value = Mock(status=put_status)
+    return calendar, client
+
+
+def _name_probe(reported_as, **kw) -> tuple[dict, Mock]:
+    calendar, client = _name_probe_calendar(reported_as, **kw)
+    checker = _make_checker()
+    checker._client_obj = client
+    PrepareCalendar(checker)._check_stable_url(calendar)
+    return checker.features_checked.is_supported("save-load.stable-url", dict), client
+
+
+class TestAnObjectStoredUnderAnArbitraryName:
+    """Storing ``<uid>.ics`` cannot tell a server that keeps the name from one
+    that names every object ``<uid>.ics``: the two agree.  So the probe also
+    stores an object under a name that is not its UID."""
+
+    def test_the_name_is_kept(self) -> None:
+        node, client = _name_probe(NAME_PROBE_NAME)
+        assert node["support"] == "full"
+        assert "forces_uid_ics" not in node
+        assert str(client.put.call_args.args[0]) == ALIAS + NAME_PROBE_NAME
+
+    def test_a_server_naming_it_uid_ics_forces_the_convention(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_UID + ".ics")
+        assert node["support"] == "unsupported"
+        assert node["forces_uid_ics"] is True
+        assert NAME_PROBE_NAME in node["behaviour"]
+
+    def test_another_rename_is_unsupported_without_the_convention(self) -> None:
+        node, _ = _name_probe("7f3a9c12-server-assigned.ics")
+        assert node["support"] == "unsupported"
+        assert "forces_uid_ics" not in node
+
+    def test_a_refused_put_leaves_the_verdict_alone(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_NAME, put_fails=True)
+        assert node["support"] == "full"
+
+    def test_a_put_answered_with_a_refusal_leaves_the_verdict_alone(self) -> None:
+        """The Zimbra shape: a 4xx comes back as a response, and the object is
+        not there to be found."""
+        node, _ = _name_probe(NAME_PROBE_NAME, put_status=403, lookup_misses=True)
+        assert node["support"] == "full"
+
+    def test_a_lookup_that_misses_after_an_accepted_put_leaves_the_verdict_alone(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_NAME, lookup_misses=True)
+        assert node["support"] == "full"
+
+    def test_a_forced_name_is_not_described_as_unconstructable(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_UID + ".ics")
+        assert "cannot construct" not in node["behaviour"]
+        assert "<uid>.ics" in node["behaviour"]
+
+    def test_an_unpredictable_name_is_described_as_unconstructable(self) -> None:
+        node, _ = _name_probe("7f3a9c12-server-assigned.ics")
+        assert "cannot construct" in node["behaviour"]
+
+    def test_the_probe_object_is_removed(self) -> None:
+        _, client = _name_probe(NAME_PROBE_UID + ".ics")
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert {ALIAS + NAME_PROBE_NAME, ALIAS + NAME_PROBE_UID + ".ics"} <= deleted
+
+    def test_an_object_the_server_named_itself_is_removed_too(self) -> None:
+        _, client = _name_probe("7f3a9c12-server-assigned.ics")
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert ALIAS + "7f3a9c12-server-assigned.ics" in deleted
