@@ -77,6 +77,18 @@ def _names_ignored(stored, value):
         stored[ical.CalendarColor.tag] = value
 
 
+def _names_answered_with_an_old_value(stored, value):
+    ## OX App Suite on a created calendar: a colour name is answered with the
+    ## value the hex probe wrote last, then with the default
+    if HEX.match(value):
+        stored[ical.CalendarColor.tag] = value
+    elif stored.pop("replayed", None):
+        stored[ical.CalendarColor.tag] = "#CEE7FFFF"
+    else:
+        stored["replayed"] = True
+        stored[ical.CalendarColor.tag] = "#00FF00FF"
+
+
 def _read_only(stored, value):
     pass
 
@@ -113,6 +125,24 @@ def test_server_ignoring_names_supports_calendar_color(original: str | None) -> 
     features = _grade(_names_ignored, original)
     assert _support(features, "calendar-color") == "full"
     assert _support(features, "calendar-color.name") == "unsupported"
+
+
+def test_name_answered_with_old_values_is_fragile() -> None:
+    ## colours the property showed before are no normalisation of the name,
+    ## and what comes back varies with the writes in between; needs an
+    ## original colour, as the default it ends on is that colour
+    features = _grade(_names_answered_with_an_old_value)
+    assert _support(features, "calendar-color") == "full"
+    assert _support(features, "calendar-color.name") == "fragile"
+
+
+def test_normaliser_landing_on_a_known_colour_still_supports_names() -> None:
+    ## "blue" snaps onto the colour the calendar had; "green" is its own
+    def snapping(stored, value):
+        names = {"blue": "#CEE7FFFF", "green": "#008000FF"}
+        stored[ical.CalendarColor.tag] = names.get(value, value)
+
+    assert _support(_grade(snapping), "calendar-color.name") == "full"
 
 
 def test_read_only_colour_is_broken() -> None:

@@ -42,6 +42,7 @@ The behaviours came from calendaring-sync's server compatibility notes: https://
 
 - **`create-calendar.with-supported-component-types`** - back to asking whether a MKCALENDAR naming `VTODO` gives a calendar with that set.  Bedework 5 and SOGo report another set and are `unsupported`; a calendar that reports the set and ignores it is a matter for `.honoured`.
 - **`save-load.stable-url`** was probed by storing `<uid>.ics`, which a server that names every object `<uid>.ics` passes.  An object is now also stored under another name.  A server naming it differently is `unsupported`, and `forces_uid_ics: True` is set when the name is `<uid>.ics`, so `get_object_by_uid()` can skip the full scan when a GET of `<uid>.ics` misses.  Zimbra redirects such a PUT to `<uid>.ics`; the name is read from the Location when the client did not follow it, as with the docker image, which redirects to an internal port.  A refused PUT leaves the verdict as before.
+- **`calendar-color.name`** on OX App Suite was graded `full`.  OX answers a colour name with a colour the property showed earlier, then with its default, depending on the writes in between, and the probe took the first answer for a normalised colour.  Two answers that differ, both colours the property showed before, are now `fragile`.
 
 ## 1.7.0 - 2026-10-23
 

@@ -4371,6 +4371,9 @@ class CheckCalendarProperties(Check):
       * the same value comes back regardless of what was set (the property is
         effectively read-only) -> broken, with a behaviour note (but
         unsupported for calendar-color.name, see below)
+      * the answers differ, but neither is what was written and both are
+        values the property showed earlier, in this probe or another (a server
+        replaying old state, which depends on the writes in between) -> fragile
       * nothing is stored, or the server rejects the property with an error ->
         unsupported (rejecting a nonstandard extension is not an RFC breach)
 
@@ -4386,6 +4389,11 @@ class CheckCalendarProperties(Check):
     ## new value instead of grading the property read-only.
     depends_on = {PrepareCalendar, CheckProppatchDelay}
     features_to_be_checked = {"calendar-color", "calendar-color.name", "calendar-order"}
+    _seen_values: dict[str, set]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._seen_values = {}
 
     def _run_check(self) -> None:
         cal = self.checker.calendar
@@ -4410,6 +4418,11 @@ class CheckCalendarProperties(Check):
             original = cal.get_properties([element()]).get(element.tag)
         except (DAVError, AuthorizationError):
             original = None
+        ## every value this property has shown so far, in this probe or an
+        ## earlier one: a server that answers a write with one of them has
+        ## not stored what was written, nor a version of it
+        seen = self._seen_values.setdefault(element.tag, set())
+        seen.add(original)
         try:
             got1 = self._set_get(element, v1, cal)
             got2 = self._set_get(element, v2, cal)
@@ -4419,12 +4432,25 @@ class CheckCalendarProperties(Check):
             return
         finally:
             self._restore(element, original, cal)
+        known = set(seen)
+        seen.update((got1, got2))
         if not got1 and not got2:
             ## The property was silently dropped.
             self.set_feature(feature, False)
         elif got1 == v1 and got2 == v2:
             ## Round-trips verbatim.
             self.set_feature(feature, True)
+        elif got1 != got2 and got1 in known and got2 in known:
+            ## Neither answer is what was written, yet they differ: the
+            ## server replays values it showed before, depending on the
+            ## writes that went in between (OX App Suite, for names).
+            self.set_feature(
+                feature,
+                {
+                    "support": "fragile",
+                    "behaviour": f"answers {v1!r} and {v2!r} with colours shown before ({got1!r}, then {got2!r})",
+                },
+            )
         elif got1 != got2:
             ## The stored value tracks the input but was transformed by the
             ## server (e.g. the colour name "blue" normalised to a hex value).
@@ -4433,10 +4459,11 @@ class CheckCalendarProperties(Check):
                 {"support": "full", "behaviour": f"value normalised ({v1!r} stored as {got1!r})"},
             )
         else:
-            ## The same value comes back no matter what we set: read-only.
+            ## The input has no effect: the same value comes back no matter
+            ## what we set: read-only.
             self.set_feature(
                 feature,
-                {"support": read_only, "behaviour": f"read-only (set {v1!r}/{v2!r}, both return {got1!r})"},
+                {"support": read_only, "behaviour": f"read-only (set {v1!r}/{v2!r}, got {got1!r}/{got2!r})"},
             )
 
     def _set_get(self, element, value, cal):
