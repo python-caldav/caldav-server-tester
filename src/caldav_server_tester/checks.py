@@ -65,6 +65,10 @@ WRITE_DELAY_UID = "csc_write_delay_probe"
 ## UID of its own rather than reusing the first, because a server that enforces
 ## UID uniqueness within a collection would reject the duplicate and the probe
 ## would learn nothing.  It is removed again as soon as the question is answered.
+## save-load.stable-url: an object stored under a name that is not its UID
+STABLE_URL_PROBE_UID = "csc_stable_url_probe"
+STABLE_URL_PROBE_NAME = "csc_stable_url_probe_name.ics"
+
 ENCODE_AT_UID = "csc_encode_at@example.com"
 ENCODE_AT_ALIAS_UID = "csc_encode_at_alias@example.com"
 
@@ -3040,8 +3044,66 @@ END:VCALENDAR""",
             )
             return
 
+        renamed = self._probe_stored_name(calendar)
+        if renamed is not None:
+            stored_name, reported_name = renamed
+            node = {
+                "support": "unsupported",
+                "behaviour": (
+                    f"the object stored as {stored_name!r} is reported under the name "
+                    f"{reported_name!r}; a client cannot construct the URL of an object it saved"
+                ),
+            }
+            if reported_name == f"{STABLE_URL_PROBE_UID}.ics":
+                ## every object is named <uid>.ics, so a GET of <uid>.ics that
+                ## misses means the object is not there
+                node["forces_uid_ics"] = True
+            self.set_feature("save-load.stable-url", node)
+            return
+
         client_url = calendar.url.join(stored_as)
         self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
+
+    def _probe_stored_name(self, calendar):
+        """Does the server keep the name an object was PUT under?
+
+        Storing ``<uid>.ics`` cannot tell a server that keeps the name from
+        one that names every object ``<uid>.ics``, as the two agree.  So an
+        object is stored under a name that is not its UID, and looked up by
+        UID.  Returns ``(stored name, reported name)`` if the server named it
+        otherwise, and ``None`` if it kept the name or the probe could not
+        tell (a refused PUT, a lookup that finds nothing).
+        """
+        year = self.checker.fixture_base_year
+        ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//caldav-server-tester//save-load.stable-url probe//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{STABLE_URL_PROBE_UID}\r\n"
+            f"DTSTAMP:{year}0119T120000Z\r\n"
+            f"DTSTART:{year}0119T120000Z\r\n"
+            f"DTEND:{year}0119T130000Z\r\n"
+            "SUMMARY:save-load.stable-url probe\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        urls = [calendar.url.join(STABLE_URL_PROBE_NAME), calendar.url.join(f"{STABLE_URL_PROBE_UID}.ics")]
+        try:
+            self.client.put(str(urls[0]), ical, {"Content-Type": "text/calendar; charset=utf-8"})
+            reported = str(calendar.object_by_uid(STABLE_URL_PROBE_UID).url)
+            reported_name = unquote(urlsplit(reported).path).rstrip("/").rsplit("/", 1)[-1]
+        except Exception:
+            return None
+        finally:
+            for url in urls:
+                try:
+                    self.client.delete(str(url))
+                except Exception:
+                    pass
+        if reported_name == STABLE_URL_PROBE_NAME:
+            return None
+        return STABLE_URL_PROBE_NAME, reported_name
 
     @staticmethod
     def _fixtures_by_uid(objects, base):

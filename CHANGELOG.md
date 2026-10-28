@@ -39,6 +39,7 @@ The behaviours came from calendaring-sync's server compatibility notes: https://
 ### Fixed
 
 - **`create-calendar.with-supported-component-types`** - back to asking whether a MKCALENDAR naming `VTODO` gives a calendar with that set.  Bedework 5 and SOGo report another set and are `unsupported`; a calendar that reports the set and ignores it is a matter for `.honoured`.
+- **`save-load.stable-url`** was probed by storing `<uid>.ics`, which a server that names every object `<uid>.ics` passes.  An object is now also stored under another name.  A server naming it differently is `unsupported`, and `forces_uid_ics: True` is set when the name is `<uid>.ics`, so `get_object_by_uid()` can skip the full scan when a GET of `<uid>.ics` misses.  A PUT that is refused (Zimbra) leaves the verdict as before.
 
 ## 1.7.0 - 2026-10-23
 

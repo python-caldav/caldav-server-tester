@@ -385,7 +385,8 @@ this - but a client that builds `<cal>/<uid>.ics` from a UID, or a test that
 stores under an arbitrary name, does.  `save-load.stable-url` (probed in
 `PrepareCalendar`) asks whether the server keeps the URL the client stored
 under; that probe stores under `<uid>.ics`, so a server that accepts only
-that name passes it.  Nothing probes a non-UID name.
+that name passes it.  It also stores under a non-UID name now, and records
+`forces_uid_ics` when the server names the object `<uid>.ics` anyway.
 
 * Zimbra: a PUT to `some-other-name.ics` answers `302` to `<uid>.ics` (on the
   internal port 8443, so caldav following the redirect gets "connection
