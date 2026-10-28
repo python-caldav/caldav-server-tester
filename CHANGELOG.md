@@ -12,6 +12,10 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`.
 
+### Changed
+
+- **`save.no-uid-conflict`** is graded by a plain PUT.  403 or 409 with `CALDAV:no-uid-conflict` (or Cyrus' `CALDAV:unique-scheduling-object-resource`) is `full`; another status with it (Xandikos, Stalwart: 412) is `quirk`.  A refusal without it is `quirk` too, with the extra keys `status` and `precondition`, if nothing was stored at the URL and the same PUT with another UID goes through (SOGo: 409).  A bare 403 stays `ungraceful`.
+
 ### Added
 
 - **`supported-components.property-exists`** (the former `get-supported-components`, now probed), **`supported-components.honoured`** and **`create-calendar.with-supported-component-types.multiple`** - whether a calendar reports the component set, whether it takes exactly the types it lists (and every type where it lists none, RFC 4791 §5.2.3), and whether a MKCALENDAR naming several types gives a calendar taking all of them.  A calendar that reports `[VTODO]` and still takes a VEVENT is `broken` on `.honoured` (Bedework 3.10, DAViCal, Stalwart); CCS refuses a set of several components the §5.3.1.1 way and is `unsupported` on `.multiple`.
@@ -26,6 +30,8 @@ Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`
 - **`sync-token.initial-sync`**, **`sync-token.delete.created-and-deleted`** and **`sync-token.recreated`** - which members a sync-collection report lists: an initial sync with deleted members or the collection itself in it, a member created and deleted between two reports left out, and a re-created member reported twice, or only as removed (Nextcloud, Synology).
 - **`multiget.missing-href`** - whether a calendar-multiget answers a missing href with a 404 entry; Baïkal, Nextcloud, DAViCal, Davis and Infomaniak leave it out, Posteo fails the whole multiget with a 404, and an entry claiming the object exists is broken.
 - **`multiget.limit`**, **`propfind.limit`** and **`search.limit`** - whether a calendar-multiget, a Depth: 1 PROPFIND or a calendar-query answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
+- **`save.no-uid-conflict.if-none-match`** - the same, for a PUT carrying `If-None-Match: *`, as `save(no_overwrite=True)` sends it.  Bedework answers it with a bare 412, but a plain PUT with 403 and the precondition.
+- **`save.no-uid-conflict.href-given`** - whether the precondition names the object holding the UID, as RFC 4791 section 5.3.2.1 says it SHOULD.
 
 The behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
 
