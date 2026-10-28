@@ -8,6 +8,17 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## [Unreleased]
+
+### Changed
+
+- **`save.no-uid-conflict`** is graded by a plain PUT.  403 or 409 with `CALDAV:no-uid-conflict` (or Cyrus' `CALDAV:unique-scheduling-object-resource`) is `full`; another status with it (Xandikos, Stalwart: 412) is `quirk`.  A refusal without it is `quirk` too, with the extra keys `status` and `precondition`, if nothing was stored at the URL and the same PUT with another UID goes through (SOGo: 409).  A bare 403 stays `ungraceful`.
+
+### Added
+
+- **`save.no-uid-conflict.if-none-match`** - the same, for a PUT carrying `If-None-Match: *`, as `save(no_overwrite=True)` sends it.  Bedework answers it with a bare 412, but a plain PUT with 403 and the precondition.
+- **`save.no-uid-conflict.href-given`** - whether the precondition names the object holding the UID, as RFC 4791 section 5.3.2.1 says it SHOULD.
+
 ## 1.7.0 - 2026-10-23
 
 This release works with caldav 3.6.0.  1.6.0 was accidentally released without two probes and a grading fix that caldav 3.6.0's server hints were based on.

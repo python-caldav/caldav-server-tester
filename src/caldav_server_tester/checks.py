@@ -23,6 +23,7 @@ from caldav.lib.error import (
     NotFoundError,
     PutError,
     ReportError,
+    UidConflictError,
     parse_preconditions,
 )
 from caldav.lib.http_sync import CaseInsensitiveDict
@@ -4226,6 +4227,7 @@ class _StatusOnly(NamedTuple):
 
     status: int
     preconditions: tuple = ()
+    body: bytes | None = None
 
 
 class _Unauthorized(int):
@@ -4288,7 +4290,11 @@ class _RawPut:
             return self.client.put(url, ical, headers)
         except AuthorizationError as exc:
             ## 401/403 are raised before a response exists, but they are answers.
-            return _StatusOnly(dav_error_status(exc) or _Unauthorized(), tuple(getattr(exc, "preconditions", ())))
+            return _StatusOnly(
+                dav_error_status(exc) or _Unauthorized(),
+                tuple(getattr(exc, "preconditions", ())),
+                getattr(exc, "body", None),
+            )
         except (DAVError, OSError):
             ## Rate limited for longer than the client waits, or no answer at all.
             return None
@@ -4510,27 +4516,38 @@ class CheckNoUidConflict(_RawPut, Check):
     the calendar already holds is refused.
 
     RFC 4791 section 5.3.2.1 requires it, with the CALDAV:no-uid-conflict
-    precondition.  Radicale answers 409, Xandikos and Stalwart 412, Cyrus 403
-    with RFC 6638's CALDAV:unique-scheduling-object-resource instead.  Where
-    it holds, save(no_overwrite=True) leaves out the UID search before its
-    PUT: If-None-Match: * guards the URL, and this the UID under any other.
-    The second PUT carries If-None-Match: *, as the library's does where
-    save.if-none-match holds.  A
-    refusal without a precondition the library knows (SOGo's bare 409,
-    Bedework's bare 412, Purelymail's no-uid-conflict in the CardDAV
-    namespace) keeps the duplicate out, but the library cannot tell it from
-    any other failed PUT, so it is ungraceful: there the search, and its
-    ConsistencyError, stays.
+    precondition (Cyrus names RFC 6638's CALDAV:unique-scheduling-object-resource
+    instead); 403 or 409 with it, the statuses RFC 4918 section 16 gives a
+    failed precondition, is 'full'.  Xandikos and Stalwart answer 412
+    with it: a 'quirk', since the library goes by the body.
+
+    A refusal without the precondition is a 'quirk' only where it is
+    confirmed to be about the UID: nothing was stored at the URL, and the
+    same PUT with another UID goes through.  The library does the first of
+    those checks itself before it raises UidConflictError.  A bare 403 is
+    'ungraceful' all the same - a read-only calendar answers it too - as is
+    any other bare status outside 4xx, and any refusal failing either check
+    (one of them getting no answer leaves it 'unknown').  The extra keys 'status'
+    and 'precondition' say what a 'quirk' is.
+
+    The parent is graded by a plain PUT, save.no-uid-conflict.if-none-match
+    by one carrying If-None-Match: *, as save(no_overwrite=True) sends it
+    where save.if-none-match holds (Bedework answers that with a bare 412,
+    a plain PUT with 403 and the precondition).
+    save.no-uid-conflict.href-given says whether the precondition names the
+    object holding the UID.
     """
 
     depends_on = {PrepareCalendar, CheckPutEtag}
     LABEL = "no-uid-conflict"
     FEATURE = "save.no-uid-conflict"
-    features_to_be_checked = {FEATURE}
+    IF_NONE_MATCH = "save.no-uid-conflict.if-none-match"
+    HREF = "save.no-uid-conflict.href-given"
+    features_to_be_checked = {FEATURE, IF_NONE_MATCH, HREF}
     UID = "csc_no_uid_conflict"
     NAMES = ("csc_no_uid_conflict_1", "csc_no_uid_conflict_2")
-    ## RFC 4791 section 5.3.2.1 names 403 and 409; Xandikos and Stalwart use 412.
-    REFUSALS = frozenset({403, 409, 412})
+    ## The statuses RFC 4918 section 16 gives a failed precondition
+    RFC_REFUSALS = frozenset({403, 409})
 
     def _run_check(self) -> None:
         first, second = map(self._url, self.NAMES)
@@ -4538,31 +4555,78 @@ class CheckNoUidConflict(_RawPut, Check):
         self._delete(second)
         try:
             if not self._ok(self._put(first, self._ical(self.UID))):
-                self.set_feature(self.FEATURE, None)
+                for feature in (self.FEATURE, self.IF_NONE_MATCH, self.HREF):
+                    self.set_feature(feature, None)
                 return
-            ## With If-None-Match: *, as save(no_overwrite=True) sends it
-            ## (Bedework then refuses with a bare 412) - but only where the
-            ## server handles it, or a 412 may be about the header.
-            inm = self.checker._features_checked.is_supported("save.if-none-match", str) in ("full", "quirk")
-            second_put = self._put(second, self._ical(self.UID), if_none_match="*" if inm else None)
-            self.set_feature(self.FEATURE, self._grade(second_put))
+            hrefs = []
+            self.set_feature(self.FEATURE, self._probe(second, None, hrefs))
+            ## Only where the server handles If-None-Match: *, or a 412 may be about the
+            ## header.  Elsewhere the library never sends it, and the child is left to
+            ## say what the parent says.
+            if self.checker._features_checked.is_supported("save.if-none-match", str) in ("full", "quirk"):
+                self.set_feature(self.IF_NONE_MATCH, self._probe(second, "*", hrefs))
+            ## Explicitly unknown without a precondition: the parent's grade says nothing about it
+            self.set_feature(self.HREF, ("full" if all(hrefs) else "unsupported") if hrefs else None)
         finally:
             for url in (first, second):
                 self._delete(url)
 
-    def _grade(self, response):
+    def _probe(self, url, if_none_match, hrefs):
+        """The grade of a PUT of a second object with the UID to ``url``.
+        Whether a refusal with the precondition names the holder is
+        appended to ``hrefs``."""
+        try:
+            response = self._put(url, self._ical(self.UID), if_none_match=if_none_match)
+            return self._grade(response, url, if_none_match, hrefs)
+        finally:
+            self._delete(url)
+
+    def _grade(self, response, url, if_none_match, hrefs):
         status = self._status(response)
         if status is None:
             return self._graded("unknown", "cannot test, a second object with the same UID got no answer")
         if 200 <= status < 300:
             return self._graded("unsupported", f"a second object with the same UID was stored ({status})")
-        if status in self.REFUSALS:
-            if UID_CONFLICT_PRECONDITIONS.intersection(self._preconditions(response)):
+        if UID_CONFLICT_PRECONDITIONS.intersection(self._preconditions(response)):
+            hrefs.append(UidConflictError(body=self._body(response)).href is not None)
+            if status in self.RFC_REFUSALS:
                 return "full"
+            return self._quirk(status, True, f"refused with {status} and the precondition")
+        if status == 403:
+            return self._graded("ungraceful", f"refused with {status}, without the precondition: may be anything")
+        if not 400 <= status < 500:
+            return self._graded("ungraceful", f"a second object with the same UID was answered with {status}")
+        stored = self._get_status(url)
+        if stored is None:
+            return self._graded("unknown", f"refused with a bare {status}, and a GET of the URL got no answer")
+        if stored != 404:
+            return self._graded("ungraceful", f"refused with a bare {status}, yet a GET of the URL answered {stored}")
+        other = self._put(url, self._ical(self.UID + "-other"), if_none_match=if_none_match)
+        if self._status(other) is None:
             return self._graded(
-                "ungraceful", f"refused with {status}, but without the CALDAV:no-uid-conflict precondition"
+                "unknown", f"refused with a bare {status}, and the same PUT with another UID got no answer"
             )
-        return self._graded("ungraceful", f"a second object with the same UID was answered with {status}")
+        if not self._ok(other):
+            return self._graded(
+                "ungraceful",
+                f"refused with a bare {status}, and so was the same PUT with another UID ({self._status(other)})",
+            )
+        return self._quirk(status, False, f"refused with a bare {status}")
+
+    @staticmethod
+    def _quirk(status, precondition, behaviour):
+        return {"support": "quirk", "status": int(status), "precondition": precondition, "behaviour": behaviour}
+
+    def _get_status(self, url):
+        """The status a GET of ``url`` answers with, None for no answer."""
+        try:
+            return self._status(self.client.request(url))
+        except (DAVError, OSError):
+            return None
+
+    @staticmethod
+    def _body(response):
+        return response.body if isinstance(response, _StatusOnly) else getattr(response, "raw", None)
 
 
 class CheckAttendeePartstat(Check):
