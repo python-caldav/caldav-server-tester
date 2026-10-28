@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -4451,35 +4452,60 @@ class _RawPut:
 
     ## Names the probe in the objects it stores, should one be left behind
     LABEL = "put-etag"
+    ## The checker attribute holding the calendar the probe stores in
+    CALENDAR = "calendar"
 
     def _url(self, name):
-        return str(self.checker.calendar.url.join(f"{name}.ics"))
+        return str(getattr(self.checker, self.CALENDAR).url.join(f"{name}.ics"))
 
-    def _ical(self, uid):
+    def _ical(self, uid, summary=None, floating=False, extra="", vtimezone=None, todo=False):
+        """An event at the fixture year's 20 January 12:00 UTC, or at 12:00
+        wherever the user is with ``floating``, or in the time zone of the
+        ``vtimezone`` text, which goes along; ``extra`` is more lines.  With
+        ``todo``, a task starting then and due an hour later."""
         year = self.checker.fixture_base_year
+        utc = "" if floating or vtimezone else "Z"
+        tzid = f";TZID={re.search(r'^TZID:(.*)$', vtimezone, re.MULTILINE)[1].strip()}" if vtimezone else ""
+        component = "VTODO" if todo else "VEVENT"
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
             f"PRODID:-//caldav-server-tester//{self.LABEL} probe//EN\r\n"
-            "BEGIN:VEVENT\r\n"
+            f"{vtimezone or ''}"
+            f"BEGIN:{component}\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0120T120000Z\r\n"
-            f"DTSTART:{year}0120T120000Z\r\n"
-            f"DTEND:{year}0120T130000Z\r\n"
-            f"SUMMARY:{self.LABEL} probe\r\n"
-            "END:VEVENT\r\n"
+            f"DTSTART{tzid}:{year}0120T120000{utc}\r\n"
+            f"{'DUE' if todo else 'DTEND'}{tzid}:{year}0120T130000{utc}\r\n"
+            f"SUMMARY:{summary or self.LABEL + ' probe'}\r\n"
+            f"{extra}"
+            f"END:{component}\r\n"
             "END:VCALENDAR\r\n"
         )
 
-    def _get_etag(self, url):
-        """The ETag header a GET answers with, or None."""
+    def _get(self, url):
+        """The answer to a GET, or None where it failed."""
         try:
             response = self.client.request(url)
         except (DAVError, OSError):
             return None
-        if not self._ok(response):
+        return response if self._ok(response) else None
+
+    def _get_etag(self, url):
+        """The ETag header a GET answers with, or None."""
+        response = self._get(url)
+        return response.headers.get("Etag") if response is not None else None
+
+    @staticmethod
+    def _answer(request, *args):
+        try:
+            return request(*args)
+        except AuthorizationError as exc:
+            ## 401/403 are raised before a response exists, but they are answers.
+            return _StatusOnly(dav_error_status(exc) or _Unauthorized(), tuple(getattr(exc, "preconditions", ())))
+        except (DAVError, OSError):
+            ## Rate limited for longer than the client waits, or no answer at all.
             return None
-        return response.headers.get("Etag")
 
     def _put(self, url, ical, if_match=None, if_none_match=None):
         headers = {"Content-Type": "text/calendar; charset=utf-8"}
@@ -4487,14 +4513,10 @@ class _RawPut:
             headers["If-Match"] = if_match
         if if_none_match is not None:
             headers["If-None-Match"] = if_none_match
-        try:
-            return self.client.put(url, ical, headers)
-        except AuthorizationError as exc:
-            ## 401/403 are raised before a response exists, but they are answers.
-            return _StatusOnly(dav_error_status(exc) or _Unauthorized(), tuple(getattr(exc, "preconditions", ())))
-        except (DAVError, OSError):
-            ## Rate limited for longer than the client waits, or no answer at all.
-            return None
+        return self._answer(self.client.put, url, ical, headers)
+
+    def _delete_if_match(self, url, etag):
+        return self._answer(self.client.delete, url, {"If-Match": etag})
 
     def _delete(self, url):
         try:
@@ -4550,7 +4572,8 @@ class CheckPutEtag(_RawPut, Check):
     depends_on = {PrepareCalendar}
     WILDCARD = "save-load.mutable.if-match-wildcard"
     IF_NONE_MATCH = "save.if-none-match"
-    features_to_be_checked = {"save.etag", WILDCARD, IF_NONE_MATCH}
+    STORED = "save.etag.matches-stored"
+    features_to_be_checked = {"save.etag", STORED, WILDCARD, IF_NONE_MATCH}
     ## One missing object per condition: an If-Match: * that is ignored or
     ## backwards creates its object, which would then exist for the other.
     MISSING = ("csc_put_etag_missing_1", "csc_put_etag_missing_2")
@@ -4564,7 +4587,14 @@ class CheckPutEtag(_RawPut, Check):
                 self.set_feature(feature, None)
             return
         try:
+            ## Read back before _grade_etag PUTs again: what an update adds
+            ## (LAST-MODIFIED, SEQUENCE) says nothing about the create's ETag
+            stored = self._get(url)
             self._grade_etag(url, ical, created.headers.get("Etag"))
+            ## Whether an unusable ETag matches the stored object is moot:
+            ## left to derive from save.etag
+            if self.checker._features_checked.is_supported("save.etag", str) != "broken":
+                self.set_feature(self.STORED, self._grade_stored(stored, ical, created.headers.get("Etag")))
             ## A run that died half-way may have left a "missing" object behind.
             for name in self.MISSING:
                 self._delete(self._url(name))
@@ -4573,6 +4603,53 @@ class CheckPutEtag(_RawPut, Check):
         finally:
             for probe_url in (url, *map(self._url, self.MISSING)):
                 self._delete(probe_url)
+
+    def _grade_stored(self, response, ical, etag):
+        """RFC 4791 section 5.3.4 lets a server store an object otherwise than
+        sent, but then it MUST NOT answer the PUT with a strong ETag."""
+        if response is None:
+            return self._graded("unknown", "cannot test, the object could not be read back")
+        ## The library turns CRLF into LF in .raw, and keeps the bytes as
+        ## received beside it; without them, line endings can't be compared
+        body = getattr(response, "_raw_body", None)
+        if isinstance(body, bytes) and body:
+            stored = body.decode("utf-8", "replace")
+        else:
+            stored = response.raw if isinstance(response.raw, str) else response.raw.decode("utf-8", "replace")
+            ical = ical.replace("\r\n", "\n")
+            stored = stored.replace("\r\n", "\n")
+        if stored == ical:
+            return "full"
+        what = self._difference(ical, stored)
+        if etag and not etag.startswith("W/"):
+            return self._graded("broken", f"stored with {what}, yet the PUT answered with a strong ETag")
+        return self._graded("full", f"stored with {what}, and the PUT answered without a strong ETag")
+
+    @staticmethod
+    def _difference(sent, stored):
+        """What the server changed, in a few words."""
+
+        def names(lines):
+            return [re.split(r"[;:]", line, maxsplit=1)[0].upper() for line in lines]
+
+        if sent.replace("\r\n", "\n") == stored.replace("\r\n", "\n"):
+            return "other line endings"
+        notes = ["other line endings"] if ("\r\n" in sent) != ("\r\n" in stored) else []
+        sent_lines, stored_lines = unfolded_lines(sent), unfolded_lines(stored)
+        if sent_lines == stored_lines:
+            return ", ".join([*notes, "other folding"])
+        added = [n for n in dict.fromkeys(names(stored_lines)) if n not in names(sent_lines)]
+        removed = [n for n in dict.fromkeys(names(sent_lines)) if n not in names(stored_lines)]
+        changed = [n for line in sent_lines if line not in stored_lines for n in names([line]) if n not in removed]
+        if added:
+            notes.append(f"{' and '.join(added)} added")
+        if removed:
+            notes.append(f"{' and '.join(removed)} removed")
+        if changed:
+            notes.append(f"{' and '.join(dict.fromkeys(changed))} changed")
+        if not (added or removed or changed):
+            notes.append("its properties reordered")
+        return ", ".join(notes)
 
     def _grade_wildcard(self, url, ical):
         """``If-Match: *`` on the existing object grades; the missing object
@@ -4766,6 +4843,499 @@ class CheckNoUidConflict(_RawPut, Check):
                 "ungraceful", f"refused with {status}, but without the CALDAV:no-uid-conflict precondition"
             )
         return self._graded("ungraceful", f"a second object with the same UID was answered with {status}")
+
+
+class CheckDeleteIfMatch(_RawPut, Check):
+    """
+    Checks whether a DELETE carrying an If-Match etag the object no longer
+    has is refused, and one carrying the current etag goes through.
+
+    RFC 9110 section 13.1.1 has the server refuse it with 412.  SOGo refuses
+    a stale If-Match on PUT, but on DELETE it deletes the object anyway.
+    The etags are read with GET, as delete(if_match=True) sends the one the
+    object was loaded with.
+
+    On an object that does not exist, a DELETE answers 404, and RFC 9110
+    section 13.2.1 has the server ignore an If-Match there, since the DELETE
+    fails anyway: 404, not 412.
+    Baikal and Robur answer 412, so delete(if_match=True) on an object
+    someone else deleted reads as an etag mismatch.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "delete-if-match"
+    FEATURE = "delete.if-match"
+    PLAIN = "delete.missing"
+    MISSING = "delete.missing.if-match"
+    features_to_be_checked = {FEATURE, PLAIN, MISSING}
+
+    def _run_check(self) -> None:
+        self._grade_missing()
+        url = self._url("csc_delete_if_match")
+        ical = self._ical("csc_delete_if_match")
+        try:
+            if not self._ok(self._put(url, ical)):
+                self.set_feature(self.FEATURE, None)
+                return
+            stale = self._get_etag(url)
+            changed = self._put(url, self._ical("csc_delete_if_match", summary=f"{self.LABEL} probe changed"))
+            current = self._get_etag(url) if self._ok(changed) else None
+            self.set_feature(self.FEATURE, self._grade(url, stale, current))
+        finally:
+            self._delete(url)
+
+    def _grade(self, url, stale, current):
+        for etag in (stale, current):
+            if not etag or not ENTITY_TAG.fullmatch(etag) or etag.startswith("W/"):
+                return self._graded("unknown", "cannot test, no strong etag for the object")
+        if stale == current:
+            return self._graded("unknown", "cannot test, the etag did not change when the object did")
+        status = self._status(self._delete_if_match(url, stale))
+        if status is None:
+            return self._graded("unknown", "cannot test, a DELETE with a stale If-Match got no answer")
+        if 200 <= status < 300:
+            if self._get(url) is None:
+                return self._graded("broken", f"a DELETE with a stale If-Match deleted the object ({status})")
+            return self._graded("ungraceful", f"a DELETE with a stale If-Match answered {status}, but kept the object")
+        if status != 412:
+            return self._graded("ungraceful", f"a DELETE with a stale If-Match answered {status} rather than 412")
+        status = self._status(self._delete_if_match(url, current))
+        if status is None:
+            return self._graded("unknown", "cannot test, a DELETE with the current If-Match got no answer")
+        if status == 412:
+            return self._graded("unsupported", "a DELETE with the current If-Match is refused with 412 too")
+        if not 200 <= status < 300:
+            return self._graded("ungraceful", f"a DELETE with the current If-Match answered {status}")
+        return "full"
+
+    def _grade_missing(self) -> None:
+        """A DELETE of a missing object, plain and with If-Match."""
+        url = self._url("csc_delete_if_match_missing")
+        status = self._status(self._answer(self.client.delete, url))
+        if status is None:
+            self.set_feature(
+                self.PLAIN, self._graded("unknown", "cannot test, a DELETE of a missing object got no answer")
+            )
+        elif status == 404:
+            self.set_feature(self.PLAIN)
+        elif 200 <= status < 300:
+            self.set_feature(self.PLAIN, self._graded("unsupported", f"a DELETE of a missing object answered {status}"))
+        else:
+            self.set_feature(self.PLAIN, self._graded("ungraceful", f"a DELETE of a missing object answered {status}"))
+        ## RFC 9110 section 13.2.1 has the condition ignored where the request
+        ## would fail without it, so the plain DELETE's failure is the answer
+        plain, status = status, self._status(self._delete_if_match(url, '"csc-never-issued"'))
+        if status is None:
+            verdict = self._graded("unknown", "cannot test, a DELETE with If-Match on a missing object got no answer")
+        elif plain is not None and 200 <= plain < 300:
+            verdict = self._graded("unknown", f"cannot test, a plain DELETE of a missing object answered {plain}")
+        elif status == 404:
+            verdict = "full"
+        elif status == plain:
+            verdict = self._graded("full", f"answered {status}, as a plain DELETE of a missing object is")
+        elif status == 412:
+            verdict = self._graded("unsupported", "a DELETE with If-Match on a missing object answered 412")
+        else:
+            verdict = self._graded("ungraceful", f"a DELETE with If-Match on a missing object answered {status}")
+        self.set_feature(self.MISSING, verdict)
+
+
+def unfolded_lines(ical):
+    """The content lines of an iCalendar text, unfolded (RFC 5545 section 3.1)."""
+    return re.sub(r"\r?\n[ \t]", "", ical).splitlines()
+
+
+def component_lines(ical, name):
+    """The content lines of the first ``name`` component, BEGIN and END left out."""
+    lines = unfolded_lines(ical)
+    try:
+        start = lines.index(f"BEGIN:{name}")
+        return lines[start + 1 : lines.index(f"END:{name}", start)]
+    except ValueError:
+        return []
+
+
+class _RoundTrip(_RawPut):
+    """Stores the object ``_body()`` gives, reads it back, and has ``_grade()``
+    judge the server's own text.  Refused is "ungraceful".
+
+    One object for each of ``COMPONENTS``, the first verdict that is not
+    "full" being the feature's.  A task goes to the task calendar, which is
+    the event calendar where the two mix, and is not probed where tasks cannot
+    be stored: a save-load.todo feature probing tasks only is then left unset,
+    so save-load.todo's status propagates to it, and any other is "unknown",
+    as is every one where there is no task calendar at all."""
+
+    ## The probe object's UID and name, and what it is, for the behaviour notes
+    UID = "csc_round_trip"
+    WHAT = "the event"
+    ## More lines for the VEVENT or VTODO
+    EXTRA = ""
+    COMPONENTS = ("VEVENT",)
+    ## The one being probed
+    component = "VEVENT"
+    CANNOT_STORE = "tasks cannot be stored"
+
+    @property
+    def uid(self):
+        """The UID and name of the object probed now: one per component, so a
+        task never lands where the event was just deleted"""
+        return self.UID if len(self.COMPONENTS) == 1 else f"{self.UID}_{self.component.lower()}"
+
+    def _body(self):
+        return self._ical(self.uid, extra=self.EXTRA, todo=self.component == "VTODO")
+
+    def _run_check(self) -> None:
+        verdict, skipped = None, None
+        for component in self.COMPONENTS:
+            if component == "VTODO":
+                skipped = self._tasks_unstorable()
+                if skipped:
+                    continue
+            self.component = component
+            verdict = self._round_trip()
+            if verdict != "full":
+                if len(self.COMPONENTS) > 1 and isinstance(verdict, dict):
+                    kind = "a task" if component == "VTODO" else "an event"
+                    verdict = {**verdict, "behaviour": f"{verdict['behaviour']}, in {kind}"}
+                break
+        if verdict == "full" and skipped:
+            verdict = self._graded("full", f"probed in an event only, {skipped}")
+        elif verdict is None and (skipped != self.CANNOT_STORE or not self.FEATURE.startswith("save-load.todo.")):
+            verdict = self._graded("unknown", f"cannot test, {skipped}")
+        if verdict is not None:
+            self.set_feature(self.FEATURE, verdict)
+
+    def _tasks_unstorable(self):
+        """Why no task can be probed, or None where one can"""
+        if getattr(self.checker, "tasklist", None) is None:
+            return "there is no task calendar"
+        if not self.checker.features_checked.is_supported("save-load.todo"):
+            return self.CANNOT_STORE
+        return None
+
+    def _round_trip(self):
+        url = self._url(self.uid)
+        try:
+            status = self._status(self._put(url, self._body()))
+            if status is None:
+                return self._graded("unknown", f"cannot test, {self.WHAT} got no answer")
+            if not 200 <= status < 300:
+                return self._graded("ungraceful", f"{self.WHAT} is refused ({status})")
+            response = self._answer(self.client.request, url)
+            if self._ok(response):
+                return self._grade(response.raw)
+            return self._unreadable(self._status(response))
+        finally:
+            self._delete(url)
+
+    @property
+    def CALENDAR(self):
+        return "tasklist" if self.component == "VTODO" else "calendar"
+
+    def _unreadable(self, status):
+        """The verdict where the stored object cannot be read back"""
+        answer = f" ({status})" if status else ""
+        return self._graded("unknown", f"cannot test, {self.WHAT} could not be read back{answer}")
+
+    def _kept(self, raw, name):
+        """``_grade()`` for a probe asking whether property ``name`` is kept"""
+        if any(re.match(rf"{name}[;:]", line, re.IGNORECASE) for line in component_lines(raw, self.component)):
+            return "full"
+        return self._graded("unsupported", f"{name} is dropped")
+
+
+class CheckFloatingEvent(_RoundTrip, Check):
+    """
+    Checks whether an event with a floating DTSTART and DTEND (RFC 5545
+    section 3.3.5: neither TZID nor 'Z') is stored floating.
+
+    SOGo adds a VTIMEZONE for Etc/UTC and gives the times TZID=Etc/UTC.  The
+    server's own text is read rather than a parsed object: the icalendar
+    library writes a TZID=Etc/UTC time back with a 'Z', which the section
+    forbids, so a re-serialised object would look broken where SOGo's is not.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "floating"
+    FEATURE = "save-load.event.floating"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_floating_event"
+    WHAT = "an event with a floating time"
+    PROPERTY = re.compile(r"(DTSTART|DTEND)((?:;[^:]*)?):(.*)")
+
+    def _body(self):
+        return self._ical(self.uid, floating=True)
+
+    def _grade(self, raw):
+        times = [match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(raw, "VEVENT")) if match]
+        if not times:
+            return self._graded("unknown", "cannot test, the event came back without DTSTART")
+        for _, params, value in times:
+            tzid = re.search(r";TZID=([^;]*)", params, re.IGNORECASE)
+            if tzid and value.endswith("Z"):
+                return self._graded(
+                    "broken",
+                    f"a floating time is stored with TZID={tzid[1]} and a 'Z' both, which RFC 5545 section 3.3.5 forbids",
+                )
+            if tzid:
+                return self._graded("unsupported", f"a floating time is stored with TZID={tzid[1]}")
+            if value.endswith("Z"):
+                return self._graded("unsupported", "a floating time is stored as UTC")
+        return "full"
+
+
+class CheckAttendeeParams(_RoundTrip, Check):
+    """
+    Checks whether the parameters of an ATTENDEE are stored as sent.
+
+    A parameter added with RFC 5545's default value changes nothing, nor does
+    SCHEDULE-STATUS, which RFC 6638 has the server set.  SOGo adds RSVP=TRUE,
+    where the default is FALSE.  The event has no ORGANIZER, so it is not a
+    scheduling object resource and the server has no iTIP reason to touch it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "attendee-params"
+    FEATURE = "save-load.icalendar.attendee-params"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_params"
+    WHAT = "an event with attendees"
+    ## RFC 5545 section 3.2
+    DEFAULTS = {"PARTSTAT": "NEEDS-ACTION", "ROLE": "REQ-PARTICIPANT", "CUTYPE": "INDIVIDUAL", "RSVP": "FALSE"}
+    ## RFC 6638 section 7.3
+    SERVER_SET = {"SCHEDULE-STATUS"}
+    ATTENDEES = {
+        "mailto:csc-bob@attendee.example.com": {"CN": "Bob"},
+        "mailto:csc-ase@attendee.example.com": {"CN": "Åse", "PARTSTAT": "ACCEPTED"},
+    }
+
+    EXTRA = "".join(
+        "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
+        for address, params in ATTENDEES.items()
+    )
+
+    @staticmethod
+    def _parse(line):
+        """The address and parameters of an ATTENDEE line."""
+        match = re.fullmatch(r"ATTENDEE((?:;(?:[^:;\"]|\"[^\"]*\")*)*):(.*)", line, re.IGNORECASE)
+        if not match:
+            return None, {}
+        params = {}
+        for param in re.findall(r';((?:[^;"]|"[^"]*")*)', match[1]):
+            name, _, value = param.partition("=")
+            params[name.upper()] = value.strip('"')
+        return match[2].lower(), params
+
+    def _grade(self, raw):
+        stored = dict(
+            self._parse(line) for line in component_lines(raw, "VEVENT") if line.upper().startswith("ATTENDEE")
+        )
+        changes, defaults = [], []
+        for address, sent in self.ATTENDEES.items():
+            if address not in stored:
+                changes.append(f"ATTENDEE {address} is dropped")
+                continue
+            got = stored[address]
+            for name, value in sent.items():
+                if name not in got:
+                    changes.append(f"{name}={value} is dropped")
+                elif got[name] != value and not (name != "CN" and got[name].upper() == value.upper()):
+                    changes.append(f"{name}={value} is changed to {got[name]}")
+            for name, value in got.items():
+                if name in sent:
+                    continue
+                note = f"{name}={value} is added"
+                if name in self.SERVER_SET or self.DEFAULTS.get(name) == value.upper():
+                    defaults.append(f"{name}={value}" if name in self.SERVER_SET else note)
+                else:
+                    changes.append(note)
+        ## Each attendee may get the same addition; say it once
+        changes, defaults = list(dict.fromkeys(changes)), list(dict.fromkeys(defaults))
+        if changes:
+            return self._graded("unsupported", *changes, *defaults)
+        return self._graded("full", *defaults)
+
+
+class CheckParticipant(_RoundTrip, Check):
+    """
+    Checks whether a PARTICIPANT component (RFC 9073 section 7.1) inside a
+    VEVENT is stored.  CCS and Bedework 3 refuse the event with 403, robur
+    with 400, GMX and Ox with 500 (and Zimbra, reportedly).
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "participant"
+    FEATURE = "save-load.icalendar.participant"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_participant_event"
+    WHAT = "an event with a PARTICIPANT"
+    ## UID and PARTICIPANT-TYPE are the properties section 7.1 requires
+    EXTRA = (
+        "BEGIN:PARTICIPANT\r\n"
+        "UID:csc_participant_1\r\n"
+        "PARTICIPANT-TYPE:ACTIVE\r\n"
+        "CALENDAR-ADDRESS:mailto:csc-participant@attendee.example.com\r\n"
+        "END:PARTICIPANT\r\n"
+    )
+
+    def _grade(self, raw):
+        if "BEGIN:PARTICIPANT" in (line.upper() for line in component_lines(raw, "VEVENT")):
+            return "full"
+        return self._graded("unsupported", "the event is stored without its PARTICIPANT")
+
+
+class CheckVtimezone(_RoundTrip, Check):
+    """
+    Checks whether the VTIMEZONE sent with an event comes back with it.  CCS
+    returns the event's TZID without the VTIMEZONE that defines it.
+
+    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework refuses
+    TZIDs that are tzdata link names, which would hide what is asked here.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "vtimezone"
+    FEATURE = "save-load.icalendar.vtimezone"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_vtimezone_event"
+    WHAT = "an event with a VTIMEZONE"
+    VTIMEZONE = (
+        "BEGIN:VTIMEZONE\r\n"
+        "TZID:Europe/Berlin\r\n"
+        "BEGIN:DAYLIGHT\r\n"
+        "TZOFFSETFROM:+0100\r\n"
+        "TZOFFSETTO:+0200\r\n"
+        "TZNAME:CEST\r\n"
+        "DTSTART:19700329T020000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+        "END:DAYLIGHT\r\n"
+        "BEGIN:STANDARD\r\n"
+        "TZOFFSETFROM:+0200\r\n"
+        "TZOFFSETTO:+0100\r\n"
+        "TZNAME:CET\r\n"
+        "DTSTART:19701025T030000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+        "END:STANDARD\r\n"
+        "END:VTIMEZONE\r\n"
+    )
+
+    def _body(self):
+        return self._ical(self.uid, vtimezone=self.VTIMEZONE)
+
+    def _grade(self, raw):
+        dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
+        tzid = re.search(r";TZID=([^;:]*)", dtstart, re.IGNORECASE)
+        if not tzid:
+            return self._graded("unknown", "cannot test, the event came back without a TZID")
+        tzid = tzid[1].strip('"')
+        defined, inside = set(), False
+        for line in unfolded_lines(raw):
+            if line.upper() in ("BEGIN:VTIMEZONE", "END:VTIMEZONE"):
+                inside = line.upper() == "BEGIN:VTIMEZONE"
+            elif inside and line.upper().startswith("TZID:"):
+                defined.add(line[len("TZID:") :])
+        if tzid in defined:
+            return "full"
+        return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
+
+
+class CheckXProperty(_RoundTrip, Check):
+    """
+    Checks whether an X- property (RFC 5545 section 3.8.8.2) is stored, in an
+    event and in a task.  Ox keeps it in an event and drops it from a task.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "x-property"
+    FEATURE = "save-load.icalendar.x-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_x_property_event"
+    WHAT = "an object with an X- property"
+    EXTRA = "X-CALDAV-SERVER-TESTER:kept\r\n"
+    COMPONENTS = ("VEVENT", "VTODO")
+
+    def _grade(self, raw):
+        return self._kept(raw, "X-CALDAV-SERVER-TESTER")
+
+
+class CheckUnknownProperty(_RoundTrip, Check):
+    """
+    Checks whether a property that is neither in RFC 5545 nor an X- one is
+    stored, using ESTIMATED-DURATION on a task.  Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "unknown-property"
+    FEATURE = "save-load.icalendar.unknown-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_unknown_property_task"
+    WHAT = "a task with ESTIMATED-DURATION"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ESTIMATED-DURATION:PT2H\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ESTIMATED-DURATION")
+
+
+class CheckTodoAttendee(_RoundTrip, Check):
+    """
+    Checks whether a task with an ATTENDEE is stored with it.  Ox answers the
+    PUT with 201 and the GET with 404: the task is gone, which is "broken",
+    since the server said it was stored.  A 404 counts only where the same
+    task without the ATTENDEE reads back.  There is no ORGANIZER, so the
+    server has no scheduling reason to touch it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-attendee"
+    FEATURE = "save-load.todo.attendee"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_task"
+    WHAT = "a task with an ATTENDEE"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ATTENDEE;CN=Bob:mailto:csc-bob@attendee.example.com\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ATTENDEE")
+
+    def _unreadable(self, status):
+        if status == 404 and self._plain_task_kept():
+            return self._graded("broken", "the task is accepted, then gone (404)")
+        return super()._unreadable(status)
+
+    def _plain_task_kept(self):
+        """Whether the same task without the ATTENDEE can be read back"""
+        uid = f"{self.UID}_control"
+        url = self._url(uid)
+        try:
+            if not self._ok(self._put(url, self._ical(uid, todo=True))):
+                return False
+            return self._ok(self._answer(self.client.request, url))
+        finally:
+            self._delete(url)
+
+
+class CheckCompletedWithoutStatus(_RoundTrip, Check):
+    """
+    Checks whether a task with COMPLETED but no STATUS keeps its COMPLETED.
+    Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "completed-without-status"
+    FEATURE = "save-load.todo.completed-without-status"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_completed_task"
+    WHAT = "a task with COMPLETED but no STATUS"
+    COMPONENTS = ("VTODO",)
+
+    @property
+    def EXTRA(self):
+        return f"COMPLETED:{self.checker.fixture_base_year}0120T130000Z\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "COMPLETED")
 
 
 class CheckAttendeePartstat(Check):
@@ -6762,12 +7332,102 @@ class CheckSyncToken(Check):
         self._check_invalid_token(cal)
 
 
+class _RawSync:
+    """Raw sync-collection REPORTs on the probe calendar, for probes that
+    need what the library's parser leaves out: statuses, the 507 marker,
+    and a member listed twice.  Set ``cal_url``, ``collection_path`` and
+    ``time_based`` before use."""
+
+    ## _entries' stand-in for the collection listed as one of its own members
+    COLLECTION = "collection"
+
+    def _setup_sync(self) -> bool:
+        """False where sync-collection is not supported well enough to probe."""
+        sync = self.checker.features_checked.is_supported("sync-token", return_type=dict)
+        if sync.get("support") not in ("full", "fragile"):
+            return False
+        self.time_based = sync.get("behaviour") == "time-based"
+        self.cal_url = self.checker.calendar.url.canonical()
+        self.collection_path = unquote(self.cal_url.path).rstrip("/")
+        return True
+
+    def _tick(self) -> None:
+        """Time-based tokens tell apart only changes a second apart."""
+        if self.time_based:
+            time.sleep(1)
+
+    def _name(self, url):
+        return unquote(url.path).rstrip("/").rsplit("/", 1)[-1]
+
+    def _is_collection(self, url):
+        ## The request-URI may come back without its trailing slash, and on
+        ## OX by another path; members of a calendar are never collections
+        path = unquote(url.path)
+        return path.endswith("/") or path.rstrip("/") == self.collection_path
+
+    def _report(self, token, limit):
+        """One raw sync-collection REPORT on the calendar.
+
+        Returns the names of the members it names (changed or removed, and
+        COLLECTION for the collection itself), whether it carries the section
+        3.6 507 marker for the collection, and its token.
+        """
+        (entries, truncated, new_token) = self._entries(token, limit)
+        return ({name for (name, _) in entries}, truncated, new_token)
+
+    def _entries(self, token, limit=None):
+        """Like _report, but every entry in the order given, with its status:
+        the number of a response-level DAV:status (404 for a removed member),
+        or None for an entry with properties (a changed member)."""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<D:sync-collection xmlns:D="DAV:">'
+            f"<D:sync-token>{xml_escape(token)}</D:sync-token>"
+            "<D:sync-level>1</D:sync-level>"
+            + (f"<D:limit><D:nresults>{limit}</D:nresults></D:limit>" if limit else "")
+            + "<D:prop><D:getetag/></D:prop></D:sync-collection>"
+        )
+        response = self.client.report(str(self.cal_url), body, depth=0)
+        if limit and response.status == 507 and "number-of-matches-within-limits" in str(response.raw):
+            raise LimitRefused()
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"sync-collection answered {response.status}")
+        (entries, truncated) = self._parse_entries(response)
+        new_token = response.tree.find(f".//{dav.SyncToken.tag}")
+        return (entries, truncated, new_token.text if new_token is not None else None)
+
+    def _parse_entries(self, response, propstat_status=False):
+        """The members a multistatus names, each with its response-level
+        status (None where it has properties), and whether it carries a 507
+        for the collection.  With ``propstat_status``, an entry whose
+        propstats all fail takes the first propstat's status instead."""
+        entries = []
+        truncated = False
+        for elem in response.tree.iter(dav.Response.tag):
+            href = elem.find(dav.Href.tag)
+            if href is None or not href.text:
+                continue
+            url = self.cal_url.join(href.text)
+            is_collection = self._is_collection(url)
+            status = elem.find(dav.Status.tag)
+            if status is not None and " 507" in (status.text or ""):
+                truncated |= is_collection
+                continue
+            if status is None and propstat_status:
+                failed = elem.findall(f"{dav.PropStat.tag}/{dav.Status.tag}")
+                if failed and not any(re.search(r" 2\d\d\b", f.text or "") for f in failed):
+                    status = failed[0]
+            code = re.search(r" (\d{3})", status.text or "") if status is not None else None
+            entries.append((self.COLLECTION if is_collection else self._name(url), int(code[1]) if code else None))
+        return (entries, truncated)
+
+
 class LimitRefused(Exception):
     """A sync-collection with DAV:limit failed as RFC 6578 section 3.7 says
     a server that cannot truncate must: DAV:number-of-matches-within-limits."""
 
 
-class CheckSyncTokenLimit(Check):
+class CheckSyncTokenLimit(_RawSync, Check):
     """
     Checks DAV:limit in a sync-collection report (RFC 6578 section 3.7), and
     following the checkpoint token of a truncated reply (section 3.6).
@@ -6794,8 +7454,6 @@ class CheckSyncTokenLimit(Check):
     NRESULTS = 2
     MAX_PAGES = 20
     UIDS = ("csc_sync_limit_1", "csc_sync_limit_2", "csc_sync_limit_3")
-    ## _report's stand-in for the collection listed as one of its own members
-    COLLECTION = "collection"
     COLLECTION_NOTE = "lists the collection itself as a member"
     CUT = "the reply is cut at DAV:limit without a 507"
     STUCK = "a 507 without a new token"
@@ -6803,13 +7461,9 @@ class CheckSyncTokenLimit(Check):
     REFUSED = "refused with 507 number-of-matches-within-limits"
 
     def _run_check(self) -> None:
-        sync = self.checker.features_checked.is_supported("sync-token", return_type=dict)
-        if sync.get("support") not in ("full", "fragile"):
+        if not self._setup_sync():
             return
-        self.time_based = sync.get("behaviour") == "time-based"
         cal = self.checker.calendar
-        self.cal_url = cal.url.canonical()
-        self.collection_path = unquote(self.cal_url.path).rstrip("/")
         created = []
         try:
             try:
@@ -6841,11 +7495,6 @@ class CheckSyncTokenLimit(Check):
                     obj.delete()
                 except Exception:
                     pass
-
-    def _tick(self) -> None:
-        """Time-based tokens tell apart only changes a second apart."""
-        if self.time_based:
-            time.sleep(1)
 
     def _grade(self, token, expected, what):
         limit = max(self.NRESULTS, math.ceil(len(expected) / (self.MAX_PAGES // 2)))
@@ -6910,50 +7559,280 @@ class CheckSyncTokenLimit(Check):
             token = new_token
         return (seen, truncated_any, notes)
 
-    def _name(self, url):
-        return unquote(url.path).rstrip("/").rsplit("/", 1)[-1]
 
-    def _is_collection(self, url):
-        ## The request-URI may come back without its trailing slash, and on
-        ## OX by another path; members of a calendar are never collections
-        path = unquote(url.path)
-        return path.endswith("/") or path.rstrip("/") == self.collection_path
+class CheckSyncMembers(_RawPut, _RawSync, Check):
+    """
+    Checks which members a sync-collection report lists.
 
-    def _report(self, token, limit):
-        """One raw sync-collection REPORT on the calendar.
+    RFC 6578 section 3.4: an initial sync (empty token) lists the current
+    members and MUST NOT list removed ones; Radicale lists deleted members
+    with a 404, Stalwart also lists the collection itself.  Section 3.5.2: a
+    member created and deleted between two reports MUST be reported as
+    removed; Xandikos leaves it out, so a client never learns what became of
+    its own create, and so does Stalwart unless a member it had at the token
+    changed in the same interval.  Sections 3.5.1 and 3.2: a member deleted
+    and re-created at one href is reported once, as changed; Stalwart reports
+    it as removed and then changed.
+    https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
+    """
 
-        Returns the names of the members it names (changed or removed, and
-        COLLECTION for the collection itself), whether it carries the section
-        3.6 507 marker for the collection, and its token.
-        """
+    depends_on = {CheckSyncToken}
+    LABEL = "sync-members"
+    INITIAL = "sync-token.initial-sync"
+    TRANSIENT = "sync-token.delete.created-and-deleted"
+    RECREATED = "sync-token.recreated"
+    features_to_be_checked = {INITIAL, TRANSIENT, RECREATED}
+    KEEP = "csc_sync_members_keep"
+    GONE = "csc_sync_members_gone"
+    SHORT_LIVED = "csc_sync_members_transient"
+    AGAIN = "csc_sync_members_recreated"
+
+    def _run_check(self) -> None:
+        self._graded_here = set()
+        if not self._setup_sync():
+            return
+        names = (self.KEEP, self.GONE, self.SHORT_LIVED, self.AGAIN)
+        for name in names:
+            self._delete(self._url(name))
+        try:
+            self._probe()
+        except (DAVError, ReportError) as e:
+            ## A report failing later leaves the verdicts the earlier ones gave
+            for feature in self.features_to_be_checked - self._graded_here:
+                self.set_feature(feature, {"support": "ungraceful", "behaviour": f"sync-collection failed: {e}"})
+        finally:
+            for name in names:
+                self._delete(self._url(name))
+
+    def set_feature(self, feature, value=True):
+        self._graded_here.add(feature)
+        super().set_feature(feature, value)
+
+    def _store(self, name, summary=None) -> bool:
+        return self._ok(self._put(self._url(name), self._ical(name, summary=summary)))
+
+    def _probe(self) -> None:
+        if not all(self._store(name) for name in (self.KEEP, self.AGAIN, self.GONE)):
+            for feature in self.features_to_be_checked:
+                self.set_feature(feature, self._graded("unknown", "cannot test, the probe objects could not be stored"))
+            return
+        self._tick()
+        self._delete(self._url(self.GONE))
+        self._tick()
+        (entries, _, token) = self._entries("")
+        self.set_feature(self.INITIAL, self._grade_initial(entries))
+        self._tick()
+        short_lived = self._store(self.SHORT_LIVED)
+        self._tick()
+        self._delete(self._url(self.SHORT_LIVED))
+        self._tick()
+        ## An interval of its own: Stalwart reports the short-lived member
+        ## only where a member it already had changed in the same interval
+        (entries, _, token) = self._entries(token)
+        if short_lived:
+            self.set_feature(self.TRANSIENT, self._grade_transient(self._statuses(entries, self.SHORT_LIVED)))
+        else:
+            self.set_feature(self.TRANSIENT, self._graded("unknown", "cannot test, the object could not be stored"))
+        self._tick()
+        self._delete(self._url(self.AGAIN))
+        self._tick()
+        ## Nextcloud's trashbin keeps a deleted object's UID and refuses it
+        recreated = self._store(self.AGAIN, summary=f"{self.LABEL} probe again")
+        self._tick()
+        (entries, _, _) = self._entries(token)
+        if recreated:
+            self.set_feature(self.RECREATED, self._grade_recreated(self._statuses(entries, self.AGAIN)))
+        else:
+            self.set_feature(
+                self.RECREATED, self._graded("unknown", "cannot test, a deleted object could not be re-created")
+            )
+
+    @staticmethod
+    def _statuses(entries, name):
+        """The statuses a report lists the member ``name`` with, in order."""
+        return [status for href, status in entries if href == f"{name}.ics"]
+
+    def _grade_initial(self, entries):
+        notes = []
+        names = {name for name, _ in entries}
+        if any(status == 404 for name, status in entries if name != self.COLLECTION):
+            notes.append("lists deleted members with a 404")
+        elif f"{self.GONE}.ics" in names:
+            notes.append("lists a deleted member")
+        if self.COLLECTION in names:
+            notes.append("lists the collection itself")
+        missing = [name for name in (self.KEEP, self.AGAIN) if f"{name}.ics" not in names]
+        if missing:
+            return self._graded("broken", f"{len(missing)} current member(s) not listed", *notes)
+        return self._graded("quirk", *notes) if notes else "full"
+
+    def _grade_transient(self, statuses):
+        if not statuses:
+            return self._graded("unsupported", "a member created and deleted between two reports is not reported")
+        if statuses[-1] != 404:
+            return self._graded("broken", "a member created and deleted between two reports is reported as changed")
+        return "full"
+
+    def _grade_recreated(self, statuses):
+        if not statuses:
+            return self._graded("unsupported", "a member deleted and re-created is not reported")
+        changed = [status for status in statuses if status != 404]
+        if not changed:
+            return self._graded("broken", "a member deleted and re-created is reported as removed only")
+        if statuses == [404, *changed] and len(changed) == 1:
+            return self._graded("quirk", "reported twice: as removed, then as changed")
+        if len(statuses) > 1:
+            return self._graded("quirk", f"reported {len(statuses)} times")
+        return "full"
+
+
+class CheckMultiget(_RawPut, _RawSync, Check):
+    """
+    Checks calendar-multiget for a missing href, and limits on how many
+    members a multiget, a Depth: 1 PROPFIND or a calendar-query answers.
+
+    RFC 4791 section 7.9 gives every requested href an entry, a 404 for a
+    missing one; Baikal leaves it out.  Stalwart answers at most its
+    WebDav.maxResults (2000 by default) members with a 507 for the collection,
+    even to a multiget that asked for fewer than it holds, and to a
+    calendar-query matching more.  None of the requests has a
+    client-side limit to provoke that with, so the probe has to store more
+    objects than the server's limit: CALDAV_SERVER_TESTER_LIMIT_OBJECTS says
+    how many, and without it the limits are not probed.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "multiget"
+    MISSING_HREF = "multiget.missing-href"
+    LIMIT = "multiget.limit"
+    PROPFIND_LIMIT = "propfind.limit"
+    SEARCH_LIMIT = "search.limit"
+    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
+    ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
+    PRESENT = "csc_multiget_present"
+    ABSENT = "csc_multiget_missing"
+    PROPFIND = (
+        '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>'
+    )
+
+    def _run_check(self) -> None:
+        self.cal_url = self.checker.calendar.url.canonical()
+        self.collection_path = unquote(self.cal_url.path).rstrip("/")
+        present = self._url(self.PRESENT)
+        self._delete(self._url(self.ABSENT))
+        try:
+            if self._ok(self._put(present, self._ical(self.PRESENT))):
+                self.set_feature(self.MISSING_HREF, self._grade_missing())
+            else:
+                self.set_feature(self.MISSING_HREF, None)
+        finally:
+            self._delete(present)
+        count = self._object_count()
+        if not count:
+            for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
+                self.set_feature(
+                    feature, {"support": "unknown", "behaviour": f"not probed: set {self.ENV} to a number of objects"}
+                )
+            return
+        self._probe_limits(count)
+
+    def _object_count(self) -> int:
+        try:
+            return max(0, int(os.environ.get(self.ENV, "0")))
+        except ValueError:
+            return 0
+
+    def _multiget(self, names):
+        hrefs = "".join(f"<D:href>{xml_escape(urlsplit(self._url(name)).path)}</D:href>" for name in names)
         body = (
             '<?xml version="1.0" encoding="utf-8"?>'
-            '<D:sync-collection xmlns:D="DAV:">'
-            f"<D:sync-token>{xml_escape(token)}</D:sync-token>"
-            "<D:sync-level>1</D:sync-level>"
-            + (f"<D:limit><D:nresults>{limit}</D:nresults></D:limit>" if limit else "")
-            + "<D:prop><D:getetag/></D:prop></D:sync-collection>"
+            '<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            f"<D:prop><D:getetag/></D:prop>{hrefs}</C:calendar-multiget>"
         )
-        response = self.client.report(str(self.cal_url), body, depth=0)
-        if limit and response.status == 507 and "number-of-matches-within-limits" in str(response.raw):
-            raise LimitRefused()
+        response = self.client.report(str(self.cal_url), body, depth=1)
         if response.status not in (200, 207) or response.tree is None:
-            raise ReportError(f"sync-collection answered {response.status}")
-        members = set()
-        truncated = False
-        for elem in response.tree.iter(dav.Response.tag):
-            href = elem.find(dav.Href.tag)
-            if href is None or not href.text:
-                continue
-            url = self.cal_url.join(href.text)
-            is_collection = self._is_collection(url)
-            status = elem.find(dav.Status.tag)
-            if status is not None and " 507" in (status.text or ""):
-                truncated |= is_collection
-                continue
-            members.add(self.COLLECTION if is_collection else self._name(url))
-        new_token = response.tree.find(f".//{dav.SyncToken.tag}")
-        return (members, truncated, new_token.text if new_token is not None else None)
+            raise ReportError(f"calendar-multiget answered {response.status}")
+        return self._parse_entries(response, propstat_status=True)
+
+    def _grade_missing(self):
+        try:
+            (entries, _) = self._multiget((self.PRESENT, self.ABSENT))
+        except (DAVError, ReportError) as e:
+            return self._graded("ungraceful", f"a multiget naming a missing object failed: {e}")
+        statuses = [status for name, status in entries if name == f"{self.ABSENT}.ics"]
+        if not statuses:
+            return self._graded("unsupported", "a missing href is left out of the multistatus")
+        if statuses[0] is None or 200 <= statuses[0] < 300:
+            answer = "properties" if statuses[0] is None else statuses[0]
+            return self._graded("broken", f"a missing href is answered with {answer}, as if it existed")
+        if statuses[0] != 404:
+            return self._graded("full", f"a missing href is answered with {statuses[0]}")
+        return "full"
+
+    def _probe_limits(self, count) -> None:
+        names = [f"csc_limit_{i:05d}" for i in range(count)]
+        try:
+            stored = sum(self._ok(self._put(self._url(name), self._ical(name))) for name in names)
+            if stored < count:
+                for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
+                    self.set_feature(
+                        feature, self._graded("unknown", f"cannot test, only {stored} of {count} objects were stored")
+                    )
+                return
+            mine = {f"{name}.ics" for name in names}
+            requests = (
+                (self.LIMIT, lambda: self._multiget(names)),
+                (self.PROPFIND_LIMIT, self._propfind),
+                (self.SEARCH_LIMIT, self._calendar_query),
+            )
+            for feature, request in requests:
+                try:
+                    (entries, truncated) = request()
+                except (DAVError, ReportError) as e:
+                    ## A server refusing the whole listing; Stalwart lists up
+                    ## to its limit and adds a 507 for the collection instead
+                    if re.search(r"answered 507\b", str(e)) or dav_error_status(e) == 507:
+                        verdict = self._graded("unsupported", f"the whole answer was a 507, with {count} objects")
+                    else:
+                        verdict = self._graded("ungraceful", f"failed with {count} objects: {e}")
+                    self.set_feature(feature, verdict)
+                    continue
+                seen = len({name for name, status in entries if name in mine and status is None})
+                ## A cap counts the calendar's other members too
+                listed = len({name for name, status in entries if name != self.COLLECTION and status is None})
+                self.set_feature(feature, self._grade_limit(seen, count, truncated, listed))
+        finally:
+            for name in names:
+                self._delete(self._url(name))
+
+    def _calendar_query(self):
+        """Every event in the calendar, raw for the same reason as the multiget"""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            "<D:prop><D:getetag/></D:prop>"
+            '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter>'
+            "</C:calendar-query>"
+        )
+        response = self.client.report(str(self.cal_url), body, depth=1)
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"calendar-query answered {response.status}")
+        return self._parse_entries(response, propstat_status=True)
+
+    def _propfind(self):
+        ## Raw, as for the multiget: caldav's propfind() parses at once and
+        ## raises on the collection's 507, hiding the members listed before it
+        response = self.client.request(str(self.cal_url), "PROPFIND", self.PROPFIND, {"Depth": "1"})
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"PROPFIND answered {response.status}")
+        return self._parse_entries(response)
+
+    def _grade_limit(self, seen, count, truncated, listed):
+        if seen >= count:
+            return self._graded("full", f"no limit up to {count} objects")
+        if truncated:
+            return self._graded("unsupported", f"stops at {listed} members, with a 507")
+        return self._graded("broken", f"lists {seen} of {count} objects, without a 507")
 
 
 class CheckFreeBusyQuery(Check):
