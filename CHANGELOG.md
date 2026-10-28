@@ -10,11 +10,11 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
-Needs a caldav with `forces_uid_ics` documented on `save-load.stable-url` in its `compatibility_hints.py`.
+Needs a caldav with `forces_uid_ics` documented on `save-load.stable-url` in its `compatibility_hints.py`, and one that repeats a redirected PUT for Zimbra to be graded (https://github.com/python-caldav/caldav/pull/837).
 
 ### Fixed
 
-- **`save-load.stable-url`** was probed by storing `<uid>.ics`, which a server that names every object `<uid>.ics` passes.  An object is now also stored under another name.  A server naming it differently is `unsupported`, and `forces_uid_ics: True` is set when the name is `<uid>.ics`, so `get_object_by_uid()` can skip the full scan when a GET of `<uid>.ics` misses.  A PUT that is refused (Zimbra) leaves the verdict as before.
+- **`save-load.stable-url`** was probed by storing `<uid>.ics`, which a server that names every object `<uid>.ics` passes.  An object is now also stored under another name.  A server naming it differently is `unsupported`, and `forces_uid_ics: True` is set when the name is `<uid>.ics`, so `get_object_by_uid()` can skip the full scan when a GET of `<uid>.ics` misses.  Zimbra redirects such a PUT to `<uid>.ics`; the name is read from the Location when the client did not follow it, as with the docker image, which redirects to an internal port.  A refused PUT leaves the verdict as before.
 
 ## 1.7.0 - 2026-10-23
 

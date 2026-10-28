@@ -3239,7 +3239,40 @@ END:VCALENDAR""",
         ## never looked for.  So ask first whether the sub-feature was recorded.
         recorded = self.checker.features_checked.dotted_feature_set_list()
         relocation = recorded.get("create-calendar.stable-url") or {}
-        if relocation.get("support") in ("unsupported", "broken", "ungraceful"):
+        relocated = relocation.get("support") in ("unsupported", "broken", "ungraceful")
+
+        ## Before the collection's address: a rename is the more specific
+        ## thing to say, and only this tells that the name is forced
+        renamed = self._probe_stored_name(calendar)
+        if renamed is not None:
+            stored_name, reported_name = renamed
+            forced = reported_name == f"{STABLE_URL_PROBE_UID}.ics"
+            consequence = (
+                "only the name <uid>.ics can be constructed"
+                if forced
+                else "a client cannot construct the URL of an object it saved"
+            )
+            node = {
+                "support": "unsupported",
+                "behaviour": (
+                    f"the object stored as {stored_name!r} is reported under the name {reported_name!r}; {consequence}"
+                ),
+            }
+            if relocated:
+                ## Zimbra: the name is forced, and the collection moved too -
+                ## '<cal_id>/<uid>.ics' 404s under the alias left behind
+                node["behaviour"] += (
+                    "; the collection does not stay at the address it was created at either "
+                    "(create-calendar.stable-url)"
+                )
+            if forced:
+                ## every object is named <uid>.ics, so a GET of <uid>.ics that
+                ## misses means the object is not there
+                node["forces_uid_ics"] = True
+            self.set_feature("save-load.stable-url", node)
+            return
+
+        if relocated:
             ## Quote what create-calendar.stable-url observed rather than
             ## restating one server's flavour of it: OX leaves a second working
             ## address behind, Zimbra leaves an alias that 404s on child
@@ -3261,28 +3294,6 @@ END:VCALENDAR""",
             )
             return
 
-        renamed = self._probe_stored_name(calendar)
-        if renamed is not None:
-            stored_name, reported_name = renamed
-            forced = reported_name == f"{STABLE_URL_PROBE_UID}.ics"
-            consequence = (
-                "only the name <uid>.ics can be constructed"
-                if forced
-                else "a client cannot construct the URL of an object it saved"
-            )
-            node = {
-                "support": "unsupported",
-                "behaviour": (
-                    f"the object stored as {stored_name!r} is reported under the name {reported_name!r}; {consequence}"
-                ),
-            }
-            if forced:
-                ## every object is named <uid>.ics, so a GET of <uid>.ics that
-                ## misses means the object is not there
-                node["forces_uid_ics"] = True
-            self.set_feature("save-load.stable-url", node)
-            return
-
         client_url = calendar.url.join(stored_as)
         self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
 
@@ -3295,12 +3306,28 @@ END:VCALENDAR""",
         UID.  Returns ``(stored name, reported name)`` if the server named it
         otherwise, and ``None`` if it kept the name or the probe could not
         tell (a refused PUT, a lookup that finds nothing).
+
+        A redirect the client did not follow names the object too: Zimbra
+        answers a PUT under another name with a 302 to ``<uid>.ics`` and
+        stores nothing.  caldav repeats the PUT there, but not on another
+        port, and the docker image redirects to its internal one.  The name
+        is read from the Location, whatever its host and port.
         """
         ical = self._probe_ical(STABLE_URL_PROBE_UID, "save-load.stable-url")
         urls = [calendar.url.join(STABLE_URL_PROBE_NAME), calendar.url.join(f"{STABLE_URL_PROBE_UID}.ics")]
         try:
-            self.client.put(str(urls[0]), ical, {"Content-Type": "text/calendar; charset=utf-8"})
-            reported = str(calendar.object_by_uid(STABLE_URL_PROBE_UID).url)
+            response = self.client.put(str(urls[0]), ical, {"Content-Type": "text/calendar; charset=utf-8"})
+            location = response.headers.get("Location")
+            if 300 <= response.status < 400 and location:
+                ## only an object's name; a login page or the like says nothing
+                if not urlsplit(location).path.endswith(".ics"):
+                    return None
+                reported = location
+            else:
+                reported = str(calendar.object_by_uid(STABLE_URL_PROBE_UID).url)
+                ## where the server has it, which need not be under the
+                ## address this run holds (Zimbra's cal_id alias)
+                urls.append(reported)
             reported_name = unquote(urlsplit(reported).path).rstrip("/").rsplit("/", 1)[-1]
             urls.append(calendar.url.join(reported_name))
         except Exception:
