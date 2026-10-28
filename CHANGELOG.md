@@ -32,6 +32,7 @@ Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`
 - **`multiget.limit`**, **`propfind.limit`** and **`search.limit`** - whether a calendar-multiget, a Depth: 1 PROPFIND or a calendar-query answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
 - **`save.no-uid-conflict.if-none-match`** - the same, for a PUT carrying `If-None-Match: *`, as `save(no_overwrite=True)` sends it.  Bedework answers it with a bare 412, but a plain PUT with 403 and the precondition.
 - **`save.no-uid-conflict.href-given`** - whether the precondition names the object holding the UID, as RFC 4791 section 5.3.2.1 says it SHOULD.
+- **`search.text.uid`** - whether a calendar-query with a UID filter answers the one object with that UID.  iCloud answers it with 412 (`ungraceful`), so `get_object_by_uid()` and what is built on it fail there.  See https://github.com/python-caldav/caldav/issues/783.
 
 The behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
 
