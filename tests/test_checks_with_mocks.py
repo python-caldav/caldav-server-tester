@@ -740,6 +740,7 @@ class TestPrepareCalendar:
 
         mock_calendar.save_object = save_object
         principal.calendar.return_value = mock_calendar
+        principal.calendars.return_value = [mock_calendar]
 
         check = PrepareCalendar(checker)
         check.run_check()
@@ -810,12 +811,132 @@ class TestPrepareCalendar:
 
         mock_calendar.save_object = save_object
         principal.calendar.return_value = mock_calendar
+        principal.calendars.return_value = [mock_calendar]
 
         check = PrepareCalendar(checker)
         check.run_check()
 
         # Should set event save/load feature
         assert checker.features_checked.is_supported("save-load.event")
+
+
+class TestGhostCalendar:
+    """A calendar this tool deleted may linger at its cal_id.
+
+    Zimbra 10 relocates a calendar created with a display name, and after the
+    relocated calendar is deleted the old path keeps answering PROPFIND and
+    REPORT for a while - with no objects, absent from the calendar listing,
+    and answering 500 to every PUT.  A DELETE of it is answered 204 and changes
+    nothing, but a MKCALENDAR at the cal_id replaces it.  A leftover found under
+    one of our cal_ids is replaced only when the principal does not list it and
+    a write into it fails, so a calendar that works is never replaced, whatever
+    the server's listing says.
+    """
+
+    CAL_ID = "caldav-server-checker-calendar"
+    NAME = "Calendar for checking server feature support"
+    HOME = "https://caldav.example.com/dav/user%40example.com/"
+
+    def _calendar(self, path, name, writable=True, home=None):
+        cal = Mock()
+        cal.url = (home or self.HOME) + path
+        cal.get_display_name.return_value = name
+        if not writable:
+            cal.save_object.side_effect = DAVError("500 Internal Server Error")
+        return cal
+
+    def _check(self, found, listed):
+        checker, _client, principal = TestPrepareCalendar().create_checker_with_calendar()
+        checker.fixture_base_year = 2027
+        principal.calendar.return_value = found
+        if isinstance(listed, Exception):
+            principal.calendars.side_effect = listed
+        else:
+            principal.calendars.return_value = listed
+        principal.make_calendar.return_value = self._calendar("new/", self.NAME)
+        return PrepareCalendar(checker), checker, principal
+
+    def _ghost(self, suffix=""):
+        return self._calendar(self.CAL_ID + suffix + "/", self.NAME, writable=False)
+
+    def test_unlisted_unwritable_calendar_is_replaced(self) -> None:
+        check, checker, principal = self._check(self._ghost(), [self._calendar("Calendar/", "Calendar")])
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        principal.make_calendar.assert_called_once()
+        assert principal.make_calendar.call_args.kwargs["cal_id"] == self.CAL_ID
+        assert checker.calendar is principal.make_calendar.return_value
+        assert checker.calendar_was_created
+
+    def test_unlisted_writable_calendar_is_reused(self) -> None:
+        """A server whose listing leaves the calendar out keeps its leftover;
+        the write probe is removed again."""
+        found = self._calendar(self.CAL_ID + "/", self.NAME)
+        check, checker, principal = self._check(found, [])
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        principal.make_calendar.assert_not_called()
+        assert checker.calendar is found
+        found.save_object.return_value.delete.assert_called_once()
+
+    @pytest.mark.parametrize("error", [DAVError("no listing"), ConnectionError("reset"), ValueError("bad XML")])
+    def test_failed_listing_falls_back_to_the_write_probe(self, error) -> None:
+        found = self._calendar(self.CAL_ID + "/", self.NAME)
+        check, checker, principal = self._check(found, error)
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        principal.make_calendar.assert_not_called()
+        assert checker.calendar is found
+
+    @pytest.mark.parametrize(
+        "home",
+        [
+            "https://caldav.example.com/dav/user@example.com/",
+            "http://backend.example.com:8080/dav/user%40example.com/",
+            "https://CalDAV.example.com:443/dav/user%40example.com/",
+        ],
+    )
+    def test_listed_under_another_spelling_is_reused(self, home) -> None:
+        found = self._ghost()
+        listed = self._calendar(self.CAL_ID, None, home=home)
+        check, checker, principal = self._check(found, [listed])
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        principal.make_calendar.assert_not_called()
+        found.save_object.assert_not_called()
+        assert checker.calendar is found
+
+    def test_relocated_leftover_is_used_where_it_is_listed(self) -> None:
+        """Zimbra lists a live relocated calendar under its display-name path,
+        while its cal_id may resolve to a ghost - the listed one is used."""
+        relocated = self._calendar("Calendar%20for%20checking%20server%20feature%20support/", self.NAME)
+        check, checker, principal = self._check(self._ghost(), [relocated])
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        principal.make_calendar.assert_not_called()
+        assert checker.calendar is relocated
+
+    def test_unreadable_listed_name_is_skipped(self) -> None:
+        shared = self._calendar("shared/", None)
+        shared.get_display_name.side_effect = DAVError("403 Forbidden")
+        relocated = self._calendar("relocated/", self.NAME)
+        check, checker, principal = self._check(self._ghost(), [shared, relocated])
+        check._find_or_create_calendar(self.CAL_ID, self.NAME, {})
+        assert checker.calendar is relocated
+
+    @pytest.mark.parametrize(
+        "suffix, prepare, attribute",
+        [("_tasks", "_prepare_task_calendar", "tasklist"), ("_journals", "_prepare_journal_calendar", "journallist")],
+    )
+    def test_unlisted_unwritable_component_calendar_is_replaced(self, suffix, prepare, attribute) -> None:
+        check, checker, principal = self._check(self._ghost(suffix), [])
+        calls = []
+
+        def add_if_not_existing(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise DAVError("refused in the main calendar")
+            return Mock()
+
+        getattr(check, prepare)(self.CAL_ID, self.NAME, add_if_not_existing)
+        principal.make_calendar.assert_called_once()
+        assert principal.make_calendar.call_args.kwargs["cal_id"] == self.CAL_ID + suffix
+        assert getattr(checker, attribute) is principal.make_calendar.return_value
 
 
 class TestCheckSearch:

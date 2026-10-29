@@ -1872,7 +1872,7 @@ class PrepareCalendar(Check):
             if user_specified:
                 calendar = self.checker.principal.calendar(name=name)
             else:
-                calendar = self.checker.principal.calendar(cal_id=cal_id)
+                calendar = self._own_calendar(cal_id)
             ## At least one out of those two will raise NotFoundError if calendar doesn't exist
             calendar.get_display_name()
             calendar.events()
@@ -1910,6 +1910,65 @@ class PrepareCalendar(Check):
         self.checker.tasklist = calendar
         self.checker.journallist = calendar
 
+    ## UID of the object _own_calendar writes to tell a ghost from a calendar;
+    ## the csc_ prefix keeps it inside the cleanup sweep should the run die.
+    GHOST_PROBE_UID = "csc_ghost_probe"
+
+    def _own_calendar(self, cal_id, component=Event):
+        """The calendar an earlier run left under one of our cal_ids.
+
+        Raises NotFoundError when there is none, and also for a ghost.  Zimbra
+        10 relocates a calendar created with a display name, and for a while
+        after the relocated calendar is deleted the old path still resolves -
+        to an empty calendar, absent from the listing, answering 500 to every
+        PUT.  A DELETE of it changes nothing, but a MKCALENDAR at the cal_id
+        replaces it.
+
+        A calendar the principal lists, by path or by display name, is used as
+        listed: where the cal_id is a ghost, the listed one is the live one.
+        One that is not listed - or whose listing fails - is put to a write of
+        ``component``, and is a ghost only when that fails, so a calendar that
+        works is never replaced, whatever the server's listing says.
+        """
+        calendar = self.checker.principal.calendar(cal_id=cal_id)
+        name = calendar.get_display_name()
+        listed = self._listed_calendar(calendar, name)
+        if listed is not None:
+            return listed
+        try:
+            probe = calendar.save_object(
+                component, uid=self.GHOST_PROBE_UID, summary="ghost probe", dtstart=datetime.now(utc)
+            )
+        except Exception as e:
+            raise NotFoundError(f"{calendar.url} answers, but is not listed and refuses a write: {e}") from e
+        with contextlib.suppress(Exception):
+            probe.delete()
+        return calendar
+
+    def _listed_calendar(self, calendar, name):
+        """The calendar the principal lists at ``calendar``'s path, or else
+        under display name ``name``; None when there is none or the listing
+        fails.  A listed calendar whose name cannot be read is skipped."""
+        try:
+            listed = list(self.checker.principal.calendars())
+        except Exception:
+            return None
+
+        def path(cal):
+            return unquote(urlsplit(str(cal.url)).path).rstrip("/")
+
+        for other in listed:
+            if path(other) == path(calendar):
+                return calendar
+        if name:
+            for other in listed:
+                try:
+                    if other.get_display_name() == name:
+                        return other
+                except Exception:
+                    continue
+        return None
+
     def _prepare_task_calendar(self, cal_id, name, add_if_not_existing):
         """Handle task calendar setup and save-load.todo / save-load.todo.mixed-calendar features."""
         base = self.checker.fixture_base_year
@@ -1925,7 +1984,7 @@ class PrepareCalendar(Check):
             self.set_feature("save-load.todo.mixed-calendar")
         except Exception:
             try:
-                tasklist = self.checker.principal.calendar(cal_id=f"{cal_id}_tasks")
+                tasklist = self._own_calendar(f"{cal_id}_tasks", Todo)
                 tasklist.todos()
             except Exception:
                 tasklist = self.checker.principal.make_calendar(
@@ -1966,7 +2025,7 @@ class PrepareCalendar(Check):
         except Exception:
             journallist = None
             try:
-                journallist = self.checker.principal.calendar(cal_id=f"{cal_id}_journals")
+                journallist = self._own_calendar(f"{cal_id}_journals", Journal)
                 journallist.journals()
             except Exception:
                 try:
