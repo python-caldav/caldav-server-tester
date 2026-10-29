@@ -497,3 +497,13 @@ a production Zimbra, not the podman one):
   xandikos.  Reproduce: is it the number of UIDs, Zimbra's UID search (it
   ignores text-match, so each lookup fetches the whole list), or plann's
   handling of several UIDs?
+
+# Follow caldav's rename of the `zimbra` profile
+
+caldav (after 3.6.0) renames the `zimbra` compatibility profile `zimbra_8_8`
+and adds `zimbra_10_1`; the old name still resolves, with a warning.  Once this
+tool requires that caldav, update what still names `zimbra`: the
+`--caldav-features zimbra --diff` example in USAGE.md, the `--caldav-features`
+help text in caldav_server_tester.py, and the docstring in checks.py that
+points at "the `zimbra` entry" of caldav's hints.  Not before: CI tests
+against the released caldav, which has no `zimbra_8_8`.
