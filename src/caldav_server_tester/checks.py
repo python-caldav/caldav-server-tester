@@ -1431,8 +1431,8 @@ class CheckMakeDeleteCalendar(Check):
         * ``propfind.displayname`` - can DAV:displayname be read back via PROPFIND?
 
         Zimbra quirks deliberately NOT probed here (each could merit its own
-        dedicated probe one day; mirrored in the ``zimbra`` entry of caldav's
-        ``compatibility_hints.py``):
+        dedicated probe one day; mirrored in the ``zimbra_8_8`` and
+        ``zimbra_10_1`` entries of caldav's ``compatibility_hints.py``):
 
         * The calendar URL only becomes unstable when a display name is supplied
           at creation - a nameless MKCALENDAR stays put at the requested cal_id.

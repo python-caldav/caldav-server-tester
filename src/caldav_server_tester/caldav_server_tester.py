@@ -313,7 +313,7 @@ def _check_server(
 )
 @click.option(
     "--caldav-features",
-    help="Server compatibility features preset (e.g., 'stalwart', 'zimbra', 'sogo')",
+    help="Server compatibility features preset (e.g., 'stalwart', 'zimbra_10_1', 'sogo')",
     metavar="FEATURES",
 )
 @click.option(
