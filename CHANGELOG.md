@@ -10,9 +10,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
-Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`.
-
-Needs a caldav with `forces_uid_ics` documented on `save-load.stable-url` in its `compatibility_hints.py`, and one that repeats a redirected PUT for Zimbra to be graded (https://github.com/python-caldav/caldav/pull/837).
+Needs caldav 3.7.0, which has the features below in its `compatibility_hints.py`, `forces_uid_ics` on `save-load.stable-url`, and repeats a redirected PUT, which Zimbra needs to be graded.
 
 ### Changed
 
@@ -32,11 +30,11 @@ Needs a caldav with `forces_uid_ics` documented on `save-load.stable-url` in its
 - **`sync-token.initial-sync`**, **`sync-token.delete.created-and-deleted`** and **`sync-token.recreated`** - which members a sync-collection report lists: an initial sync with deleted members or the collection itself in it, a member created and deleted between two reports left out, and a re-created member reported twice, or only as removed (Nextcloud, Synology).
 - **`multiget.missing-href`** - whether a calendar-multiget answers a missing href with a 404 entry; Baïkal, Nextcloud, DAViCal, Davis and Infomaniak leave it out, Posteo fails the whole multiget with a 404, and an entry claiming the object exists is broken.
 - **`multiget.limit`**, **`propfind.limit`** and **`search.limit`** - whether a calendar-multiget, a Depth: 1 PROPFIND or a calendar-query answers every member, however many.  Stalwart stops at its `maxResults` with a 507.  These store as many objects as `CALDAV_SERVER_TESTER_LIMIT_OBJECTS` says, and are not probed without it.
-- **`save.no-uid-conflict.if-none-match`** - the same, for a PUT carrying `If-None-Match: *`, as `save(no_overwrite=True)` sends it.  Bedework answers it with a bare 412, but a plain PUT with 403 and the precondition.
+- **`save.no-uid-conflict.if-none-match`** - what `save.no-uid-conflict` asks, for a PUT carrying `If-None-Match: *`, as `save(no_overwrite=True)` sends it.  Bedework answers it with a bare 412, but a plain PUT with 403 and the precondition.
 - **`save.no-uid-conflict.href-given`** - whether the precondition names the object holding the UID, as RFC 4791 section 5.3.2.1 says it SHOULD.
 - **`search.text.uid`** - whether a calendar-query with a UID filter answers the one object with that UID.  iCloud answers it with 412 (`ungraceful`), so `get_object_by_uid()` and what is built on it fail there.  See https://github.com/python-caldav/caldav/issues/783.
 
-The behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
+The DELETE, ETag, sync-token, multiget and limit behaviours came from calendaring-sync's server compatibility notes: https://github.com/PyCalendar/calendaring-sync/blob/c40782bc7afe7b350fe63bf27ef13374c280ea8b/docs/reference/server-compatibility.rst
 
 ### Fixed
 
