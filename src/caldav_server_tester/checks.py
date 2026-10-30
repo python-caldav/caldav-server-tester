@@ -4249,27 +4249,34 @@ class _RawPut:
 
     ## Names the probe in the objects it stores, should one be left behind
     LABEL = "put-etag"
+    ## The checker attribute holding the calendar the probe stores in
+    CALENDAR = "calendar"
 
     def _url(self, name):
-        return str(self.checker.calendar.url.join(f"{name}.ics"))
+        return str(getattr(self.checker, self.CALENDAR).url.join(f"{name}.ics"))
 
-    def _ical(self, uid, summary=None, floating=False, extra=""):
+    def _ical(self, uid, summary=None, floating=False, extra="", vtimezone=None, todo=False):
         """An event at the fixture year's 20 January 12:00 UTC, or at 12:00
-        wherever the user is with ``floating``; ``extra`` is more lines."""
+        wherever the user is with ``floating``, or in the time zone of the
+        ``vtimezone`` text, which goes along; ``extra`` is more lines.  With
+        ``todo``, a task starting then and due an hour later."""
         year = self.checker.fixture_base_year
-        utc = "" if floating else "Z"
+        utc = "" if floating or vtimezone else "Z"
+        tzid = f";TZID={re.search(r'^TZID:(.*)$', vtimezone, re.MULTILINE)[1].strip()}" if vtimezone else ""
+        component = "VTODO" if todo else "VEVENT"
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
             f"PRODID:-//caldav-server-tester//{self.LABEL} probe//EN\r\n"
-            "BEGIN:VEVENT\r\n"
+            f"{vtimezone or ''}"
+            f"BEGIN:{component}\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0120T120000Z\r\n"
-            f"DTSTART:{year}0120T120000{utc}\r\n"
-            f"DTEND:{year}0120T130000{utc}\r\n"
+            f"DTSTART{tzid}:{year}0120T120000{utc}\r\n"
+            f"{'DUE' if todo else 'DTEND'}{tzid}:{year}0120T130000{utc}\r\n"
             f"SUMMARY:{summary or self.LABEL + ' probe'}\r\n"
             f"{extra}"
-            "END:VEVENT\r\n"
+            f"END:{component}\r\n"
             "END:VCALENDAR\r\n"
         )
 
@@ -4745,7 +4752,97 @@ def component_lines(ical, name):
         return []
 
 
-class CheckFloatingEvent(_RawPut, Check):
+class _RoundTrip(_RawPut):
+    """Stores the object ``_body()`` gives, reads it back, and has ``_grade()``
+    judge the server's own text.  Refused is "ungraceful".
+
+    One object for each of ``COMPONENTS``, the first verdict that is not
+    "full" being the feature's.  A task goes to the task calendar, which is
+    the event calendar where the two mix, and is not probed where tasks cannot
+    be stored: a save-load.todo feature probing tasks only is then left unset,
+    so save-load.todo's status propagates to it, and any other is "unknown",
+    as is every one where there is no task calendar at all."""
+
+    ## The probe object's UID and name, and what it is, for the behaviour notes
+    UID = "csc_round_trip"
+    WHAT = "the event"
+    ## More lines for the VEVENT or VTODO
+    EXTRA = ""
+    COMPONENTS = ("VEVENT",)
+    ## The one being probed
+    component = "VEVENT"
+    CANNOT_STORE = "tasks cannot be stored"
+
+    @property
+    def uid(self):
+        """The UID and name of the object probed now: one per component, so a
+        task never lands where the event was just deleted"""
+        return self.UID if len(self.COMPONENTS) == 1 else f"{self.UID}_{self.component.lower()}"
+
+    def _body(self):
+        return self._ical(self.uid, extra=self.EXTRA, todo=self.component == "VTODO")
+
+    def _run_check(self) -> None:
+        verdict, skipped = None, None
+        for component in self.COMPONENTS:
+            if component == "VTODO":
+                skipped = self._tasks_unstorable()
+                if skipped:
+                    continue
+            self.component = component
+            verdict = self._round_trip()
+            if verdict != "full":
+                if len(self.COMPONENTS) > 1 and isinstance(verdict, dict):
+                    kind = "a task" if component == "VTODO" else "an event"
+                    verdict = {**verdict, "behaviour": f"{verdict['behaviour']}, in {kind}"}
+                break
+        if verdict == "full" and skipped:
+            verdict = self._graded("full", f"probed in an event only, {skipped}")
+        elif verdict is None and (skipped != self.CANNOT_STORE or not self.FEATURE.startswith("save-load.todo.")):
+            verdict = self._graded("unknown", f"cannot test, {skipped}")
+        if verdict is not None:
+            self.set_feature(self.FEATURE, verdict)
+
+    def _tasks_unstorable(self):
+        """Why no task can be probed, or None where one can"""
+        if getattr(self.checker, "tasklist", None) is None:
+            return "there is no task calendar"
+        if not self.checker.features_checked.is_supported("save-load.todo"):
+            return self.CANNOT_STORE
+        return None
+
+    def _round_trip(self):
+        url = self._url(self.uid)
+        try:
+            status = self._status(self._put(url, self._body()))
+            if status is None:
+                return self._graded("unknown", f"cannot test, {self.WHAT} got no answer")
+            if not 200 <= status < 300:
+                return self._graded("ungraceful", f"{self.WHAT} is refused ({status})")
+            response = self._answer(self.client.request, url)
+            if self._ok(response):
+                return self._grade(response.raw)
+            return self._unreadable(self._status(response))
+        finally:
+            self._delete(url)
+
+    @property
+    def CALENDAR(self):
+        return "tasklist" if self.component == "VTODO" else "calendar"
+
+    def _unreadable(self, status):
+        """The verdict where the stored object cannot be read back"""
+        answer = f" ({status})" if status else ""
+        return self._graded("unknown", f"cannot test, {self.WHAT} could not be read back{answer}")
+
+    def _kept(self, raw, name):
+        """``_grade()`` for a probe asking whether property ``name`` is kept"""
+        if any(re.match(rf"{name}[;:]", line, re.IGNORECASE) for line in component_lines(raw, self.component)):
+            return "full"
+        return self._graded("unsupported", f"{name} is dropped")
+
+
+class CheckFloatingEvent(_RoundTrip, Check):
     """
     Checks whether an event with a floating DTSTART and DTEND (RFC 5545
     section 3.3.5: neither TZID nor 'Z') is stored floating.
@@ -4760,30 +4857,15 @@ class CheckFloatingEvent(_RawPut, Check):
     LABEL = "floating"
     FEATURE = "save-load.event.floating"
     features_to_be_checked = {FEATURE}
+    UID = "csc_floating_event"
+    WHAT = "an event with a floating time"
     PROPERTY = re.compile(r"(DTSTART|DTEND)((?:;[^:]*)?):(.*)")
 
-    def _run_check(self) -> None:
-        url = self._url("csc_floating_event")
-        try:
-            stored = self._put(url, self._ical("csc_floating_event", floating=True))
-            status = self._status(stored)
-            if status is None:
-                self.set_feature(self.FEATURE, self._graded("unknown", "cannot test, a floating event got no answer"))
-            elif not 200 <= status < 300:
-                self.set_feature(
-                    self.FEATURE, self._graded("ungraceful", f"an event with a floating time is refused ({status})")
-                )
-            else:
-                self.set_feature(self.FEATURE, self._grade(self._get(url)))
-        finally:
-            self._delete(url)
+    def _body(self):
+        return self._ical(self.uid, floating=True)
 
-    def _grade(self, response):
-        if response is None:
-            return self._graded("unknown", "cannot test, the floating event could not be read back")
-        times = [
-            match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(response.raw, "VEVENT")) if match
-        ]
+    def _grade(self, raw):
+        times = [match.groups() for match in map(self.PROPERTY.fullmatch, component_lines(raw, "VEVENT")) if match]
         if not times:
             return self._graded("unknown", "cannot test, the event came back without DTSTART")
         for _, params, value in times:
@@ -4800,7 +4882,7 @@ class CheckFloatingEvent(_RawPut, Check):
         return "full"
 
 
-class CheckAttendeeParams(_RawPut, Check):
+class CheckAttendeeParams(_RoundTrip, Check):
     """
     Checks whether the parameters of an ATTENDEE are stored as sent.
 
@@ -4814,6 +4896,8 @@ class CheckAttendeeParams(_RawPut, Check):
     LABEL = "attendee-params"
     FEATURE = "save-load.icalendar.attendee-params"
     features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_params"
+    WHAT = "an event with attendees"
     ## RFC 5545 section 3.2
     DEFAULTS = {"PARTSTAT": "NEEDS-ACTION", "ROLE": "REQ-PARTICIPANT", "CUTYPE": "INDIVIDUAL", "RSVP": "FALSE"}
     ## RFC 6638 section 7.3
@@ -4823,27 +4907,10 @@ class CheckAttendeeParams(_RawPut, Check):
         "mailto:csc-ase@attendee.example.com": {"CN": "Åse", "PARTSTAT": "ACCEPTED"},
     }
 
-    def _run_check(self) -> None:
-        url = self._url("csc_attendee_params")
-        lines = "".join(
-            "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
-            for address, params in self.ATTENDEES.items()
-        )
-        try:
-            stored = self._put(url, self._ical("csc_attendee_params", extra=lines))
-            status = self._status(stored)
-            if status is None:
-                self.set_feature(
-                    self.FEATURE, self._graded("unknown", "cannot test, an event with attendees got no answer")
-                )
-            elif not 200 <= status < 300:
-                self.set_feature(
-                    self.FEATURE, self._graded("ungraceful", f"an event with attendees is refused ({status})")
-                )
-            else:
-                self.set_feature(self.FEATURE, self._grade(self._get(url)))
-        finally:
-            self._delete(url)
+    EXTRA = "".join(
+        "ATTENDEE" + "".join(f";{name}={value}" for name, value in params.items()) + f":{address}\r\n"
+        for address, params in ATTENDEES.items()
+    )
 
     @staticmethod
     def _parse(line):
@@ -4857,11 +4924,9 @@ class CheckAttendeeParams(_RawPut, Check):
             params[name.upper()] = value.strip('"')
         return match[2].lower(), params
 
-    def _grade(self, response):
-        if response is None:
-            return self._graded("unknown", "cannot test, the event with attendees could not be read back")
+    def _grade(self, raw):
         stored = dict(
-            self._parse(line) for line in component_lines(response.raw, "VEVENT") if line.upper().startswith("ATTENDEE")
+            self._parse(line) for line in component_lines(raw, "VEVENT") if line.upper().startswith("ATTENDEE")
         )
         changes, defaults = [], []
         for address, sent in self.ATTENDEES.items():
@@ -4887,6 +4952,187 @@ class CheckAttendeeParams(_RawPut, Check):
         if changes:
             return self._graded("unsupported", *changes, *defaults)
         return self._graded("full", *defaults)
+
+
+class CheckParticipant(_RoundTrip, Check):
+    """
+    Checks whether a PARTICIPANT component (RFC 9073 section 7.1) inside a
+    VEVENT is stored.  CCS and Bedework 3 refuse the event with 403, robur
+    with 400, GMX and Ox with 500 (and Zimbra, reportedly).
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "participant"
+    FEATURE = "save-load.icalendar.participant"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_participant_event"
+    WHAT = "an event with a PARTICIPANT"
+    ## UID and PARTICIPANT-TYPE are the properties section 7.1 requires
+    EXTRA = (
+        "BEGIN:PARTICIPANT\r\n"
+        "UID:csc_participant_1\r\n"
+        "PARTICIPANT-TYPE:ACTIVE\r\n"
+        "CALENDAR-ADDRESS:mailto:csc-participant@attendee.example.com\r\n"
+        "END:PARTICIPANT\r\n"
+    )
+
+    def _grade(self, raw):
+        if "BEGIN:PARTICIPANT" in (line.upper() for line in component_lines(raw, "VEVENT")):
+            return "full"
+        return self._graded("unsupported", "the event is stored without its PARTICIPANT")
+
+
+class CheckVtimezone(_RoundTrip, Check):
+    """
+    Checks whether the VTIMEZONE sent with an event comes back with it.  CCS
+    returns the event's TZID without the VTIMEZONE that defines it.
+
+    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework refuses
+    TZIDs that are tzdata link names, which would hide what is asked here.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "vtimezone"
+    FEATURE = "save-load.icalendar.vtimezone"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_vtimezone_event"
+    WHAT = "an event with a VTIMEZONE"
+    VTIMEZONE = (
+        "BEGIN:VTIMEZONE\r\n"
+        "TZID:Europe/Berlin\r\n"
+        "BEGIN:DAYLIGHT\r\n"
+        "TZOFFSETFROM:+0100\r\n"
+        "TZOFFSETTO:+0200\r\n"
+        "TZNAME:CEST\r\n"
+        "DTSTART:19700329T020000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+        "END:DAYLIGHT\r\n"
+        "BEGIN:STANDARD\r\n"
+        "TZOFFSETFROM:+0200\r\n"
+        "TZOFFSETTO:+0100\r\n"
+        "TZNAME:CET\r\n"
+        "DTSTART:19701025T030000\r\n"
+        "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+        "END:STANDARD\r\n"
+        "END:VTIMEZONE\r\n"
+    )
+
+    def _body(self):
+        return self._ical(self.uid, vtimezone=self.VTIMEZONE)
+
+    def _grade(self, raw):
+        dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
+        tzid = re.search(r";TZID=([^;:]*)", dtstart, re.IGNORECASE)
+        if not tzid:
+            return self._graded("unknown", "cannot test, the event came back without a TZID")
+        tzid = tzid[1].strip('"')
+        defined, inside = set(), False
+        for line in unfolded_lines(raw):
+            if line.upper() in ("BEGIN:VTIMEZONE", "END:VTIMEZONE"):
+                inside = line.upper() == "BEGIN:VTIMEZONE"
+            elif inside and line.upper().startswith("TZID:"):
+                defined.add(line[len("TZID:") :])
+        if tzid in defined:
+            return "full"
+        return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
+
+
+class CheckXProperty(_RoundTrip, Check):
+    """
+    Checks whether an X- property (RFC 5545 section 3.8.8.2) is stored, in an
+    event and in a task.  Ox keeps it in an event and drops it from a task.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "x-property"
+    FEATURE = "save-load.icalendar.x-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_x_property_event"
+    WHAT = "an object with an X- property"
+    EXTRA = "X-CALDAV-SERVER-TESTER:kept\r\n"
+    COMPONENTS = ("VEVENT", "VTODO")
+
+    def _grade(self, raw):
+        return self._kept(raw, "X-CALDAV-SERVER-TESTER")
+
+
+class CheckUnknownProperty(_RoundTrip, Check):
+    """
+    Checks whether a property that is neither in RFC 5545 nor an X- one is
+    stored, using ESTIMATED-DURATION on a task.  Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "unknown-property"
+    FEATURE = "save-load.icalendar.unknown-property"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_unknown_property_task"
+    WHAT = "a task with ESTIMATED-DURATION"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ESTIMATED-DURATION:PT2H\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ESTIMATED-DURATION")
+
+
+class CheckTodoAttendee(_RoundTrip, Check):
+    """
+    Checks whether a task with an ATTENDEE is stored with it.  Ox answers the
+    PUT with 201 and the GET with 404: the task is gone, which is "broken",
+    since the server said it was stored.  A 404 counts only where the same
+    task without the ATTENDEE reads back.  There is no ORGANIZER, so the
+    server has no scheduling reason to touch it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-attendee"
+    FEATURE = "save-load.todo.attendee"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_task"
+    WHAT = "a task with an ATTENDEE"
+    COMPONENTS = ("VTODO",)
+    EXTRA = "ATTENDEE;CN=Bob:mailto:csc-bob@attendee.example.com\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "ATTENDEE")
+
+    def _unreadable(self, status):
+        if status == 404 and self._plain_task_kept():
+            return self._graded("broken", "the task is accepted, then gone (404)")
+        return super()._unreadable(status)
+
+    def _plain_task_kept(self):
+        """Whether the same task without the ATTENDEE can be read back"""
+        uid = f"{self.UID}_control"
+        url = self._url(uid)
+        try:
+            if not self._ok(self._put(url, self._ical(uid, todo=True))):
+                return False
+            return self._ok(self._answer(self.client.request, url))
+        finally:
+            self._delete(url)
+
+
+class CheckCompletedWithoutStatus(_RoundTrip, Check):
+    """
+    Checks whether a task with COMPLETED but no STATUS keeps its COMPLETED.
+    Ox drops it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "completed-without-status"
+    FEATURE = "save-load.todo.completed-without-status"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_completed_task"
+    WHAT = "a task with COMPLETED but no STATUS"
+    COMPONENTS = ("VTODO",)
+
+    @property
+    def EXTRA(self):
+        return f"COMPLETED:{self.checker.fixture_base_year}0120T130000Z\r\n"
+
+    def _grade(self, raw):
+        return self._kept(raw, "COMPLETED")
 
 
 class CheckAttendeePartstat(Check):
@@ -7240,13 +7486,14 @@ class CheckSyncMembers(_RawPut, _RawSync, Check):
 class CheckMultiget(_RawPut, _RawSync, Check):
     """
     Checks calendar-multiget for a missing href, and limits on how many
-    members a multiget or a Depth: 1 PROPFIND answers.
+    members a multiget, a Depth: 1 PROPFIND or a calendar-query answers.
 
     RFC 4791 section 7.9 gives every requested href an entry, a 404 for a
     missing one; Baikal leaves it out.  Stalwart answers at most its
     WebDav.maxResults (2000 by default) members with a 507 for the collection,
-    even to a multiget that asked for fewer than it holds.  Neither request has
-    a client-side limit to provoke that with, so the probe has to store more
+    even to a multiget that asked for fewer than it holds, and to a
+    calendar-query matching more.  None of the requests has a
+    client-side limit to provoke that with, so the probe has to store more
     objects than the server's limit: CALDAV_SERVER_TESTER_LIMIT_OBJECTS says
     how many, and without it the limits are not probed.
     """
@@ -7256,7 +7503,8 @@ class CheckMultiget(_RawPut, _RawSync, Check):
     MISSING_HREF = "multiget.missing-href"
     LIMIT = "multiget.limit"
     PROPFIND_LIMIT = "propfind.limit"
-    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT}
+    SEARCH_LIMIT = "search.limit"
+    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
     ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
     PRESENT = "csc_multiget_present"
     ABSENT = "csc_multiget_missing"
@@ -7278,7 +7526,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
             self._delete(present)
         count = self._object_count()
         if not count:
-            for feature in (self.LIMIT, self.PROPFIND_LIMIT):
+            for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
                 self.set_feature(
                     feature, {"support": "unknown", "behaviour": f"not probed: set {self.ENV} to a number of objects"}
                 )
@@ -7323,13 +7571,17 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         try:
             stored = sum(self._ok(self._put(self._url(name), self._ical(name))) for name in names)
             if stored < count:
-                for feature in (self.LIMIT, self.PROPFIND_LIMIT):
+                for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
                     self.set_feature(
                         feature, self._graded("unknown", f"cannot test, only {stored} of {count} objects were stored")
                     )
                 return
             mine = {f"{name}.ics" for name in names}
-            requests = ((self.LIMIT, lambda: self._multiget(names)), (self.PROPFIND_LIMIT, self._propfind))
+            requests = (
+                (self.LIMIT, lambda: self._multiget(names)),
+                (self.PROPFIND_LIMIT, self._propfind),
+                (self.SEARCH_LIMIT, self._calendar_query),
+            )
             for feature, request in requests:
                 try:
                     (entries, truncated) = request()
@@ -7349,6 +7601,20 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         finally:
             for name in names:
                 self._delete(self._url(name))
+
+    def _calendar_query(self):
+        """Every event in the calendar, raw for the same reason as the multiget"""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            "<D:prop><D:getetag/></D:prop>"
+            '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter>'
+            "</C:calendar-query>"
+        )
+        response = self.client.report(str(self.cal_url), body, depth=1)
+        if response.status not in (200, 207) or response.tree is None:
+            raise ReportError(f"calendar-query answered {response.status}")
+        return self._parse_entries(response, propstat_status=True)
 
     def _propfind(self):
         ## Raw, as for the multiget: caldav's propfind() parses at once and

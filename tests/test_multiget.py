@@ -3,7 +3,8 @@
 RFC 4791 section 7.9 gives every requested href an entry in the multistatus,
 a 404 for a missing one; Baikal leaves it out.  Stalwart answers a multiget
 or a Depth: 1 PROPFIND with at most WebDav.maxResults members and a 507 for
-the collection.  The limit is only probed with
+the collection, and a calendar-query matching more the same way.  The limits
+are only probed with
 CALDAV_SERVER_TESTER_LIMIT_OBJECTS set, since it takes that many objects.
 """
 
@@ -22,6 +23,7 @@ BASE = "http://example.com/cal/"
 MISSING = "multiget.missing-href"
 LIMIT = "multiget.limit"
 PROPFIND = "propfind.limit"
+SEARCH = "search.limit"
 ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
 
 
@@ -30,7 +32,8 @@ class MultigetServer:
     most that many members, with a 507 for the collection unless
     ``cap_marker`` is False.  ``missing_as`` answers a missing href with that
     entry instead of a response-level 404: "propstat 404", "propstat 200" or a
-    response-level status code."""
+    response-level status code.  ``query_status`` is the status of every
+    calendar-query answer."""
 
     def __init__(
         self,
@@ -41,7 +44,9 @@ class MultigetServer:
         propfind_raises=None,
         missing_as=None,
         propfind_status=None,
+        query_status=207,
     ):
+        self.query_status = query_status
         self.propfind_status = propfind_status
         self.missing_as = missing_as
         self.propfind_raises = propfind_raises
@@ -66,6 +71,10 @@ class MultigetServer:
         return Mock(status=204)
 
     def report(self, url, body, depth=0):
+        if "calendar-query" in body:
+            if self.query_status != 207:
+                return Mock(status=self.query_status, tree=None, raw="")
+            return self._answer([(n, None) for n in sorted(self.objects)])
         if self.report_status != 207:
             return Mock(status=self.report_status, tree=None, raw="")
         names = [self._name(h) for h in re.findall(r"<D:href>(.*?)</D:href>", body)]
@@ -132,7 +141,7 @@ def _run(server, monkeypatch, objects=None):
     checker.calendar.url = URL.objectify(BASE)
     CheckMultiget(checker)._run_check()
     fs = checker._features_checked
-    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, LIMIT, PROPFIND)}
+    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, LIMIT, PROPFIND, SEARCH)}
 
 
 def test_a_404_entry_for_the_missing_href_is_full(monkeypatch):
@@ -174,7 +183,7 @@ def test_the_limits_are_not_probed_by_default(monkeypatch):
     server = MultigetServer()
     verdicts = _run(server, monkeypatch)
     assert server.puts == 1
-    for feature in (LIMIT, PROPFIND):
+    for feature in (LIMIT, PROPFIND, SEARCH):
         assert verdicts[feature]["support"] == "unknown"
         assert ENV in verdicts[feature]["behaviour"]
 
@@ -182,7 +191,7 @@ def test_the_limits_are_not_probed_by_default(monkeypatch):
 def test_no_limit_up_to_the_objects_stored(monkeypatch):
     server = MultigetServer()
     verdicts = _run(server, monkeypatch, objects=12)
-    for feature in (LIMIT, PROPFIND):
+    for feature in (LIMIT, PROPFIND, SEARCH):
         assert verdicts[feature] == {"support": "full", "behaviour": "no limit up to 12 objects"}
     assert not server.objects
 
@@ -192,6 +201,7 @@ def test_a_cap_with_a_507_is_unsupported(monkeypatch):
     verdicts = _run(MultigetServer(cap=5), monkeypatch, objects=12)
     assert verdicts[LIMIT] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
     assert verdicts[PROPFIND] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
+    assert verdicts[SEARCH] == {"support": "unsupported", "behaviour": "stops at 5 members, with a 507"}
 
 
 def test_a_propfind_cap_counts_every_member_listed(monkeypatch):
@@ -236,3 +246,12 @@ def test_a_multiget_answered_507_as_a_whole_is_unsupported(monkeypatch):
 def test_another_failure_is_ungraceful(monkeypatch):
     server = MultigetServer(propfind_raises=ResponseError("HTTP/1.1 500 Internal Server Error"))
     assert _run(server, monkeypatch, objects=12)[PROPFIND]["support"] == "ungraceful"
+
+
+def test_a_calendar_query_answered_507_as_a_whole_is_unsupported(monkeypatch):
+    verdict = _run(MultigetServer(query_status=507), monkeypatch, objects=12)[SEARCH]
+    assert verdict == {"support": "unsupported", "behaviour": "the whole answer was a 507, with 12 objects"}
+
+
+def test_a_failing_calendar_query_is_ungraceful(monkeypatch):
+    assert _run(MultigetServer(query_status=500), monkeypatch, objects=12)[SEARCH]["support"] == "ungraceful"
