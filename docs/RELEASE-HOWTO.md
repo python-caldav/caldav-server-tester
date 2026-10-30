@@ -7,6 +7,7 @@ The tester is released in lockstep with the [caldav library](https://github.com/
 * Every pull request meant for the release is merged, and CI is green on `main`.
 * Run the regression check below against a caldav checkout, and investigate what it finds.  Do it before the caldav release, so the hint updates it calls for ship with that release; anything found later waits for the next caldav release.
 * The caldav release the tester needs is on PyPI, and `pyproject.toml` requires it.
+* Delete from `FUTURE_FEATURES` in `src/caldav_server_tester/future_features.py` every feature that caldav release defines.  Where caldav defines a feature the tester also carries, caldav's definition silently wins, so a stale copy does no harm at runtime, but it hides that caldav's text may have changed.
 * The `## Unreleased` section of `CHANGELOG.md` covers every user-visible change since the last tag, and nothing introduced and fixed in between.  It opens with "This release works with caldav X.Y.Z.", and a raised floor also gets a "Requires caldav X.Y.Z." bullet under Changed.
 * Rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD` and commit it.  This commit is made directly on `main`, which the `no-push-to-main` pre-push hook refuses, so push it with `SKIP=no-push-to-main git push origin main`.  That skips only this hook; the tests and the link check still run.  `git push --no-verify` would skip them too.
 * Tag `vX.Y.Z` and push the tag.  The publish workflow builds the package and uploads it to PyPI.
