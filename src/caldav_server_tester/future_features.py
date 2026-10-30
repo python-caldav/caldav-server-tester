@@ -14,7 +14,19 @@ Once the caldav release that defines a feature is the floor in
 
 from caldav.compatibility_hints import FeatureSet
 
-FUTURE_FEATURES: dict[str, dict] = {}
+FUTURE_FEATURES: dict[str, dict] = {
+    "move": {
+        "description": "WebDAV MOVE (RFC 4918 section 9.9) of a calendar object into another calendar of the same principal: the object ends up in the target only.  RFC 4918 says every WebDAV resource MUST support MOVE.  Without it, a client moves by copying and deleting, which fails where save.duplicate-uid.cross-calendar is not supported.  See https://github.com/python-caldav/caldav/issues/841",
+        ## Not derived from move.overwrite and move.if-match: a server ignoring them still moves.
+        "default": {"support": "full"},
+    },
+    "move.overwrite": {
+        "description": "A MOVE with 'Overwrite: F' onto an object that already exists at the destination fails with 412 and changes nothing, as RFC 4918 section 10.6 requires.  Where unsupported, the MOVE replaces the object at the destination."
+    },
+    "move.if-match": {
+        "description": "A MOVE with an If-Match the object no longer has fails with 412 and moves nothing (RFC 9110 section 13.1.1).  Where unsupported, a MOVE cannot guard against an object changed since it was read."
+    },
+}
 
 
 def register() -> list[str]:
