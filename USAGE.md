@@ -169,7 +169,7 @@ When you have an existing `compatibility_hints` configuration for a server
 and want to see whether the server behaviour has changed:
 
 ```
-caldav-server-tester --caldav-url … --caldav-features zimbra --diff
+caldav-server-tester --caldav-url … --caldav-features zimbra_10_1 --diff
 ```
 
 The `--diff` flag appends a section to the report listing every feature where
