@@ -57,6 +57,8 @@ def _calendar(handle_url, reported_object_url=None, raises=None) -> Mock:
         url = reported_object_url or handle_url + UID + ".ics"
 
         def object_by_uid(uid):
+            if uid != UID:
+                raise NotFoundError(uid)
             obj = Mock()
             obj.url = URL.objectify(url)
             return obj
@@ -197,3 +199,148 @@ class TestTheRelocationIsDescribedAsTheServerDidIt:
         behaviour = self._behaviour({"support": "unsupported"})
         assert "create-calendar.stable-url" in behaviour
         assert "keeps the name it was stored under" in behaviour
+
+
+NAME_PROBE_UID = "csc_stable_url_probe"
+NAME_PROBE_NAME = "csc_stable_url_probe_name.ics"
+
+
+def _name_probe_calendar(
+    reported_as, put_fails=False, lookup_misses=False, put_status=None, redirect_to=None, reported_base=ALIAS
+) -> tuple[Mock, Mock]:
+    """A calendar that reports the object PUT as the probe's arbitrary name
+    under ``reported_as``, besides the ordinary fixture.  Returns the
+    calendar and the client the PUT and DELETE go through.  With
+    ``redirect_to``, the PUT is answered with a 302 there that the client
+    did not follow, and nothing is stored."""
+    calendar = _calendar(ALIAS)
+    ordinary = calendar.object_by_uid
+
+    def object_by_uid(uid):
+        if uid != NAME_PROBE_UID:
+            return ordinary(uid)
+        if lookup_misses or redirect_to:
+            raise NotFoundError(uid)
+        obj = Mock()
+        obj.url = URL.objectify(reported_base + reported_as)
+        return obj
+
+    calendar.object_by_uid = object_by_uid
+    client = Mock()
+    client.put.return_value = Mock(status=201, headers={})
+    if put_fails:
+        client.put.side_effect = NotFoundError("refused")
+    if put_status is not None:
+        ## DAVClient.put hands back a refusal as a response, it does not raise
+        client.put.return_value = Mock(status=put_status, headers={})
+    if redirect_to:
+        client.put.return_value = Mock(status=302, headers={"Location": redirect_to})
+    return calendar, client
+
+
+def _name_probe(reported_as, create_calendar_stable_url=None, **kw) -> tuple[dict, Mock]:
+    calendar, client = _name_probe_calendar(reported_as, **kw)
+    checker = _make_checker(create_calendar_stable_url)
+    checker._client_obj = client
+    PrepareCalendar(checker)._check_stable_url(calendar)
+    return checker.features_checked.is_supported("save-load.stable-url", dict), client
+
+
+class TestAnObjectStoredUnderAnArbitraryName:
+    """Storing ``<uid>.ics`` cannot tell a server that keeps the name from one
+    that names every object ``<uid>.ics``: the two agree.  So the probe also
+    stores an object under a name that is not its UID."""
+
+    def test_the_name_is_kept(self) -> None:
+        node, client = _name_probe(NAME_PROBE_NAME)
+        assert node["support"] == "full"
+        assert "forces_uid_ics" not in node
+        assert str(client.put.call_args.args[0]) == ALIAS + NAME_PROBE_NAME
+
+    def test_a_server_naming_it_uid_ics_forces_the_convention(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_UID + ".ics")
+        assert node["support"] == "unsupported"
+        assert node["forces_uid_ics"] is True
+        assert NAME_PROBE_NAME in node["behaviour"]
+
+    def test_another_rename_is_unsupported_without_the_convention(self) -> None:
+        node, _ = _name_probe("7f3a9c12-server-assigned.ics")
+        assert node["support"] == "unsupported"
+        assert "forces_uid_ics" not in node
+
+    def test_a_refused_put_leaves_the_verdict_alone(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_NAME, put_fails=True)
+        assert node["support"] == "full"
+
+    def test_a_put_answered_with_a_refusal_leaves_the_verdict_alone(self) -> None:
+        """A 4xx comes back as a response, and the object is not there to be
+        found."""
+        node, _ = _name_probe(NAME_PROBE_NAME, put_status=403, lookup_misses=True)
+        assert node["support"] == "full"
+
+    def test_a_lookup_that_misses_after_an_accepted_put_leaves_the_verdict_alone(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_NAME, lookup_misses=True)
+        assert node["support"] == "full"
+
+    def test_a_forced_name_is_not_described_as_unconstructable(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_UID + ".ics")
+        assert "cannot construct" not in node["behaviour"]
+        assert "<uid>.ics" in node["behaviour"]
+
+    def test_an_unpredictable_name_is_described_as_unconstructable(self) -> None:
+        node, _ = _name_probe("7f3a9c12-server-assigned.ics")
+        assert "cannot construct" in node["behaviour"]
+
+    def test_the_probe_object_is_removed(self) -> None:
+        _, client = _name_probe(NAME_PROBE_UID + ".ics")
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert {ALIAS + NAME_PROBE_NAME, ALIAS + NAME_PROBE_UID + ".ics"} <= deleted
+
+    def test_an_object_the_server_named_itself_is_removed_too(self) -> None:
+        _, client = _name_probe("7f3a9c12-server-assigned.ics")
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert ALIAS + "7f3a9c12-server-assigned.ics" in deleted
+
+    def test_a_redirect_not_followed_names_the_object(self) -> None:
+        """The Zimbra docker image redirects the PUT to ``<uid>.ics`` on its
+        internal port 8443, which the client does not follow (caldav repeats
+        a redirected PUT on the same host and port only).  Nothing is stored,
+        but the Location says the server's name for it - the verdict must be
+        the one the reachable production server gets."""
+        node, _ = _name_probe(
+            NAME_PROBE_NAME,
+            redirect_to="https://dav.example.com:8443/caldav/caldav-server-checker-calendar/" + NAME_PROBE_UID + ".ics",
+        )
+        assert node["support"] == "unsupported"
+        assert node["forces_uid_ics"] is True
+
+    def test_a_relative_location_is_read_too(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_NAME, redirect_to=NAME_PROBE_UID + ".ics")
+        assert node["forces_uid_ics"] is True
+
+    def test_a_relocated_collection_does_not_hide_the_name(self) -> None:
+        """Zimbra relocates a calendar created with a display name, and that
+        verdict used to be returned before the name was probed."""
+        node, _ = _name_probe(
+            NAME_PROBE_UID + ".ics",
+            create_calendar_stable_url={"support": "unsupported"},
+        )
+        assert node["support"] == "unsupported"
+        assert node["forces_uid_ics"] is True
+        assert "create-calendar.stable-url" in node["behaviour"]
+
+    def test_the_object_is_removed_where_the_server_reported_it(self) -> None:
+        """On Zimbra a rerun holds the cal_id alias, while the object lives
+        under the canonical collection URL."""
+        _, client = _name_probe(NAME_PROBE_UID + ".ics", reported_base=CANONICAL)
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert CANONICAL + NAME_PROBE_UID + ".ics" in deleted
+
+    def test_a_redirect_elsewhere_says_nothing(self) -> None:
+        """A redirect to a login page names no object."""
+        node, _ = _name_probe(NAME_PROBE_NAME, redirect_to="https://dav.example.com/login")
+        assert node["support"] == "full"
+
+    def test_a_redirect_without_location_falls_back_to_the_lookup(self) -> None:
+        node, _ = _name_probe(NAME_PROBE_UID + ".ics", put_status=302)
+        assert node["forces_uid_ics"] is True

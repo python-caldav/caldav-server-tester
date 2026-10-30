@@ -373,33 +373,10 @@ CheckCalendarProperties gives the library twice the measured PROPPATCH
 delay; the same margin for all `synchronous-write` children, applied in one
 place, would cover creation and deletion too.
 
-# Lookup by UID: two missing probes
+# Lookup by UID: `search.text.by-uid` independently of `search.text`
 
 (Measured 2026-10-07 with caldav master `5d165da1`, no server hints, raw
 `calendar-query` REPORTs against a calendar holding four events.)
-
-## Is an object name other than `<uid>.ics` allowed?
-
-`Calendar.get_object_by_uid()` only ever searches, so it does not depend on
-this - but a client that builds `<cal>/<uid>.ics` from a UID, or a test that
-stores under an arbitrary name, does.  `save-load.stable-url` (probed in
-`PrepareCalendar`) asks whether the server keeps the URL the client stored
-under; that probe stores under `<uid>.ics`, so a server that accepts only
-that name passes it.  Nothing probes a non-UID name.
-
-* Zimbra: a PUT to `some-other-name.ics` answers `302` to `<uid>.ics` (on the
-  internal port 8443, so caldav following the redirect gets "connection
-  refused" from the docker image) and **stores nothing**.
-* Bedework 3 and 5: `201`; the object lives under the given name and
-  `<uid>.ics` is 404.
-
-SOGo and Purelymail keep the name too.  Suggested sub-feature
-`save-load.stable-url.arbitrary-name`: `full` when the name is kept;
-`unsupported` (with a `behaviour` naming the redirect) for Zimbra.  The
-Zimbra profile's comment "Zimbra keeps the name the object was stored
-under" holds only for `<uid>.ics` names, and should say so.
-
-## `search.text.by-uid` independently of `search.text`
 
 `get_object_by_uid()` is a text search on `UID`, yet servers differ on UID
 and other text properties:
