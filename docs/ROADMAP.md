@@ -199,7 +199,7 @@ At the baseline sixteen legacy flags were left in `incompatibility_description`.
 The v1.3.0 cycle retired seven of them.  `calendar_color`, `calendar_order`,
 `duplicates_not_allowed`, `non_existing_raises_other`, `propfind_allprop_failure`
 and `vtodo_datesearch_nodtstart_task_is_skipped` got probes.  `no_overwrite`
-already had one in v1.2.0 and was removed from the library afterwards.  Nine remain, all nine still read by the caldav library's own
+already had one in v1.2.0 and was removed from the library afterwards.  Nine remained, all nine still read by the caldav library's own
 test suite: `dav_not_supported`,
 `event_by_url_is_broken`, `fastmail_buggy_noexpand_date_search`,
 `robur_rrule_freq_yearly_expands_monthly`, `sticky_events`,
@@ -212,9 +212,9 @@ which is the continuation of
 
 | Status | Item | Deliverable | h | Issue |
 |---|---|---|---|---|
-| [ ] wip | 2.1 Probes for the legacy flags | A `FEATURES` entry and a probe for each `incompatibility_description` flag (sixteen at the baseline, nine left after v1.3.0), with the server profiles filled in from real runs rather than carried over | 6 | [#3](https://github.com/python-caldav/caldav-server-tester/issues/3) |
+| [x] | 2.1 Probes for the legacy flags | A `FEATURES` entry and a probe for each `incompatibility_description` flag (sixteen at the baseline, nine left after v1.3.0), or its deletion where no profile sets it, with the server profiles filled in from real runs rather than carried over | 6 | [#3](https://github.com/python-caldav/caldav-server-tester/issues/3) |
 | [ ] wip | 2.2 Probes for the defined-but-unprobed features | Nine probes; any feature that turns out to be unprobeable in practice (`http.multiplexing` needs a specific reverse-proxy setup) documented as such in its description rather than left looking measured | 4 | |
-| [ ] | 2.3 Retire `_old_flags` | The `_old_flags` shim gone from the server profiles and from the caldav test suite, once 2.1 has replaced its readers | 2 | [#3](https://github.com/python-caldav/caldav-server-tester/issues/3) |
+| [x] | 2.3 Retire `_old_flags` | The `_old_flags` shim gone from the server profiles and from the caldav test suite, once 2.1 has replaced its readers | 2 | [#3](https://github.com/python-caldav/caldav-server-tester/issues/3) |
 
 `http.multiplexing` deserves a warning: it is a *deployment* property (an nginx
 in front of Baikal), not a server-software property, so it may not belong in a
@@ -224,6 +224,14 @@ per-server profile at all.  Deciding that is part of 2.2 and the answer may be
 2.3 is small only because 2.1 does the work; it is listed separately because it
 is the item that actually closes issue #3, and because it lands entirely in the
 other repository.
+
+**Status:** 2.1 and 2.3 are done.  Of the nine flags left after v1.3.0, two were
+still set by a server profile and became features with probes:
+`save-load.todo.uncomplete` and `search.time-range.todo.no-dtstart.no-due`
+([#35](https://github.com/python-caldav/caldav-server-tester/pull/35)).  The
+other seven were set by no profile and were deleted together with the test
+branches reading them, as were `incompatibility_description` and `old_flags`
+(caldav 3.6.0, [caldav#811](https://github.com/python-caldav/caldav/pull/811)).
 
 ---
 
