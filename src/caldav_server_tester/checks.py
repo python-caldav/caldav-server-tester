@@ -5679,15 +5679,18 @@ class _ValueSweep(_RoundTrip):
         support = "ungraceful" if refused else "unsupported"
         self.set_feature(
             self.FEATURE,
-            {**self._graded(support, *notes), "values": kept, "map": mapped, "refused": refused},
+            {**self._graded(support, *notes, *self._unkept_notes()), "values": kept, "map": mapped, "refused": refused},
         )
+
+    def _unkept_notes(self):
+        """More to say where not every value is kept"""
+        return []
 
 
 class CheckTodoStatus(_ValueSweep, Check):
     """
-    Checks which STATUS values a task keeps: RFC 5545's four, and PENDING and
-    FAILED from RFC 10051.  Ox drops the two new ones; Zimbra stores them as
-    NEEDS-ACTION, and refuses CANCELLED.
+    Checks which of RFC 5545's four STATUS values a task keeps.  Zimbra
+    refuses CANCELLED.
     """
 
     depends_on = {PrepareCalendar}
@@ -5696,7 +5699,95 @@ class CheckTodoStatus(_ValueSweep, Check):
     features_to_be_checked = {FEATURE}
     UID = "csc_status_task"
     NAME = "STATUS"
-    VALUES = ("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED", "PENDING", "FAILED")
+    VALUES = ("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED")
+
+
+class CheckSupportedTaskModes(Check):
+    """
+    Checks whether the server advertises RFC 10051 with the
+    CALDAV:supported-task-mode-set property (section 13.1), on the calendar
+    home or the task calendar.  Without it, a client must assume the server
+    does not support RFC 10051.  Neither Ox nor Zimbra has it.
+    """
+
+    depends_on = {PrepareCalendar}
+    FEATURE = "supported-task-modes"
+    features_to_be_checked = {FEATURE}
+    BODY = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+        "<D:prop><C:supported-task-mode-set/></D:prop></D:propfind>"
+    )
+    SET = "{urn:ietf:params:xml:ns:caldav}supported-task-mode-set"
+    MODE = "{urn:ietf:params:xml:ns:caldav}supported-task-mode"
+
+    def _run_check(self) -> None:
+        urls = []
+        try:
+            urls.append(self.checker.principal.calendar_home_set.url)
+        except Exception:  ## no principal, or a home-set PROPFIND that failed: ask the calendar alone
+            pass
+        if getattr(self.checker, "tasklist", None) is not None:
+            urls.append(self.checker.tasklist.url)
+        answered = False
+        for url in urls:
+            try:
+                response = self.client.request(str(url), "PROPFIND", self.BODY, {"Depth": "0"})
+            except (DAVError, OSError):
+                continue
+            if response.status != 207 or response.tree is None:
+                continue
+            answered = True
+            modes = self._modes(response.tree)
+            if modes:
+                self.set_feature(self.FEATURE, {"support": "full", "values": modes})
+                return
+        if not answered:
+            self.set_feature(
+                self.FEATURE, {"support": "unknown", "behaviour": "cannot test, the PROPFIND for it failed"}
+            )
+            return
+        self.set_feature(
+            self.FEATURE,
+            {
+                "support": "unsupported",
+                "behaviour": "neither the calendar home nor a calendar has CALDAV:supported-task-mode-set",
+            },
+        )
+
+    def _modes(self, tree):
+        """The modes listed in a property answered with 200; an empty set lists none"""
+        for propstat in tree.findall(f".//{dav.PropStat.tag}"):
+            status = propstat.find(dav.Status.tag)
+            if status is None or " 200 " not in f"{status.text} ":
+                continue
+            for found in propstat.iter(self.SET):
+                return [(m.text or "").strip() for m in found.iter(self.MODE)]
+        return []
+
+
+class CheckTodoStatusRfc10051(_ValueSweep, Check):
+    """
+    Checks whether a task keeps the statuses RFC 10051 adds, PENDING and
+    FAILED.  Ox drops them; Zimbra stores them as NEEDS-ACTION.  Neither
+    advertises RFC 10051, which the behaviour then says.
+    """
+
+    depends_on = {PrepareCalendar, CheckSupportedTaskModes}
+    LABEL = "todo-status-rfc10051"
+    FEATURE = "save-load.todo.status.rfc10051"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_status_rfc10051_task"
+    NAME = "STATUS"
+    VALUES = ("PENDING", "FAILED")
+
+    def _unkept_notes(self):
+        recorded = self.checker.features_checked.dotted_feature_set_list().get(CheckSupportedTaskModes.FEATURE) or {}
+        if recorded.get("support") == "unsupported":
+            return ["the server does not advertise RFC 10051"]
+        if recorded.get("support") == "full":
+            return ["although the server advertises RFC 10051"]
+        return []
 
 
 class CheckTodoPriority(_ValueSweep, Check):

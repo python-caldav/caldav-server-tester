@@ -15,6 +15,7 @@ from caldav_server_tester.checks import (
     CheckTodoAttendee,
     CheckTodoPriority,
     CheckTodoStatus,
+    CheckTodoStatusRfc10051,
     CheckUnknownProperty,
     PrepareCalendar,
 )
@@ -23,7 +24,14 @@ from .test_floating_event import RewritingServer
 
 BASE = "http://example.com/cal/"
 TASKS = "http://example.com/tasks/"
-CHECKS = [CheckTodoAttendee, CheckUnknownProperty, CheckCompletedWithoutStatus, CheckTodoStatus, CheckTodoPriority]
+CHECKS = [
+    CheckTodoAttendee,
+    CheckUnknownProperty,
+    CheckCompletedWithoutStatus,
+    CheckTodoStatus,
+    CheckTodoStatusRfc10051,
+    CheckTodoPriority,
+]
 
 
 class VanishingServer(RewritingServer):
@@ -41,12 +49,12 @@ class VanishingServer(RewritingServer):
         return super().put(url, body, headers)
 
 
-def _run(check, server, todo="full", tasklist=True, whole=False):
+def _run(check, server, todo="full", tasklist=True, whole=False, recorded=None):
     """``whole``: through run_check(), with its check that every declared
     feature got a value"""
     checker = Mock()
     checker._checks_run = {PrepareCalendar}
-    checker._features_checked = FeatureSet({"save-load.todo": {"support": todo}})
+    checker._features_checked = FeatureSet({"save-load.todo": {"support": todo}, **(recorded or {})})
     checker.features_checked = checker._features_checked
     checker.debug_mode = None
     checker._client_obj = server
@@ -146,26 +154,36 @@ class ValueServer(RewritingServer):
         return super().put(url, body, headers)
 
 
-def test_every_status_is_sent():
-    sent = []
-    _run(CheckTodoStatus, RewritingServer(rewrite=lambda body: sent.append(body) or body))
-    assert [re.search(r"\r\nSTATUS:([^\r]*)", b)[1] for b in sent] == [
-        "NEEDS-ACTION",
-        "IN-PROCESS",
-        "COMPLETED",
-        "CANCELLED",
-        "PENDING",
-        "FAILED",
-    ]
+def test_the_rfc_5545_statuses_and_the_rfc_10051_ones_are_swept_apart():
+    for check, expected in (
+        (CheckTodoStatus, ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"]),
+        (CheckTodoStatusRfc10051, ["PENDING", "FAILED"]),
+    ):
+        sent = []
+        _run(check, RewritingServer(rewrite=lambda body: sent.append(body) or body))
+        assert [re.search(r"\r\nSTATUS:([^\r]*)", b)[1] for b in sent] == expected
 
 
-def test_statuses_dropped_are_unsupported_with_the_values_kept():
-    """Ox"""
-    verdict = _run(CheckTodoStatus, ValueServer("STATUS", {"PENDING": None, "FAILED": None}))
+def test_rfc_10051_statuses_dropped_where_not_advertised():
+    """Ox keeps every RFC 5545 status, drops PENDING and FAILED, and does not advertise RFC 10051"""
+    server = ValueServer("STATUS", {"PENDING": None, "FAILED": None})
+    assert _run(CheckTodoStatus, server)["support"] == "full"
+    not_advertised = {"supported-task-modes": {"support": "unsupported"}}
+    verdict = _run(CheckTodoStatusRfc10051, server, recorded=not_advertised)
     assert verdict["support"] == "unsupported"
-    assert verdict["values"] == ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"]
-    assert verdict["map"] == {}
-    assert verdict["behaviour"] == "PENDING is dropped; FAILED is dropped"
+    assert verdict["values"] == []
+    assert verdict["behaviour"] == "PENDING is dropped; FAILED is dropped; the server does not advertise RFC 10051"
+
+
+def test_rfc_10051_statuses_dropped_where_advertised_say_so():
+    advertised = {"supported-task-modes": {"support": "full", "values": ["AUTOMATIC-COMPLETION"]}}
+    verdict = _run(CheckTodoStatusRfc10051, ValueServer("STATUS", {"PENDING": None}), recorded=advertised)
+    assert verdict["behaviour"] == "PENDING is dropped; although the server advertises RFC 10051"
+
+
+def test_rfc_10051_statuses_dropped_where_advertising_is_unknown_say_nothing_more():
+    verdict = _run(CheckTodoStatusRfc10051, ValueServer("STATUS", {"PENDING": None}))
+    assert verdict["behaviour"] == "PENDING is dropped"
 
 
 def test_statuses_stored_as_another_and_refused():
@@ -174,10 +192,10 @@ def test_statuses_stored_as_another_and_refused():
     verdict = _run(CheckTodoStatus, server)
     assert verdict["support"] == "ungraceful"
     assert verdict["values"] == ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED"]
-    assert verdict["map"] == {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}
     assert verdict["refused"] == ["CANCELLED"]
     assert "CANCELLED is refused (403)" in verdict["behaviour"]
     assert not server.objects
+    assert _run(CheckTodoStatusRfc10051, server)["map"] == {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}
 
 
 def test_priorities_kept_as_three_levels():
