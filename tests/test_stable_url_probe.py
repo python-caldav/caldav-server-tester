@@ -39,6 +39,7 @@ def _make_checker(create_calendar_stable_url=None) -> Mock:
     checker._client_obj = Mock()
     checker._client_obj.features = FeatureSet()
     checker.expected_features = FeatureSet()
+    checker.tasklist = None
     return checker
 
 
@@ -344,3 +345,62 @@ class TestAnObjectStoredUnderAnArbitraryName:
     def test_a_redirect_without_location_falls_back_to_the_lookup(self) -> None:
         node, _ = _name_probe(NAME_PROBE_UID + ".ics", put_status=302)
         assert node["forces_uid_ics"] is True
+
+
+TASKS = "http://dav.example.com/caldav/tasks/"
+
+
+def _task_probe(task_reported_as, create_calendar_stable_url=None) -> tuple[dict, Mock]:
+    """Events keep their name; a task PUT under the probe's name is reported as ``task_reported_as``"""
+    calendar, client = _name_probe_calendar(NAME_PROBE_NAME)
+    tasklist = Mock()
+    tasklist.url = URL.objectify(TASKS)
+
+    def object_by_uid(uid):
+        obj = Mock()
+        obj.url = URL.objectify(TASKS + task_reported_as)
+        return obj
+
+    tasklist.object_by_uid = object_by_uid
+    checker = _make_checker(create_calendar_stable_url)
+    checker._client_obj = client
+    checker.tasklist = tasklist
+    PrepareCalendar(checker)._check_stable_url(calendar)
+    return checker.features_checked.is_supported("save-load.stable-url", dict), client
+
+
+class TestATaskStoredUnderAnArbitraryName:
+    """Ox keeps an event's name and names a task <uid>.ics."""
+
+    def test_a_task_named_uid_ics_is_unsupported_for_tasks_only(self) -> None:
+        node, client = _task_probe(NAME_PROBE_UID + ".ics")
+        assert node["support"] == "unsupported"
+        assert node["uid_ics_components"] == ["VTODO"]
+        assert "forces_uid_ics" not in node
+        assert "task" in node["behaviour"]
+        sent = [call.args[1] for call in client.put.call_args_list if str(call.args[0]).startswith(TASKS)]
+        assert sent and "BEGIN:VTODO" in sent[0]
+
+    def test_a_task_keeping_its_name_changes_nothing(self) -> None:
+        node, _ = _task_probe(NAME_PROBE_NAME)
+        assert node["support"] == "full"
+        assert "uid_ics_components" not in node
+
+    def test_a_relocated_collection_says_so_and_names_the_tasks(self) -> None:
+        """Ox: both at once"""
+        relocated = {"support": "unsupported", "behaviour": "an opaque cal://0/NNN"}
+        node, _ = _task_probe(NAME_PROBE_UID + ".ics", create_calendar_stable_url=relocated)
+        assert node["uid_ics_components"] == ["VTODO"]
+        assert "create-calendar.stable-url" in node["behaviour"]
+        assert "task" in node["behaviour"]
+
+    def test_the_task_probe_is_removed(self) -> None:
+        _, client = _task_probe(NAME_PROBE_UID + ".ics")
+        deleted = {str(call.args[0]) for call in client.delete.call_args_list}
+        assert {TASKS + NAME_PROBE_NAME, TASKS + NAME_PROBE_UID + ".ics"} <= deleted
+
+    def test_a_task_renamed_to_another_name_is_unsupported_and_named(self) -> None:
+        node, _ = _task_probe("7f3a9c12-server-assigned.ics")
+        assert node["support"] == "unsupported"
+        assert "uid_ics_components" not in node
+        assert "7f3a9c12-server-assigned.ics" in node["behaviour"]

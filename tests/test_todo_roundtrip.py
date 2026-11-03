@@ -13,6 +13,8 @@ from caldav.compatibility_hints import FeatureSet
 from caldav_server_tester.checks import (
     CheckCompletedWithoutStatus,
     CheckTodoAttendee,
+    CheckTodoPriority,
+    CheckTodoStatus,
     CheckUnknownProperty,
     PrepareCalendar,
 )
@@ -21,7 +23,7 @@ from .test_floating_event import RewritingServer
 
 BASE = "http://example.com/cal/"
 TASKS = "http://example.com/tasks/"
-CHECKS = [CheckTodoAttendee, CheckUnknownProperty, CheckCompletedWithoutStatus]
+CHECKS = [CheckTodoAttendee, CheckUnknownProperty, CheckCompletedWithoutStatus, CheckTodoStatus, CheckTodoPriority]
 
 
 class VanishingServer(RewritingServer):
@@ -127,6 +129,73 @@ def test_a_status_added_with_completed_kept_is_full():
     assert _run(CheckCompletedWithoutStatus, RewritingServer(rewrite=add_status))["support"] == "full"
 
 
+class ValueServer(RewritingServer):
+    """Stores ``name:value`` as ``stored[value]`` (None drops it), and refuses the values in ``refused``."""
+
+    def __init__(self, name, stored=None, refused=()):
+        super().__init__()
+        self.name, self.stored, self.refused = name, stored or {}, refused
+
+    def put(self, url, body, headers=None):
+        value = re.search(rf"\r\n{self.name}:([^\r]*)", body)[1]
+        if value in self.refused:
+            return Mock(status=403, headers={})
+        if value in self.stored:
+            new = self.stored[value]
+            body = body.replace(f"\r\n{self.name}:{value}", "" if new is None else f"\r\n{self.name}:{new}")
+        return super().put(url, body, headers)
+
+
+def test_every_status_is_sent():
+    sent = []
+    _run(CheckTodoStatus, RewritingServer(rewrite=lambda body: sent.append(body) or body))
+    assert [re.search(r"\r\nSTATUS:([^\r]*)", b)[1] for b in sent] == [
+        "NEEDS-ACTION",
+        "IN-PROCESS",
+        "COMPLETED",
+        "CANCELLED",
+        "PENDING",
+        "FAILED",
+    ]
+
+
+def test_statuses_dropped_are_unsupported_with_the_values_kept():
+    """Ox"""
+    verdict = _run(CheckTodoStatus, ValueServer("STATUS", {"PENDING": None, "FAILED": None}))
+    assert verdict["support"] == "unsupported"
+    assert verdict["values"] == ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"]
+    assert verdict["map"] == {}
+    assert verdict["behaviour"] == "PENDING is dropped; FAILED is dropped"
+
+
+def test_statuses_stored_as_another_and_refused():
+    """Zimbra"""
+    server = ValueServer("STATUS", {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}, refused=("CANCELLED",))
+    verdict = _run(CheckTodoStatus, server)
+    assert verdict["support"] == "ungraceful"
+    assert verdict["values"] == ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED"]
+    assert verdict["map"] == {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}
+    assert verdict["refused"] == ["CANCELLED"]
+    assert "CANCELLED is refused (403)" in verdict["behaviour"]
+    assert not server.objects
+
+
+def test_priorities_kept_as_three_levels():
+    """Ox: 1, 5 and 9, each other value stored as the nearest"""
+    stored = {"0": "5", "2": "1", "3": "5", "4": "5", "6": "5", "7": "9", "8": "9"}
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", stored))
+    assert verdict["support"] == "unsupported"
+    assert verdict["values"] == [1, 5, 9]
+    assert verdict["map"] == {0: 5, 2: 1, 3: 5, 4: 5, 6: 5, 7: 9, 8: 9}
+
+
+def test_priority_zero_dropped_means_the_same():
+    """No PRIORITY is no priority given, as 0 is"""
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", {"0": None}))
+    assert verdict["support"] == "full"
+    assert "dropped" in verdict["behaviour"]
+
+
 @pytest.mark.parametrize("check", CHECKS)
 def test_refused_is_ungraceful(check):
     assert _run(check, RewritingServer(put_answer=403))["support"] == "ungraceful"
@@ -152,3 +221,18 @@ def test_no_task_calendar_is_unknown(check):
 
 def test_an_unreadable_task_other_than_404_is_unknown():
     assert _run(CheckTodoAttendee, RewritingServer(get_status=500))["support"] == "unknown"
+
+
+def test_a_priority_written_back_as_no_number_is_mapped_as_text():
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", {"3": "MEDIUM"}))
+    assert verdict["map"] == {3: "MEDIUM"}
+
+
+def test_one_value_unreadable_makes_the_sweep_unknown():
+    class OneUnreadable(ValueServer):
+        def request(self, url, method="GET"):
+            if "in-process" in url:
+                return Mock(status=500, headers={}, raw="")
+            return super().request(url, method)
+
+    assert _run(CheckTodoStatus, OneUnreadable("STATUS"))["support"] == "unknown"

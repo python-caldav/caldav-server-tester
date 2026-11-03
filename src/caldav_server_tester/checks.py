@@ -2328,20 +2328,22 @@ END:VCALENDAR""",
                 return uid
         return False
 
-    def _probe_ical(self, uid, label):
-        """The one-event calendar the PUT-based probes store, in the fixture window."""
+    def _probe_ical(self, uid, label, todo=False):
+        """The one-event calendar the PUT-based probes store, in the fixture
+        window; with ``todo``, a task due when the event would end."""
         year = self.checker.fixture_base_year
+        component = "VTODO" if todo else "VEVENT"
         return (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
             f"PRODID:-//caldav-server-tester//{label} probe//EN\r\n"
-            "BEGIN:VEVENT\r\n"
+            f"BEGIN:{component}\r\n"
             f"UID:{uid}\r\n"
             f"DTSTAMP:{year}0119T120000Z\r\n"
             f"DTSTART:{year}0119T120000Z\r\n"
-            f"DTEND:{year}0119T130000Z\r\n"
+            f"{'DUE' if todo else 'DTEND'}:{year}0119T130000Z\r\n"
             f"SUMMARY:{label} probe\r\n"
-            "END:VEVENT\r\n"
+            f"END:{component}\r\n"
             "END:VCALENDAR\r\n"
         )
 
@@ -3118,6 +3120,24 @@ END:VCALENDAR""",
             self.set_feature("save-load.stable-url", node)
             return
 
+        ## Ox keeps an event's name and names a task <uid>.ics
+        task_name = self._task_reported_name()
+        tasks_renamed = task_name == f"{STABLE_URL_PROBE_UID}.ics"
+        task_note = (
+            f"a task stored as {STABLE_URL_PROBE_NAME!r} is reported as <uid>.ics, while an event keeps its name"
+        )
+        if task_name is not None and not tasks_renamed:
+            self.set_feature(
+                "save-load.stable-url",
+                {
+                    "support": "unsupported",
+                    "behaviour": (
+                        f"a task stored as {STABLE_URL_PROBE_NAME!r} is reported under the name {task_name!r}, "
+                        "while an event keeps its name; a client cannot construct the URL of a task it saved"
+                    ),
+                },
+            )
+            return
         if relocated:
             ## Quote what create-calendar.stable-url observed rather than
             ## restating one server's flavour of it: OX leaves a second working
@@ -3135,15 +3155,24 @@ END:VCALENDAR""",
                         + (f": {observed}" if observed else "")
                         + "), so a constructed object URL resolves only from the address the "
                         "server reports objects under, and a client may be holding another one"
+                        + (f"; {task_note}" if tasks_renamed else "")
                     ),
+                    **({"uid_ics_components": ["VTODO"]} if tasks_renamed else {}),
                 },
+            )
+            return
+
+        if tasks_renamed:
+            self.set_feature(
+                "save-load.stable-url",
+                {"support": "unsupported", "behaviour": task_note, "uid_ics_components": ["VTODO"]},
             )
             return
 
         client_url = calendar.url.join(stored_as)
         self.set_feature("save-load.stable-url", server_event.url.canonical() == client_url.canonical())
 
-    def _probe_stored_name(self, calendar):
+    def _probe_stored_name(self, calendar, todo=False):
         """Does the server keep the name an object was PUT under?
 
         Storing ``<uid>.ics`` cannot tell a server that keeps the name from
@@ -3159,7 +3188,7 @@ END:VCALENDAR""",
         port, and the docker image redirects to its internal one.  The name
         is read from the Location, whatever its host and port.
         """
-        ical = self._probe_ical(STABLE_URL_PROBE_UID, "save-load.stable-url")
+        ical = self._probe_ical(STABLE_URL_PROBE_UID, "save-load.stable-url", todo=todo)
         urls = [calendar.url.join(STABLE_URL_PROBE_NAME), calendar.url.join(f"{STABLE_URL_PROBE_UID}.ics")]
         try:
             response = self.client.put(str(urls[0]), ical, {"Content-Type": "text/calendar; charset=utf-8"})
@@ -3187,6 +3216,14 @@ END:VCALENDAR""",
         if reported_name == STABLE_URL_PROBE_NAME:
             return None
         return STABLE_URL_PROBE_NAME, reported_name
+
+    def _task_reported_name(self):
+        """The name a task PUT under another name is reported under, where the server renamed it, else None"""
+        tasklist = getattr(self.checker, "tasklist", None)
+        if tasklist is None:
+            return None
+        renamed = self._probe_stored_name(tasklist, todo=True)
+        return renamed[1] if renamed is not None else None
 
     @staticmethod
     def _fixtures_by_uid(objects, base):
@@ -5572,6 +5609,138 @@ class CheckCompletedWithoutStatus(_RoundTrip, Check):
 
     def _grade(self, raw):
         return self._kept(raw, "COMPLETED")
+
+
+class _ValueSweep(_RoundTrip):
+    """Stores a task with each of ``VALUES`` for property ``NAME`` in turn, and
+    records which are kept, which are stored as another, and which are
+    refused: ``values``, ``map`` and ``refused`` in the verdict."""
+
+    COMPONENTS = ("VTODO",)
+    NAME = ""
+    VALUES = ()
+    ## A value whose property may be dropped without changing the meaning
+    SAME_AS_ABSENT = None
+
+    @property
+    def uid(self):
+        return f"{self.UID}_{str(self.value).lower()}"
+
+    @property
+    def WHAT(self):
+        return str(self.value)
+
+    @property
+    def EXTRA(self):
+        return f"{self.NAME}:{self.value}\r\n"
+
+    def _grade(self, raw):
+        for line in component_lines(raw, self.component):
+            match = re.match(rf"{self.NAME}(?:;[^:]*)?:(.*)", line, re.IGNORECASE)
+            if match:
+                stored = match[1].strip().upper()
+                if isinstance(self.value, int) and stored.isdigit():
+                    stored = int(stored)
+                return ("stored", stored)
+        return ("stored", None)
+
+    def _run_check(self) -> None:
+        skipped = self._tasks_unstorable()
+        if skipped:
+            if skipped != self.CANNOT_STORE:
+                self.set_feature(self.FEATURE, self._graded("unknown", f"cannot test, {skipped}"))
+            return
+        self.component = "VTODO"
+        kept, mapped, refused, notes = [], {}, [], []
+        for value in self.VALUES:
+            self.value = value
+            verdict = self._round_trip()
+            if isinstance(verdict, tuple):
+                stored = verdict[1]
+                if stored == value:
+                    kept.append(value)
+                elif stored is None and value == self.SAME_AS_ABSENT:
+                    kept.append(value)
+                    notes.append(f"{value} is dropped, which means the same")
+                elif stored is None:
+                    notes.append(f"{value} is dropped")
+                else:
+                    mapped[value] = stored
+                    notes.append(f"{value} is stored as {stored}")
+            elif verdict.get("support") == "ungraceful":
+                refused.append(value)
+                notes.append(verdict["behaviour"])
+            else:
+                self.set_feature(self.FEATURE, verdict)
+                return
+        if len(kept) == len(self.VALUES):
+            self.set_feature(self.FEATURE, self._graded("full", *notes))
+            return
+        support = "ungraceful" if refused else "unsupported"
+        self.set_feature(
+            self.FEATURE,
+            {**self._graded(support, *notes), "values": kept, "map": mapped, "refused": refused},
+        )
+
+
+class CheckTodoStatus(_ValueSweep, Check):
+    """
+    Checks which STATUS values a task keeps: RFC 5545's four, and PENDING and
+    FAILED from RFC 10051.  Ox drops the two new ones; Zimbra stores them as
+    NEEDS-ACTION, and refuses CANCELLED.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-status"
+    FEATURE = "save-load.todo.status"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_status_task"
+    NAME = "STATUS"
+    VALUES = ("NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED", "PENDING", "FAILED")
+
+
+class CheckTodoPriority(_ValueSweep, Check):
+    """
+    Checks which PRIORITY values, 0 to 9, a task keeps.  Ox keeps 1, 5 and 9
+    only.  PRIORITY:0 is no priority given, so dropping it changes nothing.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-priority"
+    FEATURE = "save-load.todo.priority"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_priority_task"
+    NAME = "PRIORITY"
+    VALUES = tuple(range(10))
+    SAME_AS_ABSENT = 0
+
+
+class CheckXParameter(_RoundTrip, Check):
+    """
+    Checks whether an X- parameter on a standard property (SUMMARY) is
+    stored, in an event and then in a task.  Ox and Zimbra drop it, so the
+    task is not probed there: the verdict names the first component that
+    lost it.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "x-parameter"
+    FEATURE = "save-load.icalendar.x-parameter"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_x_parameter"
+    WHAT = "an object with an X- parameter"
+    COMPONENTS = ("VEVENT", "VTODO")
+
+    def _body(self):
+        return super()._body().replace("\r\nSUMMARY:", "\r\nSUMMARY;X-CALDAV-SERVER-TESTER=kept:", 1)
+
+    def _grade(self, raw):
+        for line in component_lines(raw, self.component):
+            if re.match(r"SUMMARY[;:]", line, re.IGNORECASE):
+                if re.search(r";X-CALDAV-SERVER-TESTER=\"?kept\"?[;:]", line, re.IGNORECASE):
+                    return "full"
+                return self._graded("unsupported", "X-CALDAV-SERVER-TESTER on SUMMARY is dropped")
+        return self._graded("unknown", "cannot test, the object came back without SUMMARY")
 
 
 class CheckAttendeePartstat(Check):
@@ -7965,13 +8134,15 @@ class CheckMultiget(_RawPut, _RawSync, Check):
     depends_on = {PrepareCalendar}
     LABEL = "multiget"
     MISSING_HREF = "multiget.missing-href"
+    DELETED = "multiget.deleted"
     LIMIT = "multiget.limit"
     PROPFIND_LIMIT = "propfind.limit"
     SEARCH_LIMIT = "search.limit"
-    features_to_be_checked = {MISSING_HREF, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
+    features_to_be_checked = {MISSING_HREF, DELETED, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
     ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
     PRESENT = "csc_multiget_present"
     ABSENT = "csc_multiget_missing"
+    GONE = "csc_multiget_deleted"
     PROPFIND = (
         '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>'
     )
@@ -7983,11 +8154,13 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         self._delete(self._url(self.ABSENT))
         try:
             if self._ok(self._put(present, self._ical(self.PRESENT))):
-                self.set_feature(self.MISSING_HREF, self._grade_missing())
+                self.missing = self._grade_missing()
+                self.set_feature(self.MISSING_HREF, self.missing)
             else:
                 self.set_feature(self.MISSING_HREF, None)
         finally:
             self._delete(present)
+        self.set_feature(self.DELETED, self._grade_deleted())
         count = self._object_count()
         if not count:
             for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
@@ -8028,6 +8201,28 @@ class CheckMultiget(_RawPut, _RawSync, Check):
             return self._graded("broken", f"a missing href is answered with {answer}, as if it existed")
         if statuses[0] != 404:
             return self._graded("full", f"a missing href is answered with {statuses[0]}")
+        return "full"
+
+    def _grade_deleted(self):
+        """Zimbra answers a GET of a deleted object with 404 and a multiget of it with the old data"""
+        missing = getattr(self, "missing", None)
+        if isinstance(missing, dict) and missing.get("support") == "broken":
+            return self._graded("unknown", "cannot test, a missing href is answered as if it existed too")
+        gone = self._url(self.GONE)
+        try:
+            if not self._ok(self._put(gone, self._ical(self.GONE))):
+                return None
+            if not self._ok(self._answer(self.client.delete, gone)):
+                return self._graded("unknown", "cannot test, the object could not be deleted")
+            if self._status(self._answer(self.client.request, gone)) != 404:
+                return self._graded("unknown", "cannot test, a GET of the deleted object did not answer 404")
+            (entries, _) = self._multiget((self.GONE,))
+        except (DAVError, ReportError) as e:
+            return self._graded("unknown", f"cannot test, the multiget failed: {e}")
+        finally:
+            self._delete(gone)
+        if any(name == f"{self.GONE}.ics" and status is None for name, status in entries):
+            return self._graded("broken", "a deleted object is still returned by a multiget, while a GET answers 404")
         return "full"
 
     def _probe_limits(self, count) -> None:
