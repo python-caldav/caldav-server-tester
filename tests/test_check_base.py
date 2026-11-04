@@ -6,10 +6,10 @@ import logging
 from unittest.mock import Mock
 
 import pytest
-from caldav.compatibility_hints import FeatureSet
+from caldav.compatibility_hints import _RENAMED_FEATURES, FeatureSet
 from caldav.lib.error import NotFoundError
 
-from caldav_server_tester.checks_base import Check
+from caldav_server_tester.checks_base import Check, ProbedFeatureSet
 
 
 class TestCheckSetFeature:
@@ -260,18 +260,15 @@ class TestCheckRunCheck:
         # Features should be restored to original
         assert checker._client_obj.features == original_features
 
-    @pytest.mark.filterwarnings("ignore:Unknown feature:UserWarning:caldav")
     def test_run_check_verifies_declared_features_checked(self) -> None:
         """run_check should verify all declared features were checked"""
-        # Uses intentionally fake feature names (feature1, feature2) to test
-        # AssertionError logic; the UserWarning from caldav about unknown features is expected.
 
         class TestCheck(Check):
-            features_to_be_checked = {"feature1", "feature2"}
+            features_to_be_checked = {"create-calendar", "delete-calendar"}
 
             def _run_check(self) -> None:
-                # Only check feature1, not feature2
-                self.set_feature("feature1", True)
+                # Only check create-calendar, not delete-calendar
+                self.set_feature("create-calendar", True)
 
         checker = Mock()
         checker._features_checked = FeatureSet()
@@ -590,3 +587,129 @@ class TestObservedDelayWarning:
         with caplog.at_level(logging.ERROR):
             check.set_feature("delete-calendar", {"support": "unknown", "behaviour": "slow", "delay": 9})
         assert "observed delay" in caplog.text
+
+
+class TestCheckFeatureUnknownToCaldav:
+    """A probe written against an unreleased caldav must not stop the report."""
+
+    UNKNOWN = "no-such-feature-in-this-caldav"
+
+    def create_checker(self, debug_mode=None) -> Mock:
+        checker = Mock()
+        checker._features_checked = ProbedFeatureSet()
+        checker._checks_run = set()
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.debug_mode = debug_mode
+        return checker
+
+    def test_check_with_only_unknown_keys_is_skipped(self, caplog) -> None:
+        unknown = self.UNKNOWN
+        ran = []
+
+        class TestCheck(Check):
+            features_to_be_checked = {unknown}
+
+            def _run_check(self) -> None:
+                ran.append(True)
+
+        checker = self.create_checker()
+        with caplog.at_level(logging.WARNING):
+            TestCheck(checker).run_check()
+
+        assert not ran
+        assert unknown in caplog.text
+        assert TestCheck in checker._checks_run
+
+    @pytest.mark.parametrize("debug_mode", [None, "logging", "assert"])
+    def test_known_keys_of_a_partly_unknown_check_are_recorded(self, debug_mode, caplog) -> None:
+        unknown = self.UNKNOWN
+
+        class TestCheck(Check):
+            features_to_be_checked = {"create-calendar", unknown}
+
+            def _run_check(self) -> None:
+                self.set_feature("create-calendar", True)
+                self.set_feature(unknown, True)
+
+        checker = self.create_checker(debug_mode)
+        with caplog.at_level(logging.WARNING):
+            TestCheck(checker).run_check()
+
+        assert checker._features_checked.is_supported("create-calendar", str) == "full"
+        assert unknown not in checker._features_checked.dotted_feature_set_list()
+        assert unknown in caplog.text
+        assert TestCheck in checker._checks_run
+
+    def test_reading_the_unknown_key_costs_only_that_key(self) -> None:
+        unknown = self.UNKNOWN
+
+        class TestCheck(Check):
+            features_to_be_checked = {"create-calendar", unknown}
+
+            def _run_check(self) -> None:
+                assert self.feature_undeterminated(unknown)
+                self.record_worse(unknown, {"support": "unsupported"})
+                self.set_feature("create-calendar", True)
+
+        checker = self.create_checker()
+        TestCheck(checker).run_check()
+
+        assert checker._features_checked.is_supported("create-calendar", str) == "full"
+        assert unknown not in checker._features_checked.dotted_feature_set_list()
+
+    def test_a_dependent_check_can_read_the_verdict_of_a_skipped_one(self) -> None:
+        unknown = self.UNKNOWN
+
+        class Skipped(Check):
+            features_to_be_checked = {unknown}
+
+            def _run_check(self) -> None:
+                raise NotImplementedError("must not run")
+
+        class Dependent(Check):
+            depends_on = {Skipped}
+            features_to_be_checked = {"create-calendar"}
+
+            def _run_check(self) -> None:
+                self.set_feature("create-calendar", not self.feature_ungood(unknown))
+                assert self.checker.features_checked.is_supported(unknown, dict) == {"support": "unknown"}
+                assert self.checker.features_checked.is_supported(unknown, return_defaults=False) is None
+
+        checker = self.create_checker()
+        checker.features_checked = checker._features_checked
+        Dependent(checker).run_check()
+
+        assert checker._features_checked.is_supported("create-calendar", str) == "unsupported"
+
+    def test_reading_a_renamed_key_still_translates_it(self) -> None:
+        old, new = next(iter(_RENAMED_FEATURES.items()))
+        features = ProbedFeatureSet()
+        features.set_feature(new, "unsupported")
+        with pytest.warns(DeprecationWarning):
+            assert features.is_supported(old, str) == "unsupported"
+
+    @pytest.mark.parametrize("known_only", [True, False])
+    def test_a_failed_assert_always_raises(self, known_only) -> None:
+        class TestCheck(Check):
+            features_to_be_checked = {"create-calendar"} if known_only else {"create-calendar", self.UNKNOWN}
+
+            def _run_check(self) -> None:
+                raise AssertionError("a bug in the probe")
+
+        with pytest.raises(AssertionError, match="a bug in the probe"):
+            TestCheck(self.create_checker()).run_check()
+
+    @pytest.mark.filterwarnings("ignore:Unknown feature:UserWarning:caldav")
+    def test_setting_an_undeclared_unknown_key_still_raises(self) -> None:
+        """A typo in a set_feature() call is not a caldav that is too old."""
+
+        class TestCheck(Check):
+            features_to_be_checked = {"create-calendar"}
+
+            def _run_check(self) -> None:
+                self.set_feature("create-calendar", True)
+                self.set_feature("create-calender", {"support": "full"})
+
+        with pytest.raises(AssertionError):
+            TestCheck(self.create_checker("assert")).run_check()

@@ -9,7 +9,7 @@ import caldav
 from caldav.compatibility_hints import FeatureSet, write_delay
 
 from . import checks
-from .checks_base import Check, takes_effect
+from .checks_base import Check, ProbedFeatureSet, takes_effect
 
 ## HTTP methods that change server state.  A server without synchronous-write settles each of
 ## these asynchronously, so the checker sleeps after every such request.
@@ -151,9 +151,12 @@ class ServerQuirkChecker:
     def __init__(self, client_obj, debug_mode="logging", extra_clients=None):
         self._client_obj = client_obj
         self._extra_clients = list(extra_clients or [])
-        self._features_checked = FeatureSet()
+        self._features_checked = ProbedFeatureSet()
         self._default_calendar = None
         self._checks_run = set()  ## checks that has already been running
+        ## Probes read what was configured too, also for a feature caldav lacks
+        if isinstance(self._client_obj.features, FeatureSet):
+            self._client_obj.features = ProbedFeatureSet(self._client_obj.features)
         self.expected_features = self._client_obj.features
         self.principal = self._client_obj.principal()
         self.extra_principals = []

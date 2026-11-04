@@ -11,7 +11,7 @@ import pytest
 from caldav.compatibility_hints import FeatureSet
 
 from caldav_server_tester.checker import ServerQuirkChecker
-from caldav_server_tester.checks_base import Check
+from caldav_server_tester.checks_base import Check, ProbedFeatureSet
 
 
 class TestServerQuirkCheckerInit:
@@ -25,13 +25,23 @@ class TestServerQuirkCheckerInit:
 
         assert checker._client_obj == client
 
+    def test_configured_features_answer_for_a_key_caldav_lacks(self) -> None:
+        """Probes read what was configured too, not only what was observed."""
+        client = Mock()
+        client.features = FeatureSet({"create-calendar": {"support": "unsupported", "delay": 3}})
+        checker = ServerQuirkChecker(client)
+
+        assert checker.expected_features.is_supported("no-such-feature-in-this-caldav", dict) == {"support": "unknown"}
+        assert checker.expected_features.is_supported("create-calendar", dict) == {"support": "unsupported", "delay": 3}
+        assert client.features is checker.expected_features
+
     def test_init_creates_empty_features_checked(self) -> None:
         """Initialization should create an empty FeatureSet"""
         client = Mock()
         client.features = FeatureSet()
         checker = ServerQuirkChecker(client)
 
-        assert isinstance(checker._features_checked, FeatureSet)
+        assert isinstance(checker._features_checked, ProbedFeatureSet)
         assert len(checker._features_checked.dotted_feature_set_list()) == 0
 
     def test_init_sets_default_calendar_to_none(self) -> None:

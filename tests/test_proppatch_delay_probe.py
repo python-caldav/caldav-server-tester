@@ -74,8 +74,7 @@ def _checker(monkeypatch, stale_reads: int, configured=None, read_time=0.0) -> t
 
 def _run(checker) -> dict:
     ## run_check(), not _run_check(): it hands the library what has been
-    ## observed so far, and asserts the declared feature was recorded - which
-    ## a key unknown to caldav's FEATURES never is.
+    ## observed so far, and asserts the declared feature was recorded.
     CheckProppatchDelay(checker).run_check()
     return checker.features_checked.is_supported("synchronous-write.proppatch", dict)
 

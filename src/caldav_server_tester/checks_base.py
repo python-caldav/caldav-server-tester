@@ -2,7 +2,8 @@ import copy
 import logging
 import time
 
-from caldav.compatibility_hints import write_delay
+from caldav import __version__ as caldav_version
+from caldav.compatibility_hints import _RENAMED_FEATURES, FeatureSet, write_delay
 from caldav.lib.error import DAVError
 
 ## Keys that record timing rather than a verdict.  Left out when an observation
@@ -70,6 +71,23 @@ def is_worse(candidate, current) -> bool:
     return SUPPORT_SEVERITY.index(candidate) < SUPPORT_SEVERITY.index(current)
 
 
+class ProbedFeatureSet(FeatureSet):
+    """The features a check reads, observed or configured.
+
+    A probe may be ahead of the installed caldav, and its verdict is read by
+    whoever depends on it.  FeatureSet.is_supported() asserts on a key without
+    a FEATURES entry; here such a key is simply one nobody could determine.
+    """
+
+    def is_supported(self, feature, return_type=bool, return_defaults=True, accept_fragile=False):
+        if feature in self.FEATURES or feature in _RENAMED_FEATURES:
+            return super().is_supported(feature, return_type, return_defaults, accept_fragile)
+        logging.warning("Reading %s as unknown: the installed caldav does not know it", feature)
+        if not return_defaults:
+            return None
+        return self._convert_node({"support": "unknown"}, {}, return_type, accept_fragile)
+
+
 class Check:
     """
     A "check" may check zero, one or multiple features, as listed in
@@ -81,12 +99,19 @@ class Check:
     """
 
     depends_on = set()
+    features_to_be_checked = set()
+
+    ## Declared features the installed caldav has no FEATURES entry for
+    _unavailable_features = frozenset()
 
     def __init__(self, checker):
         self.checker = checker
         self.client = checker._client_obj
 
     def set_feature(self, feature, value=True):
+        if feature in self._unavailable_features:
+            return
+
         fs = self.checker._features_checked
         fs.set_feature(feature, value)
 
@@ -368,6 +393,23 @@ class Check:
         if only_once:
             if self.__class__ in self.checker._checks_run:
                 return
+
+        ## A probe may be ahead of the installed caldav: new features are
+        ## released in caldav first, so this is a normal state of affairs
+        ## between releases.  It costs the features caldav lacks, not the rest
+        ## of the report.  A check with nothing else to find out is not run.
+        self._unavailable_features = {f for f in self.features_to_be_checked if f not in FeatureSet.FEATURES}
+        if self._unavailable_features:
+            logging.warning(
+                "%s cannot probe %s: unknown to the installed caldav %s",
+                self.__class__.__name__,
+                ", ".join(sorted(self._unavailable_features)),
+                caldav_version,
+            )
+            if self._unavailable_features == self.features_to_be_checked:
+                self.checker._checks_run.add(self.__class__)
+                return
+
         for foo in self.depends_on:
             foo(self.checker).run_check(only_once=only_once)
 
@@ -405,7 +447,7 @@ class Check:
         ## Check that all the declared checking has been done
         keys_after = set(self.checker._features_checked.dotted_feature_set_list().keys())
         new_keys = keys_after - keys_before
-        missing_keys = self.features_to_be_checked - new_keys
+        missing_keys = self.features_to_be_checked - new_keys - self._unavailable_features
         parent_keys = set()
 
         ## Missing keys aren't missing if their parents are included.

@@ -275,26 +275,6 @@ The work is a sweep of `tests/` and the docstrings in
 `.lycheeignore`.  Nothing depends on the current hostnames — they are never
 connected to — so it is a rename and a test run.
 
-# A probe for a feature key the installed caldav lacks aborts the whole run
-
-(Clean-context review 2026-09-18, filed rather than fixed.)
-
-`Check.run_check` ends by asserting that every key in `features_to_be_checked`
-was recorded.  `FeatureSet.set_feature` warns and records nothing for a key that
-has no `FEATURES` entry, so a probe written against a caldav that has not been
-released yet does not merely abstain: the `AssertionError` is re-raised out of
-`run_check`, `ServerQuirkChecker.check_all()` dies on it, and every check
-ordered after the new one never runs.  A user on the pinned caldav loses most of
-the report and gets an assertion instead of a verdict.
-
-This is a normal state of affairs between releases — the practice is to develop
-on corresponding branches in both repositories and to release caldav first, so
-this window is expected — but the failure mode should be "this one probe could
-not run", not "the report stops here".  Guards in the individual checks were
-considered and rejected as too intrusive; the fix belongs in `run_check`, which
-can tell a key that is absent from `FeatureSet.FEATURES` from one a probe
-forgot to set.
-
 # `auth.www-authenticate` and CheckWellKnown duplicate the raw-HTTP escape hatch
 
 (Clean-context review 2026-09-18, filed rather than fixed.)
