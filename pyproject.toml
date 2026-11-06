@@ -26,6 +26,8 @@ classifiers = [
 ]
 keywords = ["caldav", "calendar", "testing", "compatibility", "server"]
 dependencies = [
+    # When raising this floor, delete the features that caldav release defines from
+    # FUTURE_FEATURES in src/caldav_server_tester/future_features.py.
     "caldav>=3.7.0",
     "click",
     "pyyaml",

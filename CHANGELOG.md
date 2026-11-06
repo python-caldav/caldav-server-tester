@@ -8,9 +8,18 @@ This project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0
 
 This library is tightly dependent on the CalDAV-library, particularly the `compatibility_hints.py`-file.  This file is not (yet) considered to be part of the "core" business logic in the CalDAV library and can be changed in patch-releases in the CalDAV library - so this library is usually released in lock-steps with the CalDAV-library.  I've considered to bump the version number to be follow the CalDAV version number.
 
+## Unreleased
+
+This release works with caldav 3.7.0.
+
+### Added
+
+- **`move`**, **`move.overwrite`** and **`move.if-match`** - whether WebDAV MOVE (RFC 4918 section 9.9) moves an object into another calendar, whether a MOVE with `Overwrite: F` onto an existing object fails with 412 as RFC 4918 requires, and whether one with an outdated If-Match does.  caldav does not define these features yet, so the tester adds their definitions itself until a caldav release has them.  Radicale and Xandikos ignore the If-Match, Zimbra and SOGo also ignore `Overwrite: F`, and Bedework refuses the MOVE.  See https://github.com/python-caldav/caldav/issues/841 and https://github.com/python-caldav/caldav-server-tester/issues/50.
+
 ### Fixed
 
 - A probe for a feature the installed caldav does not know no longer aborts the whole run.  The check logs a warning and loses that feature only, and a check reading it gets "unknown"; a check with no other feature is not run.
+- **`save.duplicate-uid.cross-calendar`** - whether saving the copy moved the original is read from a listing of the original calendar, not from a search by UID, which a stale search index answers wrongly.
 
 ## 1.8.0 - 2026-10-30
 

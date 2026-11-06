@@ -7326,11 +7326,7 @@ class CheckDuplicateUID(Check):
                 events_in_cal2 = list(_filter_fixture_window(cal2.events(), base))
 
                 ## Check if event still exists in cal1 (Zimbra moves it instead of copying)
-                try:
-                    cal1.event_by_uid(test_uid)
-                    event_was_moved = False
-                except NotFoundError:
-                    event_was_moved = True
+                event_was_moved = not _holds(cal1, str(event1.url).rstrip("/").rsplit("/", 1)[-1])
 
                 if len(events_in_cal2) == 0:
                     ## Server silently ignored the duplicate
@@ -8728,6 +8724,171 @@ class CheckScheduleTagStablePartstat(Check):
                     pass
         except Exception:
             pass
+
+
+def _holds(calendar, name: str) -> bool:
+    """Whether a listing of `calendar` (PROPFIND, depth 1) has an object named `name`.
+
+    A listing, not a GET or a search: Zimbra still answers a request for an
+    object's old URL after it has moved, and a search index may lag.
+    """
+    return any(str(url).rstrip("/").rsplit("/", 1)[-1] == name for url, _, _ in calendar.children())
+
+
+def grade_move(status: int, *, in_source: bool, in_target: bool) -> bool | dict:
+    """The `move` verdict from a MOVE's status and where the object ended up."""
+    if status in (405, 501):
+        return {"support": "unsupported", "behaviour": f"MOVE answered {status}"}
+    if not 200 <= status < 300 or status == 207:  ## a 207 reports a failure (RFC 4918 section 9.9.4)
+        return {"support": "ungraceful", "behaviour": f"MOVE answered {status}"}
+    if not in_target:
+        return {
+            "support": "broken",
+            "behaviour": f"MOVE answered {status}, but the object is not in the target calendar",
+        }
+    if in_source:
+        return {"support": "fragile", "behaviour": "the object was copied, not moved: it is in both calendars"}
+    return True
+
+
+def grade_precondition(status: int, precondition: str, *, moved: bool) -> bool | dict:
+    """`move.overwrite` or `move.if-match` from a MOVE that should have failed with 412,
+    and whether it ``moved`` the object anyway."""
+    if status == 412:
+        return True
+    if moved or (200 <= status < 300 and status != 207):  ## a 207 reports a failure
+        return {"support": "unsupported", "behaviour": f"a MOVE with {precondition} answered {status}, not 412"}
+    return {
+        "support": "ungraceful",
+        "behaviour": f"a MOVE with {precondition} answered {status}, not 412, and moved nothing",
+    }
+
+
+class CheckMove(Check):
+    """
+    Checks WebDAV MOVE (RFC 4918 section 9.9) of an object into another calendar,
+    and whether it honours `Overwrite: F` and If-Match.
+
+    caldav has no move() yet (https://github.com/python-caldav/caldav/issues/841):
+    a client copies and deletes, which fails on servers keeping a UID in one
+    calendar only (see save.duplicate-uid.cross-calendar).
+
+    Where an object ended up is read from a listing of each calendar
+    (PROPFIND, depth 1), not from a GET or a search: Zimbra still answers a
+    request for an object's old URL after it has moved.
+    """
+
+    depends_on = {PrepareCalendar}
+    features_to_be_checked = {"move", "move.overwrite", "move.if-match"}
+
+    def _event(self, uid: str) -> str:
+        ts = (datetime.now(tz=utc) + timedelta(days=30)).strftime("%Y%m%dT%H%M%SZ")
+        end = (datetime.now(tz=utc) + timedelta(days=30, hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        return (
+            "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//caldav-server-tester//EN\n"
+            f"BEGIN:VEVENT\nUID:{uid}\nDTSTAMP:{ts}\nDTSTART:{ts}\nDTEND:{end}\n"
+            "SUMMARY:move check\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+
+    @staticmethod
+    def _name(url) -> str:
+        return str(url).rstrip("/").rsplit("/", 1)[-1]
+
+    def _move(self, source: str, destination: str, **headers: str) -> int:
+        try:
+            return self.client.request(source, "MOVE", "", {"Destination": destination, **headers}).status
+        except DAVError as e:
+            return getattr(e, "status", None) or 500
+
+    def _moved(self, cal1, cal2, obj) -> bool:
+        """Whether ``obj`` left ``cal1``, or turned up in ``cal2`` under its own
+        name (Zimbra names every object <uid>.ics, wherever it is put)"""
+        name = self._name(obj.url)
+        return not _holds(cal1, name) or _holds(cal2, name)
+
+    def _uid_at(self, url: str) -> str | None:
+        """The UID of the object a GET of ``url`` answers with, None for none"""
+        try:
+            response = self.client.request(url)
+        except DAVError:
+            return None
+        found = re.search(r"^UID:(.*?)\r?$", response.raw or "", re.MULTILINE) if 200 <= response.status < 300 else None
+        return found[1].strip() if found else None
+
+    def _unknown(self, features, why: str) -> None:
+        for feature in features:
+            self.set_feature(feature, {"support": "unknown", "behaviour": why})
+
+    def _run_check(self) -> None:
+        cal1 = self.checker.calendar
+        cal2_name = "csc_move_cal2"
+        try:
+            for cal in self.client.principal().calendars():
+                if cal.name == cal2_name:
+                    cal.delete()
+        except Exception:
+            pass
+        try:
+            cal2 = self.client.principal().make_calendar(name=cal2_name)
+        except DAVError:
+            self._unknown(self.features_to_be_checked, "cannot test, have access to only one calendar")
+            return
+        made = []
+        try:
+            try:
+                first = cal1.add_event(self._event("csc_move_event"))
+            except (DAVError, AuthorizationError) as e:
+                self._unknown(self.features_to_be_checked, f"could not store an object to move: {type(e).__name__}")
+                return
+            made.append(first)
+            name = self._name(first.url)
+            status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name, Overwrite="F")
+            moved = grade_move(status, in_source=_holds(cal1, name), in_target=_holds(cal2, name))
+            self.set_feature("move", moved)
+            if moved is not True:
+                self._unknown(("move.overwrite", "move.if-match"), "MOVE itself did not work")
+                return
+            self._probe_overwrite(cal1, cal2, made)
+            self._probe_if_match(cal1, cal2, made)
+        finally:
+            for obj in made:
+                with contextlib.suppress(Exception):
+                    obj.delete()
+            with contextlib.suppress(Exception):
+                cal2.delete()
+
+    def _probe_overwrite(self, cal1, cal2, made: list) -> None:
+        """Overwrite: F onto an object already at the destination: 412, and both kept.
+
+        The object at the destination is added the normal way and its own URL is
+        the destination: Zimbra names every object <uid>.ics, whatever URL it is put at.
+        """
+        try:
+            taken = cal2.add_event(self._event("csc_move_event2_target"))
+            second = cal1.add_event(self._event("csc_move_event2"))
+            made.append(second)
+        except (DAVError, AuthorizationError) as e:
+            self._unknown(("move.overwrite",), f"could not set up the probe: {type(e).__name__}")
+            return
+        status = self._move(str(second.url), str(taken.url), Overwrite="F")
+        moved = self._moved(cal1, cal2, second) or self._uid_at(str(taken.url)) != "csc_move_event2_target"
+        self.set_feature(
+            "move.overwrite", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
+        )
+
+    def _probe_if_match(self, cal1, cal2, made: list) -> None:
+        """An outdated If-Match: 412, and nothing moved; an object of its own, as a server
+        ignoring Overwrite: F has moved the one above"""
+        try:
+            third = cal1.add_event(self._event("csc_move_event3"))
+            made.append(third)
+        except (DAVError, AuthorizationError) as e:
+            self._unknown(("move.if-match",), f"could not set up the probe: {type(e).__name__}")
+            return
+        free = str(cal2.url).rstrip("/") + "/csc_move_free.ics"
+        status = self._move(str(third.url), free, Overwrite="F", **{"If-Match": '"csc-outdated"'})
+        moved = self._moved(cal1, cal2, third) or _holds(cal2, "csc_move_free.ics")
+        self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match", moved=moved))
 
 
 class CheckTimezone(Check):
