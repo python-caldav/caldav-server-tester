@@ -10,7 +10,7 @@ This library is tightly dependent on the CalDAV-library, particularly the `compa
 
 ## Unreleased
 
-This release works with caldav 3.7.0.
+This release works with caldav 3.7.0: the tester carries the definitions of the features below that caldav has not released yet.
 
 ### Added
 
