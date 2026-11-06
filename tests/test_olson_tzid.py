@@ -7,7 +7,7 @@ judges the server's reading by time-range searches.
 """
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -32,7 +32,7 @@ def _search(server, offset, inclusive=False):
         found = []
         for body in server.objects.values():
             stamp = re.search(r"\r\nDTSTART[^:]*:(\d{8}T\d{6})", body)[1]
-            begin = datetime.strptime(stamp, "%Y%m%dT%H%M%S").replace(tzinfo=UTC) - timedelta(hours=offset)
+            begin = datetime.strptime(stamp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc) - timedelta(hours=offset)
             stop = begin + timedelta(hours=1)
             if (start <= stop if inclusive else start < stop) and end > begin:
                 found.append(Mock(component={"UID": re.search(r"\r\nUID:(.*)\r\n", body)[1]}))
