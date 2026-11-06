@@ -48,7 +48,14 @@ def test_the_package_registers_its_future_features() -> None:
         assert name in FeatureSet.FEATURES
 
 
-def test_no_fake_feature_is_left_in_caldav() -> None:
-    """Last in the file, so pytest runs it after the tests that add one"""
+def test_no_fake_feature_is_left_in_caldav(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixture puts caldav's tree back after a test adds a fake feature"""
+    fixture = features.__wrapped__(monkeypatch)
+    next(fixture)
+    monkeypatch.setattr(future_features, "FUTURE_FEATURES", {"save.csc-future": {"description": "not in caldav yet"}})
+    future_features.register()
+    FeatureSet.find_feature("save")  ## caches a tree that has the fake feature
+    next(fixture, None)
+    monkeypatch.undo()
     assert "save.csc-future" not in FeatureSet.FEATURES
     assert "csc-future" not in FeatureSet.find_feature("save")["subfeatures"]

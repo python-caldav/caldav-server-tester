@@ -8751,11 +8751,17 @@ def grade_move(status: int, *, in_source: bool, in_target: bool) -> bool | dict:
     return True
 
 
-def grade_precondition(status: int, precondition: str) -> bool | dict:
-    """`move.overwrite` or `move.if-match` from the status of a MOVE that should have failed with 412."""
+def grade_precondition(status: int, precondition: str, *, moved: bool) -> bool | dict:
+    """`move.overwrite` or `move.if-match` from a MOVE that should have failed with 412,
+    and whether it ``moved`` the object anyway."""
     if status == 412:
         return True
-    return {"support": "unsupported", "behaviour": f"a MOVE with {precondition} answered {status}, not 412"}
+    if moved or (200 <= status < 300 and status != 207):  ## a 207 reports a failure
+        return {"support": "unsupported", "behaviour": f"a MOVE with {precondition} answered {status}, not 412"}
+    return {
+        "support": "ungraceful",
+        "behaviour": f"a MOVE with {precondition} answered {status}, not 412, and moved nothing",
+    }
 
 
 class CheckMove(Check):
@@ -8793,6 +8799,21 @@ class CheckMove(Check):
             return self.client.request(source, "MOVE", "", {"Destination": destination, **headers}).status
         except DAVError as e:
             return getattr(e, "status", None) or 500
+
+    def _moved(self, cal1, cal2, obj) -> bool:
+        """Whether ``obj`` left ``cal1``, or turned up in ``cal2`` under its own
+        name (Zimbra names every object <uid>.ics, wherever it is put)"""
+        name = self._name(obj.url)
+        return not _holds(cal1, name) or _holds(cal2, name)
+
+    def _uid_at(self, url: str) -> str | None:
+        """The UID of the object a GET of ``url`` answers with, None for none"""
+        try:
+            response = self.client.request(url)
+        except DAVError:
+            return None
+        found = re.search(r"^UID:(.*?)\r?$", response.raw or "", re.MULTILINE) if 200 <= response.status < 300 else None
+        return found[1].strip() if found else None
 
     def _unknown(self, features, why: str) -> None:
         for feature in features:
@@ -8850,7 +8871,10 @@ class CheckMove(Check):
             self._unknown(("move.overwrite",), f"could not set up the probe: {type(e).__name__}")
             return
         status = self._move(str(second.url), str(taken.url), Overwrite="F")
-        self.set_feature("move.overwrite", grade_precondition(status, "Overwrite: F onto an existing object"))
+        moved = self._moved(cal1, cal2, second) or self._uid_at(str(taken.url)) != "csc_move_event2_target"
+        self.set_feature(
+            "move.overwrite", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
+        )
 
     def _probe_if_match(self, cal1, cal2, made: list) -> None:
         """An outdated If-Match: 412, and nothing moved; an object of its own, as a server
@@ -8863,7 +8887,8 @@ class CheckMove(Check):
             return
         free = str(cal2.url).rstrip("/") + "/csc_move_free.ics"
         status = self._move(str(third.url), free, Overwrite="F", **{"If-Match": '"csc-outdated"'})
-        self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match"))
+        moved = self._moved(cal1, cal2, third) or _holds(cal2, "csc_move_free.ics")
+        self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match", moved=moved))
 
 
 class CheckTimezone(Check):
