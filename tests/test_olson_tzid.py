@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 from caldav.compatibility_hints import FeatureSet
-from caldav.lib.error import AuthorizationError
+from caldav.lib.error import AuthorizationError, DAVError
 
 from caldav_server_tester.checks import CheckOlsonTzid
 
@@ -23,16 +23,19 @@ FEATURE = CheckOlsonTzid.FEATURE
 VTIMEZONE = "BEGIN:VTIMEZONE\r\nTZID:Asia/Tokyo\r\nEND:VTIMEZONE\r\n"
 
 
-def _search(server, offset, inclusive=False):
+def _search(server, offset, inclusive=False, zoned=9):
     """A time-range search reading each stored DTSTART as ``offset`` hours
-    ahead of UTC, the event lasting an hour; ``inclusive`` finds it in a range
-    starting at its end"""
+    ahead of UTC, or ``zoned`` hours where the object carries a VTIMEZONE, the
+    event lasting an hour; ``inclusive`` finds it in a range starting at its
+    end"""
 
     def search(start, end, **kwargs):
         found = []
         for body in server.objects.values():
-            stamp = re.search(r"\r\nDTSTART[^:]*:(\d{8}T\d{6})", body)[1]
-            begin = datetime.strptime(stamp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc) - timedelta(hours=offset)
+            event = body[body.index("BEGIN:VEVENT") :]
+            stamp = re.search(r"\r\nDTSTART[^:]*:(\d{8}T\d{6})", event)[1]
+            hours = zoned if "BEGIN:VTIMEZONE" in body else offset
+            begin = datetime.strptime(stamp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc) - timedelta(hours=hours)
             stop = begin + timedelta(hours=1)
             if (start <= stop if inclusive else start < stop) and end > begin:
                 found.append(Mock(component={"UID": re.search(r"\r\nUID:(.*)\r\n", body)[1]}))
@@ -144,3 +147,59 @@ def test_a_failing_search_is_unknown():
 def test_not_found_at_all_is_unknown():
     """A search index lagging behind the PUT"""
     assert _run(RewritingServer(), search=lambda **kwargs: [])["support"] == "unknown"
+
+
+def test_a_search_misplacing_zoned_times_too_is_unknown():
+    """Xandikos: once its index answers, a time lands in the server's zone,
+    VTIMEZONE or not, so the search cannot tell what the TZID is read as"""
+    server = RewritingServer()
+    verdict = _run(server, search=_search(server, 0, zoned=0))
+    assert verdict["support"] == "unknown"
+    assert "VTIMEZONE" in verdict["behaviour"]
+    assert not server.objects
+
+
+def test_the_control_event_carries_a_vtimezone_and_is_removed():
+    sent = []
+    server = RewritingServer(rewrite=lambda body: sent.append(body) or body)
+    assert _run(server, offset=0)["support"] == "unsupported"
+    control = [body for body in sent if "BEGIN:VTIMEZONE" in body]
+    assert len(control) == 1
+    assert "\r\nTZID:Asia/Tokyo\r\n" in control[0]
+    assert re.search(r"\r\nDTSTART;TZID=Asia/Tokyo:\d{8}T120000\r\n", control[0])
+    assert not server.objects
+
+
+def test_no_control_event_where_the_bare_tzid_is_placed_right():
+    sent = []
+    _run(RewritingServer(rewrite=lambda body: sent.append(body) or body))
+    assert len(sent) == 1
+
+
+def test_a_control_that_cannot_be_stored_is_unknown():
+    """Without the control, a misplaced bare TZID may still be the search's doing"""
+
+    class RefusingControl(RewritingServer):
+        def put(self, url, body, headers=None):
+            if CheckOlsonTzid.CONTROL_UID in url:
+                return Mock(status=403, headers={})
+            return super().put(url, body, headers)
+
+    server = RefusingControl()
+    verdict = _run(server, offset=0)
+    assert verdict["support"] == "unknown"
+    assert "could not be stored" in verdict["behaviour"]
+    assert not server.objects
+
+
+def test_the_control_is_removed_when_its_search_fails():
+    server = RewritingServer()
+    search = _search(server, 0)
+
+    def failing(**kwargs):
+        if any(CheckOlsonTzid.CONTROL_UID in url for url in server.objects):
+            raise DAVError("500 Internal Server Error")
+        return search(**kwargs)
+
+    assert _run(server, search=failing)["support"] == "unknown"
+    assert not server.objects
