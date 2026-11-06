@@ -12,7 +12,7 @@ import pytest
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import AuthorizationError
 
-from caldav_server_tester.checks import CheckParticipant, CheckVtimezone, CheckXProperty
+from caldav_server_tester.checks import CheckParticipant, CheckVtimezone, CheckXParameter, CheckXProperty
 
 from .test_floating_event import RewritingServer
 
@@ -148,3 +148,17 @@ def test_unread_without_a_status_says_so_plainly(check):
     verdict = _run(check, RewritingServer(get_status=503))
     assert verdict["support"] == "unknown"
     assert "None" not in verdict["behaviour"]
+
+
+def test_x_parameter_kept_is_full_and_sent_on_summary():
+    sent = []
+    assert _run(CheckXParameter, RewritingServer(rewrite=lambda body: sent.append(body) or body))["support"] == "full"
+    assert all("\r\nSUMMARY;X-CALDAV-SERVER-TESTER=kept:" in body for body in sent)
+    assert len(sent) == 2, "an event and a task"
+
+
+def test_x_parameter_dropped_is_unsupported():
+    """Ox and Zimbra"""
+    verdict = _run(CheckXParameter, RewritingServer(rewrite=lambda b: b.replace(";X-CALDAV-SERVER-TESTER=kept", "")))
+    assert verdict["support"] == "unsupported"
+    assert "in an event" in verdict["behaviour"]

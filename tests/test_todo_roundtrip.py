@@ -13,6 +13,9 @@ from caldav.compatibility_hints import FeatureSet
 from caldav_server_tester.checks import (
     CheckCompletedWithoutStatus,
     CheckTodoAttendee,
+    CheckTodoPriority,
+    CheckTodoStatus,
+    CheckTodoStatusRfc10051,
     CheckUnknownProperty,
     PrepareCalendar,
 )
@@ -21,7 +24,14 @@ from .test_floating_event import RewritingServer
 
 BASE = "http://example.com/cal/"
 TASKS = "http://example.com/tasks/"
-CHECKS = [CheckTodoAttendee, CheckUnknownProperty, CheckCompletedWithoutStatus]
+CHECKS = [
+    CheckTodoAttendee,
+    CheckUnknownProperty,
+    CheckCompletedWithoutStatus,
+    CheckTodoStatus,
+    CheckTodoStatusRfc10051,
+    CheckTodoPriority,
+]
 
 
 class VanishingServer(RewritingServer):
@@ -39,12 +49,12 @@ class VanishingServer(RewritingServer):
         return super().put(url, body, headers)
 
 
-def _run(check, server, todo="full", tasklist=True, whole=False):
+def _run(check, server, todo="full", tasklist=True, whole=False, recorded=None):
     """``whole``: through run_check(), with its check that every declared
     feature got a value"""
     checker = Mock()
     checker._checks_run = {PrepareCalendar}
-    checker._features_checked = FeatureSet({"save-load.todo": {"support": todo}})
+    checker._features_checked = FeatureSet({"save-load.todo": {"support": todo}, **(recorded or {})})
     checker.features_checked = checker._features_checked
     checker.debug_mode = None
     checker._client_obj = server
@@ -127,6 +137,83 @@ def test_a_status_added_with_completed_kept_is_full():
     assert _run(CheckCompletedWithoutStatus, RewritingServer(rewrite=add_status))["support"] == "full"
 
 
+class ValueServer(RewritingServer):
+    """Stores ``name:value`` as ``stored[value]`` (None drops it), and refuses the values in ``refused``."""
+
+    def __init__(self, name, stored=None, refused=()):
+        super().__init__()
+        self.name, self.stored, self.refused = name, stored or {}, refused
+
+    def put(self, url, body, headers=None):
+        value = re.search(rf"\r\n{self.name}:([^\r]*)", body)[1]
+        if value in self.refused:
+            return Mock(status=403, headers={})
+        if value in self.stored:
+            new = self.stored[value]
+            body = body.replace(f"\r\n{self.name}:{value}", "" if new is None else f"\r\n{self.name}:{new}")
+        return super().put(url, body, headers)
+
+
+def test_the_rfc_5545_statuses_and_the_rfc_10051_ones_are_swept_apart():
+    for check, expected in (
+        (CheckTodoStatus, ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"]),
+        (CheckTodoStatusRfc10051, ["PENDING", "FAILED"]),
+    ):
+        sent = []
+        _run(check, RewritingServer(rewrite=lambda body: sent.append(body) or body))
+        assert [re.search(r"\r\nSTATUS:([^\r]*)", b)[1] for b in sent] == expected
+
+
+def test_rfc_10051_statuses_dropped_where_not_advertised():
+    """Ox keeps every RFC 5545 status, drops PENDING and FAILED, and does not advertise RFC 10051"""
+    server = ValueServer("STATUS", {"PENDING": None, "FAILED": None})
+    assert _run(CheckTodoStatus, server)["support"] == "full"
+    not_advertised = {"supported-task-modes": {"support": "unsupported"}}
+    verdict = _run(CheckTodoStatusRfc10051, server, recorded=not_advertised)
+    assert verdict["support"] == "unsupported"
+    assert verdict["values"] == []
+    assert verdict["behaviour"] == "PENDING is dropped; FAILED is dropped; the server does not advertise RFC 10051"
+
+
+def test_rfc_10051_statuses_dropped_where_advertised_say_so():
+    advertised = {"supported-task-modes": {"support": "full", "values": ["AUTOMATIC-COMPLETION"]}}
+    verdict = _run(CheckTodoStatusRfc10051, ValueServer("STATUS", {"PENDING": None}), recorded=advertised)
+    assert verdict["behaviour"] == "PENDING is dropped; although the server advertises RFC 10051"
+
+
+def test_rfc_10051_statuses_dropped_where_advertising_is_unknown_say_nothing_more():
+    verdict = _run(CheckTodoStatusRfc10051, ValueServer("STATUS", {"PENDING": None}))
+    assert verdict["behaviour"] == "PENDING is dropped"
+
+
+def test_statuses_stored_as_another_and_refused():
+    """Zimbra"""
+    server = ValueServer("STATUS", {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}, refused=("CANCELLED",))
+    verdict = _run(CheckTodoStatus, server)
+    assert verdict["support"] == "ungraceful"
+    assert verdict["values"] == ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED"]
+    assert verdict["refused"] == ["CANCELLED"]
+    assert "CANCELLED is refused (403)" in verdict["behaviour"]
+    assert not server.objects
+    assert _run(CheckTodoStatusRfc10051, server)["map"] == {"PENDING": "NEEDS-ACTION", "FAILED": "NEEDS-ACTION"}
+
+
+def test_priorities_kept_as_three_levels():
+    """Ox: 1, 5 and 9, each other value stored as the nearest"""
+    stored = {"0": "5", "2": "1", "3": "5", "4": "5", "6": "5", "7": "9", "8": "9"}
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", stored))
+    assert verdict["support"] == "unsupported"
+    assert verdict["values"] == [1, 5, 9]
+    assert verdict["map"] == {0: 5, 2: 1, 3: 5, 4: 5, 6: 5, 7: 9, 8: 9}
+
+
+def test_priority_zero_dropped_means_the_same():
+    """No PRIORITY is no priority given, as 0 is"""
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", {"0": None}))
+    assert verdict["support"] == "full"
+    assert "dropped" in verdict["behaviour"]
+
+
 @pytest.mark.parametrize("check", CHECKS)
 def test_refused_is_ungraceful(check):
     assert _run(check, RewritingServer(put_answer=403))["support"] == "ungraceful"
@@ -152,3 +239,18 @@ def test_no_task_calendar_is_unknown(check):
 
 def test_an_unreadable_task_other_than_404_is_unknown():
     assert _run(CheckTodoAttendee, RewritingServer(get_status=500))["support"] == "unknown"
+
+
+def test_a_priority_written_back_as_no_number_is_mapped_as_text():
+    verdict = _run(CheckTodoPriority, ValueServer("PRIORITY", {"3": "MEDIUM"}))
+    assert verdict["map"] == {3: "MEDIUM"}
+
+
+def test_one_value_unreadable_makes_the_sweep_unknown():
+    class OneUnreadable(ValueServer):
+        def request(self, url, method="GET"):
+            if "in-process" in url:
+                return Mock(status=500, headers={}, raw="")
+            return super().request(url, method)
+
+    assert _run(CheckTodoStatus, OneUnreadable("STATUS"))["support"] == "unknown"

@@ -21,6 +21,7 @@ from caldav_server_tester.checks import CheckMultiget
 
 BASE = "http://example.com/cal/"
 MISSING = "multiget.missing-href"
+DELETED = "multiget.deleted"
 LIMIT = "multiget.limit"
 PROPFIND = "propfind.limit"
 SEARCH = "search.limit"
@@ -45,7 +46,10 @@ class MultigetServer:
         missing_as=None,
         propfind_status=None,
         query_status=207,
+        keeps_deleted=False,
     ):
+        self.keeps_deleted = keeps_deleted
+        self.deleted = set()
         self.query_status = query_status
         self.propfind_status = propfind_status
         self.missing_as = missing_as
@@ -67,6 +71,8 @@ class MultigetServer:
         return Mock(status=201, headers={})
 
     def delete(self, url, headers=None):
+        if self._name(url) in self.objects:
+            self.deleted.add(self._name(url))
         self.objects.discard(self._name(url))
         return Mock(status=204)
 
@@ -78,7 +84,8 @@ class MultigetServer:
         if self.report_status != 207:
             return Mock(status=self.report_status, tree=None, raw="")
         names = [self._name(h) for h in re.findall(r"<D:href>(.*?)</D:href>", body)]
-        entries = [(n, None if n in self.objects else (self.missing_as or 404)) for n in names]
+        served = self.objects | (self.deleted if self.keeps_deleted else set())
+        entries = [(n, None if n in served else (self.missing_as or 404)) for n in names]
         if self.omit_missing:
             entries = [e for e in entries if e[1] is None]
         return self._answer(entries)
@@ -92,6 +99,8 @@ class MultigetServer:
 
     def request(self, url, method="GET", body="", headers=None):
         """The raw answer, left unparsed"""
+        if method == "GET":
+            return Mock(status=200 if self._name(url) in self.objects else 404, headers={})
         assert method == "PROPFIND"
         if self.propfind_raises:
             raise self.propfind_raises
@@ -141,7 +150,7 @@ def _run(server, monkeypatch, objects=None):
     checker.calendar.url = URL.objectify(BASE)
     CheckMultiget(checker)._run_check()
     fs = checker._features_checked
-    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, LIMIT, PROPFIND, SEARCH)}
+    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, DELETED, LIMIT, PROPFIND, SEARCH)}
 
 
 def test_a_404_entry_for_the_missing_href_is_full(monkeypatch):
@@ -175,6 +184,19 @@ def test_a_missing_href_answered_otherwise_names_the_status(monkeypatch):
     }
 
 
+def test_a_deleted_object_answered_as_missing_is_full(monkeypatch):
+    server = MultigetServer()
+    assert _run(server, monkeypatch)[DELETED] == {"support": "full"}
+    assert not server.objects
+
+
+def test_a_deleted_object_still_served_is_broken(monkeypatch):
+    """Zimbra: the GET answers 404, the multiget the old data"""
+    verdict = _run(MultigetServer(keeps_deleted=True), monkeypatch)[DELETED]
+    assert verdict["support"] == "broken"
+    assert "404" in verdict["behaviour"]
+
+
 def test_a_failing_multiget_is_ungraceful(monkeypatch):
     assert _run(MultigetServer(report_status=400), monkeypatch)[MISSING]["support"] == "ungraceful"
 
@@ -182,7 +204,7 @@ def test_a_failing_multiget_is_ungraceful(monkeypatch):
 def test_the_limits_are_not_probed_by_default(monkeypatch):
     server = MultigetServer()
     verdicts = _run(server, monkeypatch)
-    assert server.puts == 1
+    assert server.puts == 2, "the present object, and the one deleted"
     for feature in (LIMIT, PROPFIND, SEARCH):
         assert verdicts[feature]["support"] == "unknown"
         assert ENV in verdicts[feature]["behaviour"]
@@ -229,7 +251,7 @@ def test_an_unusable_object_count_does_not_probe(monkeypatch, value):
     checker.fixture_base_year = 2027
     checker.calendar.url = URL.objectify(BASE)
     CheckMultiget(checker)._run_check()
-    assert server.puts == 1
+    assert server.puts == 2, "the present object, and the one deleted"
 
 
 def test_a_propfind_answered_507_as_a_whole_is_unsupported(monkeypatch):
@@ -255,3 +277,15 @@ def test_a_calendar_query_answered_507_as_a_whole_is_unsupported(monkeypatch):
 
 def test_a_failing_calendar_query_is_ungraceful(monkeypatch):
     assert _run(MultigetServer(query_status=500), monkeypatch, objects=12)[SEARCH]["support"] == "ungraceful"
+
+
+def test_a_missing_href_answered_as_existing_leaves_deleted_unknown(monkeypatch):
+    """Then a deleted object answered with properties says nothing of deletion"""
+    verdict = _run(MultigetServer(missing_as="propstat 200", keeps_deleted=True), monkeypatch)[DELETED]
+    assert verdict["support"] == "unknown"
+
+
+def test_a_deleted_object_still_readable_is_unknown(monkeypatch):
+    server = MultigetServer()
+    server.delete = lambda url, headers=None: Mock(status=204)  # nothing is deleted
+    assert _run(server, monkeypatch)[DELETED]["support"] == "unknown"
