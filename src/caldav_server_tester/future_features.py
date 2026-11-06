@@ -72,6 +72,12 @@ FUTURE_FEATURES: dict[str, dict] = {
         "description": "A calendar-multiget naming an object that was deleted answers it as missing, as a GET does.  'broken' when it still returns the object's data after the DELETE succeeded and a GET answers 404, so a client fetching by multiget sees deleted objects.",
         "default": {"support": "full"},
     },
+    ## caldav PR 850 (https://github.com/python-caldav/caldav/pull/850)
+    "save-load.icalendar.olson-tzid": {
+        "description": "An object whose TZID names a time zone of the tz database (\"Olson\" names, such as Europe/Berlin) is placed in that time zone without a VTIMEZONE for it.  RFC 5545 section 3.6.5 requires the VTIMEZONE, so the default is 'unsupported', and a client should send one; where 'full', it may leave the VTIMEZONE out and keep the object small.  The probe stores an event with TZID=Asia/Tokyo and no VTIMEZONE and judges the server's reading by time-range searches in UTC.  'unsupported' when the time is read as UTC or another zone, 'ungraceful' when the event is refused.  A server reading the TZID as floating, in a time zone of its own, is caught unless it runs in Tokyo time (then 'full') or in UTC (then the behaviour says 'read as UTC').  The behaviour notes whether the server adds a VTIMEZONE of its own.  A client of the server may still misread a bare TZID where the server does not: Synology's web UI was reported to read it as UTC (https://github.com/python-caldav/caldav/issues/849).  See also save-load.icalendar.vtimezone, whether a VTIMEZONE sent is kept.",
+        "default": {"support": "unsupported"},
+        "links": ["https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.5"],
+    },
 }
 
 

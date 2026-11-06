@@ -43,6 +43,16 @@ def test_caldavs_own_definition_wins(features: dict, monkeypatch: pytest.MonkeyP
     assert features["save"].get("description") == caldavs
 
 
+@pytest.mark.parametrize("name", sorted(future_features.FUTURE_FEATURES))
+def test_each_definition_reaches_a_caldav_without_it(features: dict, name: str) -> None:
+    """As on the released caldav CI installs"""
+    del features[name]
+    for definition in features.values():
+        definition.pop("subfeatures", None)
+    assert name in future_features.register()
+    assert FeatureSet.find_feature(name)["description"] == future_features.FUTURE_FEATURES[name]["description"]
+
+
 def test_the_package_registers_its_future_features() -> None:
     for name in future_features.FUTURE_FEATURES:
         assert name in FeatureSet.FEATURES
