@@ -20,6 +20,7 @@ This release works with caldav 3.7.0: the tester carries the definitions of the 
 - **`save-load.icalendar.x-parameter`** - whether an X- parameter on SUMMARY is stored, in an event and then in a task.  Ox and Zimbra drop it from the event.
 - **`multiget.deleted`** - whether a calendar-multiget answers a deleted object as missing.  Zimbra still returns its data, while a GET answers 404.
 - **`save-load.stable-url`** also stores a task under a name that is not its UID, and records `uid_ics_components: [VTODO]` where only the task is renamed `<uid>.ics` (Ox).
+- **`save-load.icalendar.olson-tzid`** - whether an event with `TZID=Asia/Tokyo` and no VTIMEZONE is placed in Tokyo time, judged by time-range searches in UTC; the behaviour says whether the server adds a VTIMEZONE of its own.  Where `full`, a client may leave the VTIMEZONE out.  caldav does not define this feature yet, so the tester adds its definition itself until a caldav release has it.  See https://github.com/python-caldav/caldav/issues/849.
 
 ### Fixed
 
