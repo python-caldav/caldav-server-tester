@@ -6920,26 +6920,93 @@ class CheckIsNotDefined(Check):
             self.set_feature("search.is-not-defined", False)
 
 
-class CheckOlsonTzid(_RoundTrip, Check):
+## A VTIMEZONE for Asia/Tokyo, which has no daylight saving time and is far
+## from the zones servers tend to run in
+TOKYO_VTIMEZONE = (
+    "BEGIN:VTIMEZONE\r\n"
+    "TZID:Asia/Tokyo\r\n"
+    "BEGIN:STANDARD\r\n"
+    "TZOFFSETFROM:+0900\r\n"
+    "TZOFFSETTO:+0900\r\n"
+    "TZNAME:JST\r\n"
+    "DTSTART:19700101T000000\r\n"
+    "END:STANDARD\r\n"
+    "END:VTIMEZONE\r\n"
+)
+
+
+class _TimeRangeProbe:
+    """Time-range searches on the fixture year's 20 January, as the server
+    answers them: no post-filter, no workarounds.  The probe objects are at
+    12:00 to 13:00 there (``_ical``).  A window reading where one is placed
+    (TOKYO, UTC and the overlap probe's) contains its DTSTART, since Robur
+    only finds what starts inside the range, and stays clear of its end,
+    since DAViCal and SOGo find an object in a range starting there.  The
+    others are there to tell placements apart: an EARLY one finds an object
+    placed an hour early, MIDDLE one between Tokyo time and UTC, BOTH and
+    ANYWHERE span several placements.  A window is a start after 00:00 UTC
+    and a length."""
+
+    ## 12:00 in Tokyo is 03:00 UTC
+    TOKYO = (timedelta(hours=2, minutes=45), timedelta(minutes=30))
+    TOKYO_EARLY = (timedelta(hours=2, minutes=15), timedelta(minutes=30))
+    UTC = (timedelta(hours=11, minutes=45), timedelta(minutes=30))
+    UTC_EARLY = (timedelta(hours=11, minutes=15), timedelta(minutes=30))
+    MIDDLE = (timedelta(hours=4, minutes=15), timedelta(hours=7, minutes=30))
+    BOTH = (timedelta(hours=2, minutes=45), timedelta(hours=9, minutes=30))
+    ## Noon anywhere from UTC-12 to UTC+14
+    ANYWHERE = (timedelta(hours=-12), timedelta(days=2))
+
+    REFERENCE_UID = "csc_time_range_reference"
+    MISPLACED = "cannot test, the time-range search does not place an event at 12:00 UTC right"
+
+    def _placed_in_utc(self, hits, windows):
+        """Whether ``hits``, which of ``windows`` found the reference event at
+        12:00 UTC, are what a search placing it right answers.  Bedework 3
+        answers with other objects than the ones in the range."""
+        found = dict(zip(windows, hits))
+        return found[self.UTC] and not found[self.TOKYO]
+
+    def _uids_found(self, window, todo=False):
+        """The UIDs a search over ``window`` finds, among the events, or the
+        tasks with ``todo``"""
+        start = datetime(self.checker.fixture_base_year, 1, 20, tzinfo=utc) + window[0]
+        calendar = self.checker.tasklist if todo else self.checker.calendar
+        kind = {"todo": True, "include_completed": True} if todo else {"event": True}
+        objects = calendar.search(
+            start=start,
+            end=start + window[1],
+            post_filter=False,
+            compatibility_workarounds=False,
+            **kind,
+        )
+        uids = set()
+        for obj in objects:
+            try:
+                uids.add(str(obj.component.get("UID")))
+            except Exception:
+                ## Another object, one the library cannot parse
+                pass
+        return uids
+
+
+class CheckOlsonTzid(_TimeRangeProbe, _RoundTrip, Check):
     """
     Checks whether an event with a TZID from the tz database and no VTIMEZONE,
-    which RFC 5545 section 3.6.5 requires, is placed in that time zone.  The
-    server's reading is judged by time-range searches in UTC: one for the
-    event's hour as Tokyo time, one for it as UTC, and, where neither finds
-    it, one for noon in every zone, telling a time read in yet another zone
-    from a search that lags.  Whether the server adds a VTIMEZONE of its own goes in
-    the behaviour.  See https://github.com/python-caldav/caldav/issues/849
+    which RFC 5545 section 3.6.5 requires, is placed in that time zone.  See
+    https://github.com/python-caldav/caldav/issues/849
 
-    Asia/Tokyo has no daylight saving time and is far from the zones servers
-    tend to run in, where a TZID read as floating would land.  The windows
-    take the middle of the hour: DAViCal and SOGo find an event in a range
-    starting at its end.
-
-    Where the bare TZID is not placed in Tokyo, the same event carrying a
-    VTIMEZONE is stored too, as a control: if the search misplaces that one as
-    well, the search is at fault, not the reading of the TZID, and nothing can
-    be told.  Xandikos' index drops the TZID once it answers a query, so a
-    time lands in the server's own zone either way.
+    The server's reading is judged by time-range searches in UTC, comparing
+    the event with two more: the same one carrying its VTIMEZONE, and one at
+    12:00 UTC.  Found by the same searches as the first, the TZID is
+    understood; as the second, it is read as UTC.  Comparing rather than
+    expecting fixed answers copes with a search placing zoned times wrong
+    (Infomaniak, search.time-range.event.tzid) or finding only what starts
+    inside the range (Robur, search.time-range.event.overlap).  Where the
+    two cannot be told apart, nothing can: Xandikos' index drops the TZID
+    once it answers a query, so a time lands in the server's own zone either
+    way.  Whether the server adds a VTIMEZONE of its own goes in the
+    behaviour.
     """
 
     depends_on = {PrepareCalendar, CheckSearch}
@@ -6950,19 +7017,16 @@ class CheckOlsonTzid(_RoundTrip, Check):
     WHAT = "an event with a TZID but no VTIMEZONE"
     TZID = "Asia/Tokyo"
     CONTROL_UID = "csc_olson_tzid_control"
-    VTIMEZONE = (
-        "BEGIN:VTIMEZONE\r\n"
-        "TZID:Asia/Tokyo\r\n"
-        "BEGIN:STANDARD\r\n"
-        "TZOFFSETFROM:+0900\r\n"
-        "TZOFFSETTO:+0900\r\n"
-        "TZNAME:JST\r\n"
-        "DTSTART:19700101T000000\r\n"
-        "END:STANDARD\r\n"
-        "END:VTIMEZONE\r\n"
+    REFERENCE_UID = "csc_olson_tzid_reference"
+    VTIMEZONE = TOKYO_VTIMEZONE
+    WINDOWS = (
+        _TimeRangeProbe.TOKYO_EARLY,
+        _TimeRangeProbe.TOKYO,
+        _TimeRangeProbe.UTC_EARLY,
+        _TimeRangeProbe.UTC,
+        _TimeRangeProbe.BOTH,
+        _TimeRangeProbe.ANYWHERE,
     )
-    ## 12:00 in Tokyo is 03:00 UTC; the middle of that hour
-    TOKYO = timedelta(hours=3, minutes=15)
 
     def _run_check(self) -> None:
         if not self.feature_check_result("search.time-range.event"):
@@ -6973,67 +7037,170 @@ class CheckOlsonTzid(_RoundTrip, Check):
     def _body(self):
         return self._ical(self.uid, tzid=self.TZID)
 
-    def _found(self, start, length=timedelta(minutes=30), uid=None):
-        """Whether a search for ``length`` from ``start``, a UTC time on the
-        event's day, finds the event, or the one with ``uid``"""
-        start = datetime(self.checker.fixture_base_year, 1, 20, tzinfo=utc) + start
-        objects = self.checker.calendar.search(
-            start=start,
-            end=start + length,
-            event=True,
-            post_filter=False,
-            compatibility_workarounds=False,
-        )
-        for obj in objects:
-            try:
-                if str(obj.component.get("UID")) == (uid or self.uid):
-                    return True
-            except Exception:
-                ## Another object, one the library cannot parse
-                pass
-        return False
-
     def _grade(self, raw):
         added = any(line.upper() == "BEGIN:VTIMEZONE" for line in unfolded_lines(raw))
         notes = [f"the server adds a VTIMEZONE for {self.TZID}"] if added else []
+        others = (
+            (self.CONTROL_UID, self._ical(self.CONTROL_UID, vtimezone=self.VTIMEZONE), "with its VTIMEZONE"),
+            (self.REFERENCE_UID, self._ical(self.REFERENCE_UID), "at 12:00 UTC"),
+        )
+        urls = []
         try:
-            tokyo, as_utc = self._found(self.TOKYO), self._found(timedelta(hours=12, minutes=15))
-            ## Noon anywhere from UTC-12 to UTC+14
-            elsewhere = tokyo or as_utc or self._found(timedelta(hours=-12), timedelta(days=2))
-            control = self._control_placed() if not tokyo and elsewhere else True
-        except (DAVError, OSError) as exc:
-            return self._graded("unknown", f"cannot test, the time-range search fails ({exc})")
-        if tokyo and not as_utc:
+            for uid, body, what in others:
+                urls.append(self._url(uid))
+                if not self._ok(self._put(urls[-1], body)):
+                    return self._graded("unknown", f"cannot test, the same event {what} could not be stored")
+            try:
+                found = [self._uids_found(window) for window in self.WINDOWS]
+            except (DAVError, OSError) as exc:
+                return self._graded("unknown", f"cannot test, the time-range search fails ({exc})")
+        finally:
+            for url in urls:
+                self._delete(url)
+        bare, control, reference = (
+            tuple(uid in uids for uids in found) for uid in (self.uid, self.CONTROL_UID, self.REFERENCE_UID)
+        )
+        if not any(bare):
+            ## May be a search index lagging behind the PUT
+            return self._graded("unknown", "cannot test, the time-range search does not find the event")
+        if not self._placed_in_utc(reference, self.WINDOWS):
+            return self._graded("unknown", self.MISPLACED)
+        if control == reference:
+            return self._graded(
+                "unknown",
+                "cannot test, the time-range search does not tell the event at Tokyo time, VTIMEZONE and all, "
+                "from one at 12:00 UTC",
+            )
+        if bare == control:
             return self._graded("full", *notes)
-        if tokyo:
+        if bare == reference:
+            return self._graded("unsupported", f"TZID={self.TZID} without a VTIMEZONE is read as UTC", *notes)
+        reading = f"TZID={self.TZID} without a VTIMEZONE is read as neither Tokyo time nor UTC"
+        return self._graded("unsupported", reading, *notes)
+
+
+class CheckTimeRangeTzid(_TimeRangeProbe, _RawPut, Check):
+    """
+    Checks whether a time-range search places an event with TZID=Asia/Tokyo,
+    and the VTIMEZONE for it, at its time in UTC.  Infomaniak finds one only
+    by a range also reaching its local time read as UTC, as if the search
+    preselected by the time with the TZID dropped and then checked it
+    properly.  An event at 12:00 UTC goes along, and where the search does
+    not place that one right, nothing can be told.  save-load.icalendar.olson-tzid
+    is the same without the VTIMEZONE.
+    """
+
+    depends_on = {PrepareCalendar, CheckSearch}
+    LABEL = "time-range-tzid"
+    FEATURE = "search.time-range.event.tzid"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_time_range_tzid_event"
+
+    def _run_check(self) -> None:
+        self.set_feature(self.FEATURE, self._placed())
+
+    def _placed(self):
+        if not self.feature_check_result("search.time-range.event"):
+            return self._graded("unknown", "cannot test, time-range search does not work")
+        windows = (self.TOKYO_EARLY, self.TOKYO, self.UTC_EARLY, self.UTC, self.MIDDLE, self.BOTH, self.ANYWHERE)
+        objects = (
+            (self.UID, self._ical(self.UID, vtimezone=TOKYO_VTIMEZONE), "the event"),
+            (self.REFERENCE_UID, self._ical(self.REFERENCE_UID), "the same event at 12:00 UTC"),
+        )
+        urls = []
+        try:
+            for uid, body, what in objects:
+                urls.append(self._url(uid))
+                if not self._ok(self._put(urls[-1], body)):
+                    return self._graded("unknown", f"cannot test, {what} could not be stored")
+            try:
+                found = [self._uids_found(window) for window in windows]
+            except (DAVError, OSError) as exc:
+                return self._graded("unknown", f"cannot test, the time-range search fails ({exc})")
+        finally:
+            for url in urls:
+                self._delete(url)
+        if not self._placed_in_utc([self.REFERENCE_UID in uids for uids in found], windows):
+            return self._graded("unknown", self.MISPLACED)
+        tokyo_early, tokyo, utc_early, as_utc, middle, both, anywhere = (self.UID in uids for uids in found)
+        if tokyo and as_utc:
             return self._graded(
                 "unknown", "cannot test, the time-range search finds the event both as Tokyo time and as UTC"
             )
-        if control is None:
-            return self._graded("unknown", "cannot test, the same event with its VTIMEZONE could not be stored")
-        if control is False:
+        ## An hour off either way is found by the window next to the right one
+        if tokyo and not tokyo_early:
+            return "full"
+        if as_utc and not utc_early:
+            return self._graded("unsupported", "an event at 12:00 Asia/Tokyo is read as 12:00 UTC")
+        if both and not (tokyo or as_utc or middle):
             return self._graded(
-                "unknown",
-                "cannot test, the time-range search does not place the event at Tokyo time even with its VTIMEZONE",
+                "broken",
+                "an event at 12:00 Asia/Tokyo is found only by a range also reaching 12:00 UTC, "
+                "its local time read as UTC",
             )
-        if as_utc:
-            return self._graded("unsupported", f"TZID={self.TZID} without a VTIMEZONE is read as UTC", *notes)
-        if elsewhere:
-            reading = f"TZID={self.TZID} without a VTIMEZONE is read as neither Tokyo time nor UTC"
-            return self._graded("unsupported", reading, *notes)
-        ## Not found at all may be a search index lagging behind the PUT
+        if anywhere:
+            return self._graded("unsupported", "an event at 12:00 Asia/Tokyo is read as neither Tokyo time nor UTC")
         return self._graded("unknown", "cannot test, the time-range search does not find the event")
 
-    def _control_placed(self):
-        """Whether the search places the same event, carrying its VTIMEZONE,
-        at Tokyo time; None where it cannot be stored"""
-        url = self._url(self.CONTROL_UID)
+
+class CheckTimeRangeOverlap(_TimeRangeProbe, _RawPut, Check):
+    """
+    Checks whether a time-range search finds an event, and a task with
+    DTSTART and DUE, overlapping the range without starting inside it: a
+    range inside the object, and one straddling its end.  RFC 4791 section
+    9.9 has an object found where it overlaps the range; Robur only finds
+    the ones whose DTSTART is in it.  Journals have no end, and are not
+    probed.
+    """
+
+    depends_on = {PrepareCalendar, CheckSearch}
+    LABEL = "time-range-overlap"
+    EVENT = "search.time-range.event.overlap"
+    TODO = "search.time-range.todo.overlap"
+    features_to_be_checked = {EVENT, TODO}
+    ## The objects are at 12:00 to 13:00 UTC
+    AT_START = (timedelta(hours=11, minutes=45), timedelta(minutes=30))
+    INSIDE = (timedelta(hours=12, minutes=15), timedelta(minutes=30))
+    AT_END = (timedelta(hours=12, minutes=45), timedelta(minutes=30))
+
+    def _run_check(self) -> None:
+        self.set_feature(self.EVENT, self._overlap(todo=False))
+        self.set_feature(self.TODO, self._overlap(todo=True))
+
+    def _overlap(self, todo):
+        kind = "task" if todo else "event"
+        if todo and getattr(self.checker, "tasklist", None) is None:
+            return self._graded("unknown", "cannot test, there is no task calendar")
+        if not self.feature_check_result(f"search.time-range.{'todo' if todo else 'event'}"):
+            return self._graded("unknown", f"cannot test, time-range search for {kind}s does not work")
+        self.CALENDAR = "tasklist" if todo else "calendar"
+        uid = f"csc_time_range_overlap_{kind}"
+        url = self._url(uid)
         try:
-            if not self._ok(self._put(url, self._ical(self.CONTROL_UID, vtimezone=self.VTIMEZONE))):
-                return None
-            return self._found(self.TOKYO, uid=self.CONTROL_UID)
+            if not self._ok(self._put(url, self._ical(uid, todo=todo))):
+                return self._graded("unknown", f"cannot test, the {kind} could not be stored")
+            try:
+                at_start, inside, at_end = (
+                    uid in self._uids_found(window, todo) for window in (self.AT_START, self.INSIDE, self.AT_END)
+                )
+            except (DAVError, OSError) as exc:
+                return self._graded("unknown", f"cannot test, the time-range search fails ({exc})")
         finally:
             self._delete(url)
+        if not at_start:
+            return self._graded(
+                "unknown",
+                f"cannot test, the time-range search does not find the {kind} by a range containing its start",
+            )
+        if inside and at_end:
+            return "full"
+        if not inside and not at_end:
+            return self._graded("unsupported", f"only {kind}s starting inside the range are found")
+        if not inside:
+            return self._graded("unsupported", f"a {kind} is not found by a range inside it")
+        return self._graded(
+            "unsupported", f"a {kind} is not found by a range straddling its {'DUE' if todo else 'DTEND'}"
+        )
 
 
 class CheckAlarmSearch(Check):
