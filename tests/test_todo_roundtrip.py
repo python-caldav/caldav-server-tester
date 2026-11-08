@@ -1,7 +1,8 @@
 """Whether a task keeps what it was stored with.
 
 Ox answers a task carrying an ATTENDEE with 201 and then 404 on GET, drops
-ESTIMATED-DURATION, and drops COMPLETED where the task has no STATUS.
+ESTIMATED-DURATION, drops COMPLETED where the task has no STATUS, and
+rewrites a task's VALARM.
 """
 
 import re
@@ -12,6 +13,7 @@ from caldav.compatibility_hints import FeatureSet
 
 from caldav_server_tester.checks import (
     CheckCompletedWithoutStatus,
+    CheckTodoAlarm,
     CheckTodoAttendee,
     CheckTodoPriority,
     CheckTodoStatus,
@@ -28,6 +30,7 @@ CHECKS = [
     CheckTodoAttendee,
     CheckUnknownProperty,
     CheckCompletedWithoutStatus,
+    CheckTodoAlarm,
     CheckTodoStatus,
     CheckTodoStatusRfc10051,
     CheckTodoPriority,
@@ -135,6 +138,82 @@ def test_a_status_added_with_completed_kept_is_full():
         return body.replace("\r\nCOMPLETED:", "\r\nSTATUS:COMPLETED\r\nCOMPLETED:")
 
     assert _run(CheckCompletedWithoutStatus, RewritingServer(rewrite=add_status))["support"] == "full"
+
+
+def test_an_alarm_dropped_is_unsupported():
+    def drop_alarm(body):
+        return re.sub(r"BEGIN:VALARM\r\n.*END:VALARM\r\n", "", body, flags=re.DOTALL)
+
+    verdict = _run(CheckTodoAlarm, RewritingServer(rewrite=drop_alarm))
+    assert verdict == {"support": "unsupported", "behaviour": "the VALARM is dropped"}
+
+
+def test_an_alarm_given_a_uid_is_full():
+    def add_uid(body):
+        return body.replace("BEGIN:VALARM\r\n", "BEGIN:VALARM\r\nUID:csc-alarm-uid\r\n")
+
+    assert _run(CheckTodoAlarm, RewritingServer(rewrite=add_uid))["support"] == "full"
+
+
+def test_an_alarm_rewritten_is_broken():
+    """Ox: a relative TRIGGER made absolute, and the DESCRIPTION its own"""
+
+    def rewrite(body):
+        body = re.sub(r"\r\nTRIGGER[;:][^\r]*", "\r\nTRIGGER;VALUE=DATE-TIME:20270120T114500Z", body)
+        return re.sub(r"(BEGIN:VALARM.*\r\nDESCRIPTION:)[^\r]*", r"\1Open-XChange", body, flags=re.DOTALL)
+
+    verdict = _run(CheckTodoAlarm, RewritingServer(rewrite=rewrite))
+    assert verdict["support"] == "broken"
+    assert verdict["behaviour"] == (
+        "the alarm's TRIGGER -PT15M is stored as TRIGGER;VALUE=DATE-TIME:20270120T114500Z; "
+        "its DESCRIPTION is stored as Open-XChange"
+    )
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    ["TRIGGER:-P0DT0H15M0S", "TRIGGER;VALUE=DURATION:-PT15M", "TRIGGER;RELATED=START;VALUE=DURATION:-PT15M"],
+    ids=["spelled-out", "value-default", "both-defaults"],
+)
+def test_an_alarm_trigger_written_another_way_is_full(trigger):
+    """The same duration, or a parameter at its RFC 5545 default, changes nothing"""
+
+    def rewrite(body):
+        return re.sub(r"\r\nTRIGGER[;:][^\r]*", "\r\n" + trigger, body)
+
+    assert _run(CheckTodoAlarm, RewritingServer(rewrite=rewrite))["support"] == "full"
+
+
+def test_an_alarm_description_with_a_language_is_full():
+    def rewrite(body):
+        return re.sub(r"(BEGIN:VALARM.*\r\n)DESCRIPTION:", r"\1DESCRIPTION;LANGUAGE=en:", body, flags=re.DOTALL)
+
+    assert _run(CheckTodoAlarm, RewritingServer(rewrite=rewrite))["support"] == "full"
+
+
+def test_an_alarm_kept_without_its_trigger_is_broken():
+    def rewrite(body):
+        return re.sub(r"\r\nTRIGGER[;:][^\r]*", "", body)
+
+    verdict = _run(CheckTodoAlarm, RewritingServer(rewrite=rewrite))
+    assert verdict == {"support": "broken", "behaviour": "the alarm's TRIGGER is dropped"}
+
+
+def test_an_alarm_action_rewritten_is_broken():
+    def rewrite(body):
+        return body.replace("ACTION:DISPLAY", "ACTION:AUDIO")
+
+    verdict = _run(CheckTodoAlarm, RewritingServer(rewrite=rewrite))
+    assert verdict == {"support": "broken", "behaviour": "the alarm's ACTION is stored as AUDIO"}
+
+
+def test_an_alarm_with_the_task_description_unchanged_is_not_confused_with_it():
+    """Only the VALARM's own DESCRIPTION counts"""
+
+    def add_task_description(body):
+        return body.replace("\r\nBEGIN:VALARM", "\r\nDESCRIPTION:the task's own\r\nBEGIN:VALARM")
+
+    assert _run(CheckTodoAlarm, RewritingServer(rewrite=add_task_description))["support"] == "full"
 
 
 class ValueServer(RewritingServer):

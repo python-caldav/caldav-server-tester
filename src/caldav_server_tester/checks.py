@@ -5634,6 +5634,82 @@ class CheckCompletedWithoutStatus(_RoundTrip, Check):
         return self._kept(raw, "COMPLETED")
 
 
+## An RFC 5545 section 3.3.6 duration, e.g. -PT15M or -P0DT0H15M0S
+DURATION = re.compile(r"([+-]?)P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", re.IGNORECASE)
+
+
+def _duration_seconds(text):
+    """The seconds an RFC 5545 duration spans, signed; None where ``text`` is none."""
+    match = DURATION.fullmatch(text.strip())
+    if not match or text.strip().upper().rstrip("T").endswith("P"):
+        return None
+    sign, weeks, days, hours, minutes, seconds = match.groups()
+    total = sum(int(n or 0) * f for n, f in zip((weeks, days, hours, minutes, seconds), (604800, 86400, 3600, 60, 1)))
+    return -total if sign == "-" else total
+
+
+class CheckTodoAlarm(_RoundTrip, Check):
+    """
+    Checks whether a task's VALARM is stored as sent: its ACTION, its
+    relative TRIGGER and its DESCRIPTION.  Ox makes the TRIGGER absolute,
+    so the alarm no longer follows the task when it is moved, and puts
+    "Open-XChange" in the DESCRIPTION; it keeps an event's VALARM as sent
+    (seen by hand, not probed here).  A property the server adds to the
+    VALARM, such as a UID, is fine, and so is the same TRIGGER written
+    another way: -P0DT0H15M0S, or with RELATED=START or VALUE=DURATION,
+    the defaults.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-alarm"
+    FEATURE = "save-load.todo.alarm"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_alarm_task"
+    WHAT = "a task with a VALARM"
+    COMPONENTS = ("VTODO",)
+    SENT = {"ACTION": "DISPLAY", "TRIGGER": "-PT15M", "DESCRIPTION": "caldav-server-tester alarm"}
+    ## Parameters that change nothing: RFC 5545's defaults, and a language
+    HARMLESS = {"TRIGGER": {"RELATED=START", "VALUE=DURATION"}, "DESCRIPTION": {"LANGUAGE"}}
+    EXTRA = (
+        "BEGIN:VALARM\r\n"
+        f"ACTION:{SENT['ACTION']}\r\n"
+        f"DESCRIPTION:{SENT['DESCRIPTION']}\r\n"
+        f"TRIGGER:{SENT['TRIGGER']}\r\n"
+        "END:VALARM\r\n"
+    )
+
+    def _kept(self, name, params, value):
+        harmless = self.HARMLESS.get(name, set())
+        if any(p.upper() not in harmless and p.split("=")[0].upper() not in harmless for p in params.split(";") if p):
+            return False
+        if name != "TRIGGER":
+            return value == self.SENT[name]
+        ## An absolute TRIGGER is no duration: None, and so not the one sent
+        return _duration_seconds(value) == _duration_seconds(self.SENT[name])
+
+    def _grade(self, raw):
+        alarm = component_lines(raw, "VALARM")
+        if not alarm:
+            return self._graded("unsupported", "the VALARM is dropped")
+        changes = []
+        for name, sent in self.SENT.items():
+            stored = next(
+                (m for m in (re.fullmatch(rf"{name}(?:;([^:]*))?:(.*)", line, re.IGNORECASE) for line in alarm) if m),
+                None,
+            )
+            params = stored and (stored[1] or "")
+            if stored and self._kept(name, params, stored[2]):
+                continue
+            whose = "its" if changes else "the alarm's"
+            if stored is None:
+                changes.append(f"{whose} {name} is dropped")
+            else:
+                text = f"{name};{params}:{stored[2]}" if params else stored[2]
+                was = f" {sent}" if name == "TRIGGER" else ""
+                changes.append(f"{whose} {name}{was} is stored as {text}")
+        return self._graded("broken", "; ".join(changes)) if changes else "full"
+
+
 class _ValueSweep(_RoundTrip):
     """Stores a task with each of ``VALUES`` for property ``NAME`` in turn, and
     records which are kept, which are stored as another, and which are

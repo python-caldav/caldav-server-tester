@@ -68,6 +68,14 @@ FUTURE_FEATURES: dict[str, dict] = {
         "default": {"support": "full"},
         "links": ["https://datatracker.ietf.org/doc/html/rfc5545#section-3.2"],
     },
+    "save-load.todo.alarm": {
+        "description": "A task's VALARM is stored as sent: its TRIGGER, relative to the task's DTSTART, and its DESCRIPTION.  A property the server adds to the VALARM, such as a UID, is fine.  'unsupported' when the VALARM is dropped.  'broken' when it is kept but rewritten (Ox makes the TRIGGER absolute, so the alarm no longer follows the task when it is moved), the behaviour saying what was changed: the alarm is still there, but not the one sent, which is worse than a missing one.",
+        "default": {"support": "full"},
+        "links": [
+            "https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.6",
+            "https://datatracker.ietf.org/doc/html/rfc5545#section-3.8.6.3",
+        ],
+    },
     "multiget.deleted": {
         "description": "A calendar-multiget naming an object that was deleted answers it as missing, as a GET does.  'broken' when it still returns the object's data after the DELETE succeeded and a GET answers 404, so a client fetching by multiget sees deleted objects.",
         "default": {"support": "full"},
