@@ -5581,7 +5581,7 @@ class CheckVtimezone(_RoundTrip, Check):
     Checks whether the VTIMEZONE sent with an event comes back with it.  CCS
     returns the event's TZID without the VTIMEZONE that defines it.
 
-    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework refuses
+    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework 5 refuses
     TZIDs that are tzdata link names, which would hide what is asked here.
     """
 
@@ -5629,6 +5629,76 @@ class CheckVtimezone(_RoundTrip, Check):
         if tzid in defined:
             return "full"
         return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
+
+
+class CheckTzidLink(_RoundTrip, Check):
+    """
+    Checks whether an event whose TZID is a tz database link name, sent with
+    its VTIMEZONE, is stored with that TZID.  Europe/Oslo has been a link to
+    Europe/Berlin since tzdata 2022b.  Bedework 5 refuses it with 403
+    unknownTimezone: its time zone service knows a zone only by the TZID
+    inside its definition, and a link's definition carries its target's.
+
+    A refusal, or a TZID other than either coming back ("unsupported"), counts
+    only where the same event in Europe/Berlin is stored, and is read back as
+    Europe/Berlin in the second case.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "tzid-link"
+    FEATURE = "save-load.icalendar.tzid-link"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_tzid_link_event"
+    WHAT = "an event in Europe/Oslo"
+    LINK = "Europe/Oslo"
+    TARGET = "Europe/Berlin"
+
+    def _body(self, tzid=LINK):
+        return self._ical(self.uid, vtimezone=CheckVtimezone.VTIMEZONE.replace(self.TARGET, tzid))
+
+    def _round_trip(self):
+        verdict = super()._round_trip()
+        support = verdict["support"] if isinstance(verdict, dict) else verdict
+        if support not in ("ungraceful", "unsupported"):
+            return verdict
+        ## The control: the same event in the zone the link points to
+        url = self._url(f"{self.uid}_control")
+        try:
+            status = self._status(self._put(url, self._body(self.TARGET)))
+            if status is None:
+                return self._graded("unknown", f"cannot test, an event in {self.TARGET} got no answer")
+            if not 200 <= status < 300:
+                return self._graded("unknown", f"cannot test, an event in {self.TARGET} is refused too ({status})")
+            if support == "ungraceful":
+                return verdict
+            response = self._answer(self.client.request, url)
+            if not self._ok(response):
+                return self._unreadable(self._status(response))
+            tzid = self._tzid(response.raw)
+            if tzid != self.TARGET:
+                return self._graded(
+                    "unknown", f"cannot test, every TZID is renamed: {self.TARGET} comes back as TZID={tzid}"
+                )
+            return verdict
+        finally:
+            self._delete(url)
+
+    @staticmethod
+    def _tzid(raw):
+        """The TZID of the event's DTSTART, or None"""
+        dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
+        tzid = re.search(r";TZID=([^;:]*)", dtstart, re.IGNORECASE)
+        return tzid[1].strip('"') if tzid else None
+
+    def _grade(self, raw):
+        tzid = self._tzid(raw)
+        if not tzid:
+            return self._graded("unknown", "cannot test, the event came back without a TZID")
+        if tzid == self.LINK:
+            return "full"
+        if tzid == self.TARGET:
+            return self._graded("quirk", f"stored as TZID={self.TARGET}, the zone {self.LINK} points to")
+        return self._graded("unsupported", f"the event comes back with TZID={tzid}")
 
 
 class CheckXProperty(_RoundTrip, Check):
