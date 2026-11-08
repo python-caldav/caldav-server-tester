@@ -5739,6 +5739,52 @@ class CheckUnknownProperty(_RoundTrip, Check):
         return self._kept(raw, "ESTIMATED-DURATION")
 
 
+class CheckTodoDtstartWithoutDue(_RoundTrip, Check):
+    """
+    Checks whether a task with a DTSTART and no DUE is stored with its
+    DTSTART.  RFC 5545 section 3.6.2 allows either alone.  Zimbra drops the
+    DTSTART of such a task, and keeps both where there is a DUE.  Where it is
+    dropped, the same task with its DUE says which of the two this is.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-dtstart"
+    FEATURE = "save-load.todo.dtstart-without-due"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_todo_dtstart_without_due"
+    WHAT = "a task with a DTSTART and no DUE"
+    COMPONENTS = ("VTODO",)
+
+    def _body(self):
+        return re.sub(r"\r\nDUE[^\r\n]*", "", self._ical(self.uid, todo=True))
+
+    def _grade(self, raw):
+        verdict = self._kept(raw, "DTSTART")
+        if verdict == "full":
+            return verdict
+        kept = self._kept_with_due()
+        if kept is None:
+            return verdict
+        return self._graded(
+            "unsupported",
+            "the DTSTART is dropped; with a DUE, both are kept" if kept else "the DTSTART is dropped, with a DUE too",
+        )
+
+    def _kept_with_due(self):
+        """Whether the same task with its DUE keeps its DTSTART; None where that cannot be told"""
+        uid = f"{self.uid}_control"
+        url = self._url(uid)
+        try:
+            if not self._ok(self._put(url, self._ical(uid, todo=True))):
+                return None
+            response = self._answer(self.client.request, url)
+            if not self._ok(response):
+                return None
+            return self._kept(response.raw, "DTSTART") == "full"
+        finally:
+            self._delete(url)
+
+
 class CheckTodoAttendee(_RoundTrip, Check):
     """
     Checks whether a task with an ATTENDEE is stored with it.  Ox answers the

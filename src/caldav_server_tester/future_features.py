@@ -132,6 +132,12 @@ FUTURE_FEATURES: dict[str, dict] = {
         "default": {"support": "full"},
         "links": ["https://data.iana.org/time-zones/tz-link.html"],
     },
+    ## caldav PR (feat/todo-dtstart-hint)
+    "save-load.todo.dtstart-without-due": {
+        "description": "A task with a DTSTART and no DUE (RFC 5545 section 3.6.2 allows either alone) is stored with its DTSTART.  'unsupported' when the DTSTART is dropped, the behaviour saying whether it is kept beside a DUE: Zimbra drops it, but keeps it where the task also has a DUE.",
+        "default": {"support": "full"},
+        "links": ["https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.2"],
+    },
 }
 
 
