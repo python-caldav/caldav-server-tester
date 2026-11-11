@@ -10,7 +10,7 @@ from typing import NamedTuple
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
@@ -5931,6 +5931,68 @@ class CheckXParameter(_RoundTrip, Check):
                     return "full"
                 return self._graded("unsupported", "X-CALDAV-SERVER-TESTER on SUMMARY is dropped")
         return self._graded("unknown", "cannot test, the object came back without SUMMARY")
+
+
+## An RDATE value's start: a DATE-TIME, or a PERIOD by its first half
+RDATE_VALUE = re.compile(r"(\d{8}T\d{6})(Z?)(?:/.*)?")
+
+
+def _rdate_instants(line):
+    """The occurrences an RDATE line gives, in UTC as YYYYMMDDTHHMMSSZ; a value
+    that is no DATE-TIME (a DATE, or a TZID this machine does not know) is
+    kept as written, so it compares unequal."""
+    head, _, values = line.partition(":")
+    tzid = re.search(r";TZID=\"?([^;:\"]+)", head, re.IGNORECASE)
+    try:
+        zone = ZoneInfo(tzid[1]) if tzid else None
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = None
+        tzid = None
+    out = []
+    for value in values.split(","):
+        match = RDATE_VALUE.fullmatch(value.strip().upper())
+        if not match or (not match[2] and zone is None):
+            out.append(value.strip().upper())
+            continue
+        moment = datetime.strptime(match[1], "%Y%m%dT%H%M%S")
+        moment = moment.replace(tzinfo=utc) if match[2] else moment.replace(tzinfo=zone).astimezone(utc)
+        out.append(moment.strftime("%Y%m%dT%H%M%SZ"))
+    return out
+
+
+class CheckRdate(_RoundTrip, Check):
+    """
+    Checks whether an event's RDATE (RFC 5545 section 3.8.5.2), two more
+    occurrences besides DTSTART, is stored.  The dates may come back on one
+    line or several, in a time zone, as periods, or with DTSTART among them.
+    Zimbra drops every RDATE, while it keeps an RRULE.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "rdate"
+    FEATURE = "save-load.event.recurrences.rdate"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_rdate"
+    WHAT = "an event with an RDATE"
+
+    @property
+    def _sent(self):
+        year = self.checker.fixture_base_year
+        return [f"{year}0127T120000Z", f"{year}0203T120000Z"]
+
+    @property
+    def EXTRA(self):
+        return f"RDATE:{','.join(self._sent)}\r\n"
+
+    def _grade(self, raw):
+        lines = [line for line in component_lines(raw, "VEVENT") if re.match(r"RDATE[;:]", line, re.IGNORECASE)]
+        if not lines:
+            return self._graded("unsupported", "the RDATE is dropped")
+        stored = {instant for line in lines for instant in _rdate_instants(line)}
+        stored.discard(f"{self.checker.fixture_base_year}0120T120000Z")  # DTSTART, which RFC 5545 lets an RDATE repeat
+        if stored == set(self._sent):
+            return "full"
+        return self._graded("broken", f"the RDATE {','.join(self._sent)} is stored as {'; '.join(lines)}")
 
 
 class CheckAttendeePartstat(Check):

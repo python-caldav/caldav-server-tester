@@ -26,6 +26,10 @@ FUTURE_FEATURES: dict[str, dict] = {
     "move.if-match": {
         "description": "A MOVE with an If-Match the object no longer has fails with 412 and moves nothing (RFC 9110 section 13.1.1).  Where unsupported, a MOVE cannot guard against an object changed since it was read."
     },
+    "save-load.event.recurrences.rdate": {
+        "description": "An event's RDATE (RFC 5545 section 3.8.5.2), occurrences given by date rather than by an RRULE, is stored.  'unsupported' when it is dropped (Zimbra drops every RDATE, and keeps an RRULE), 'broken' when it is stored with other dates.",
+        "links": ["https://datatracker.ietf.org/doc/html/rfc5545#section-3.8.5.2"],
+    },
     ## caldav PR 848 (https://github.com/python-caldav/caldav/pull/848)
     "save-load.todo.status": {
         "description": "Each STATUS RFC 5545 section 3.8.1.11 gives a task (NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED) is stored as sent.  'unsupported' when one is dropped or stored as another, 'ungraceful' when a task with one is refused, the worse of the two where both apply; the extra keys say which.  Zimbra refuses CANCELLED.  The statuses RFC 10051 adds are save-load.todo.status.rfc10051.",

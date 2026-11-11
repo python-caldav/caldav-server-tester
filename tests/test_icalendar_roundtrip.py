@@ -12,7 +12,7 @@ import pytest
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import AuthorizationError
 
-from caldav_server_tester.checks import CheckParticipant, CheckVtimezone, CheckXParameter, CheckXProperty
+from caldav_server_tester.checks import CheckParticipant, CheckRdate, CheckVtimezone, CheckXParameter, CheckXProperty
 
 from .test_floating_event import RewritingServer
 
@@ -162,3 +162,46 @@ def test_x_parameter_dropped_is_unsupported():
     verdict = _run(CheckXParameter, RewritingServer(rewrite=lambda b: b.replace(";X-CALDAV-SERVER-TESTER=kept", "")))
     assert verdict["support"] == "unsupported"
     assert "in an event" in verdict["behaviour"]
+
+
+def test_rdate_kept_is_full_and_sent_as_two_dates():
+    sent = []
+    assert _run(CheckRdate, RewritingServer(rewrite=lambda body: sent.append(body) or body)) == {"support": "full"}
+    assert len(sent) == 1, "an event only"
+    assert "\r\nRDATE:20270127T120000Z,20270203T120000Z\r\n" in sent[0]
+
+
+def test_rdate_split_over_lines_is_full():
+    def split(body):
+        return body.replace(
+            "RDATE:20270127T120000Z,20270203T120000Z", "RDATE:20270127T120000Z\r\nRDATE:20270203T120000Z"
+        )
+
+    assert _run(CheckRdate, RewritingServer(rewrite=split)) == {"support": "full"}
+
+
+def test_rdate_dropped_is_unsupported():
+    """Zimbra 8.8 and 10.1 drop every RDATE, and keep an RRULE"""
+    verdict = _run(CheckRdate, RewritingServer(rewrite=lambda b: re.sub(r"\r\nRDATE:[^\r]*", "", b)))
+    assert verdict == {"support": "unsupported", "behaviour": "the RDATE is dropped"}
+
+
+def test_rdate_cut_short_is_broken():
+    verdict = _run(CheckRdate, RewritingServer(rewrite=lambda b: b.replace(",20270203T120000Z", "")))
+    assert verdict["support"] == "broken"
+    assert "20270203T120000Z" in verdict["behaviour"]
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "RDATE;TZID=Europe/Oslo:20270127T130000,20270203T130000",
+        "RDATE;VALUE=PERIOD:20270127T120000Z/PT1H,20270203T120000Z/20270203T130000Z",
+        "RDATE:20270120T120000Z,20270127T120000Z,20270203T120000Z",
+    ],
+    ids=["in-a-zone", "as-periods", "with-dtstart"],
+)
+def test_rdate_written_another_way_is_full(stored):
+    """The same occurrences, whatever form the server writes them in"""
+    rewrite = lambda b: b.replace("RDATE:20270127T120000Z,20270203T120000Z", stored)  # noqa: E731
+    assert _run(CheckRdate, RewritingServer(rewrite=rewrite)) == {"support": "full"}
