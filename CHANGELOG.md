@@ -28,6 +28,7 @@ This release works with caldav 3.7.0: the tester carries the definitions of the 
 
 - A probe for a feature the installed caldav does not know no longer aborts the whole run.  The check logs a warning and loses that feature only, and a check reading it gets "unknown"; a check with no other feature is not run.
 - **`save.duplicate-uid.cross-calendar`** - whether saving the copy moved the original is read from a listing of the original calendar, not from a search by UID, which a stale search index answers wrongly.
+- **`save.if-none-match`** also puts an object with another UID under a taken name, as a new object saved there would have one: Bedework (3 and 5) refuses the same UID with 412, but another one with 500, which the library does not read as "exists".  It is now `ungraceful` there.
 
 ## 1.8.0 - 2026-10-30
 

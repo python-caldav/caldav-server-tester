@@ -13,6 +13,7 @@ compares ``*`` as a literal etag, so If-Match: * never holds and
 If-None-Match: * always does, overwriting an existing object.
 """
 
+import re
 from unittest.mock import Mock
 from urllib.parse import unquote
 
@@ -44,7 +45,9 @@ class EtagServer:
     ``accepts`` the If-Match etags a conditional PUT succeeds with,
     ``if_match_star``/``if_none_match_star`` a key of ``STAR``.  ``answers``
     overrides the reply to a ``(header, object exists)`` pair with a status, or
-    raises it where it is an exception.
+    raises it where it is an exception.  ``other_uid_status`` answers a PUT of
+    another UID to an existing object, whatever its header: Bedework (3 and 5)
+    answers 500 with If-None-Match: * and without it alike.
     """
 
     def __init__(
@@ -60,7 +63,9 @@ class EtagServer:
         rewrite=None,
         rewrite_updates=None,
         raw_body=True,
+        other_uid_status=None,
     ):
+        self.other_uid_status = other_uid_status
         self.rewrite = rewrite
         self.rewrite_updates = rewrite_updates
         self.raw_body = raw_body
@@ -88,6 +93,8 @@ class EtagServer:
             raise answer
         if answer is not None:
             return self._response(answer)
+        if exists and self.other_uid_status and _uid(body) != _uid(self.bodies.get(url, body)):
+            return self._response(self.other_uid_status)
         if header is None:
             if self.create_raises:
                 raise self.create_raises
@@ -127,6 +134,10 @@ class EtagServer:
         self.deleted.append(url)
         self.objects.discard(url)
         return Mock(status=204)
+
+
+def _uid(ical):
+    return re.search(r"^UID:(.*)$", ical, re.MULTILINE)[1].strip()
 
 
 def _run_all(server):
@@ -316,6 +327,38 @@ def test_if_none_match_refusing_an_existing_object_otherwise_than_412_is_ungrace
     inm = _if_none_match(EtagServer(answers={("If-None-Match", True): status}))
     assert inm["support"] == "ungraceful"
     assert str(status) in inm["behaviour"]
+
+
+def test_if_none_match_refusing_another_uid_otherwise_than_412_is_ungraceful():
+    """Bedework refuses the same UID with 412, and a new object at a taken
+    name, the case save(no_overwrite=True) guards, with 500."""
+    inm = _if_none_match(EtagServer(other_uid_status=500))
+    assert inm["support"] == "ungraceful"
+    assert "500 rather than 412, for another UID" in inm["behaviour"]
+
+
+@pytest.mark.parametrize("status", [503, 504])
+def test_if_none_match_without_an_answer_for_another_uid_is_not_graded(status):
+    """Graded full, Bedework's 500 for another UID would come back with one dropped answer."""
+    inm = _if_none_match(EtagServer(other_uid_status=status))
+    assert inm["support"] == "unknown"
+    assert "another UID" in inm["behaviour"]
+
+
+def test_if_none_match_overwriting_with_another_uid_is_unsupported():
+    inm = _if_none_match(EtagServer(other_uid_status=204))
+    assert inm["support"] == "unsupported"
+    assert "another UID" in inm["behaviour"]
+
+
+def test_if_none_match_overwriting_is_not_tried_again_with_another_uid():
+    """Where the same UID already overwrote, that is the verdict.  Zimbra
+    redirects (302) an object PUT under another name to <uid>.ics (caldav's
+    save-load.stable-url hint for it), which another UID would only obscure."""
+    server = EtagServer(if_none_match_star="literal", other_uid_status=302)
+    inm = _if_none_match(server)
+    assert inm == {"support": "unsupported", "behaviour": "If-None-Match: * overwrote an existing object"}
+    assert server.requests.count(("If-None-Match", "*")) == 2  # the existing object and the missing one
 
 
 def test_if_none_match_failing_on_a_missing_object_is_ungraceful():

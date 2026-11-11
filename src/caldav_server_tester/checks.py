@@ -4782,7 +4782,10 @@ class CheckPutEtag(_RawPut, Check):
     If-Match backwards: 412 on the existing object, 201 on the missing one.
     Zimbra compares ``*`` as a literal etag, so If-Match: * never holds and
     If-None-Match: * always does - it overwrites, and so does SOGo, which
-    ignores both.  The library sends If-None-Match: * on save(no_overwrite=True)
+    ignores both.  Bedework refuses If-None-Match: * on an existing object
+    with 412 for the same UID, but with 500 for another one, which is what a
+    new object saved under a taken name carries; so where the same UID got
+    412, another UID is tried too.  The library sends If-None-Match: * on save(no_overwrite=True)
     where save.if-none-match is full, so refusing to create is worse than
     overwriting: every such save of a new object would fail.
     """
@@ -4923,6 +4926,23 @@ class CheckPutEtag(_RawPut, Check):
             ## The object is kept, but the library reads only 412 as "exists".
             return self._graded(
                 "ungraceful", f"If-None-Match: * on an existing object answered {existing} rather than 412"
+            )
+        ## A new object saved under a taken name has another UID.  Bedework (3
+        ## and 5) refuses the same UID with 412, and another one with 500.
+        other = self._status(self._put(url, self._ical("csc_put_etag_other"), if_none_match="*"))
+        if other is not None and 200 <= other < 300:
+            return self._graded("unsupported", "If-None-Match: * overwrote an existing object with another UID")
+        if other is not None and other != 412:
+            return self._graded(
+                "ungraceful",
+                f"If-None-Match: * on an existing object answered {other} rather than 412, for another UID",
+            )
+        if other is None:
+            ## Graded full, one dropped answer would hide Bedework's 500
+            return self._graded(
+                "unknown",
+                "If-None-Match: * on an existing object got no answer for another UID, "
+                "so refusing it otherwise than with 412 (ungraceful) is not ruled out",
             )
         if absent is None:
             ## Graded full, the library would send it on every new object
