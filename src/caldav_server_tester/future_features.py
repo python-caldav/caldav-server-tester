@@ -15,6 +15,11 @@ Once the caldav release that defines a feature is the floor in
 from caldav.compatibility_hints import FeatureSet
 
 FUTURE_FEATURES: dict[str, dict] = {
+    ## caldav PR 861 (https://github.com/python-caldav/caldav/pull/861)
+    "url.encode-at.encoded.href": {
+        "description": "Whether '%40' resolves in an href inside a REPORT body (a calendar-multiget), as it does in the request path.  RFC4918 section 8.3 makes such an href a URI reference, so the server should decode it as it decodes the path.  'unsupported' is the Robur case: a GET of '.../foo%40example.com.ics' serves the object, a multiget naming the same href answers 404, and a multiget naming '.../foo@example.com.ics' finds it.",
+        "default": {"support": "full"},
+    },
     "move": {
         "description": "WebDAV MOVE (RFC 4918 section 9.9) of a calendar object into another calendar of the same principal: the object ends up in the target only.  RFC 4918 says every WebDAV resource MUST support MOVE.  Without it, a client moves by copying and deleting, which fails where save.duplicate-uid.cross-calendar is not supported.  See https://github.com/python-caldav/caldav/issues/841",
         ## Not derived from move.overwrite and move.if-match: a server ignoring them still moves.

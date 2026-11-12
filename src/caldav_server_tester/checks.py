@@ -8664,6 +8664,11 @@ class CheckMultiget(_RawPut, _RawSync, Check):
     client-side limit to provoke that with, so the probe has to store more
     objects than the server's limit: CALDAV_SERVER_TESTER_LIMIT_OBJECTS says
     how many, and without it the limits are not probed.
+
+    It also checks that a multiget answers a deleted object as missing (Zimbra
+    does not), and that it finds an object named by a ``%40`` href: Robur
+    serves the object at that URL, but a multiget naming it answers 404
+    (url.encode-at.encoded.href).
     """
 
     depends_on = {PrepareCalendar}
@@ -8673,11 +8678,13 @@ class CheckMultiget(_RawPut, _RawSync, Check):
     LIMIT = "multiget.limit"
     PROPFIND_LIMIT = "propfind.limit"
     SEARCH_LIMIT = "search.limit"
-    features_to_be_checked = {MISSING_HREF, DELETED, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT}
+    ENCODED_HREF = "url.encode-at.encoded.href"
+    features_to_be_checked = {MISSING_HREF, DELETED, LIMIT, PROPFIND_LIMIT, SEARCH_LIMIT, ENCODED_HREF}
     ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
     PRESENT = "csc_multiget_present"
     ABSENT = "csc_multiget_missing"
     GONE = "csc_multiget_deleted"
+    AT = "csc_multiget_at@example.invalid"
     PROPFIND = (
         '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>'
     )
@@ -8696,6 +8703,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         finally:
             self._delete(present)
         self.set_feature(self.DELETED, self._grade_deleted())
+        self.set_feature(self.ENCODED_HREF, self._grade_encoded_href())
         count = self._object_count()
         if not count:
             for feature in (self.LIMIT, self.PROPFIND_LIMIT, self.SEARCH_LIMIT):
@@ -8712,7 +8720,10 @@ class CheckMultiget(_RawPut, _RawSync, Check):
             return 0
 
     def _multiget(self, names):
-        hrefs = "".join(f"<D:href>{xml_escape(urlsplit(self._url(name)).path)}</D:href>" for name in names)
+        return self._multiget_paths(urlsplit(self._url(name)).path for name in names)
+
+    def _multiget_paths(self, paths):
+        hrefs = "".join(f"<D:href>{xml_escape(path)}</D:href>" for path in paths)
         body = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
@@ -8759,6 +8770,43 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         if any(name == f"{self.GONE}.ics" and status is None for name, status in entries):
             return self._graded("broken", "a deleted object is still returned by a multiget, while a GET answers 404")
         return "full"
+
+    def _grade_encoded_href(self):
+        """Robur decodes a %40 in the request path, but not in a multiget href"""
+        missing = getattr(self, "missing", None)
+        if isinstance(missing, dict) and missing.get("support") == "broken":
+            return self._graded("unknown", "cannot test, a missing href is answered as if it existed too")
+        parts = urlsplit(self._url(self.AT))
+        ## Every @ of the path is spelled each way, the collection's too: that
+        ## is what caldav's at_spelling_for_report_href does with the verdict
+        encoded = parts.path.replace("@", "%40")
+        url = urlunsplit(parts._replace(path=encoded))
+        try:
+            if not self._ok(self._put(url, self._ical(self.AT))):
+                return self._graded("unknown", "cannot test, the object could not be stored at its %40 URL")
+            if self._get(url) is None:
+                return self._graded("unknown", "cannot test, a GET of the %40 URL failed")
+            found_encoded = self._multiget_finds(encoded)
+            found_literal = self._multiget_finds(encoded.replace("%40", "@"))
+        finally:
+            self._delete(url)
+        if found_encoded is True:
+            return "full"
+        if found_literal is not True:
+            return self._graded("unknown", "cannot test, a multiget found the object under neither spelling")
+        if found_encoded is None:
+            return self._graded("ungraceful", "a multiget naming a %40 href failed; the literal @ finds the object")
+        return self._graded(
+            "unsupported", "a %40 in a multiget href is not decoded: only the literal @ finds the object"
+        )
+
+    def _multiget_finds(self, path):
+        """Whether a multiget naming ``path`` returns the @ object; None where it failed"""
+        try:
+            (entries, _) = self._multiget_paths((path,))
+        except (DAVError, ReportError):
+            return None
+        return any(n == f"{self.AT}.ics" and status is None for n, status in entries)
 
     def _probe_limits(self, count) -> None:
         names = [f"csc_limit_{i:05d}" for i in range(count)]

@@ -10,6 +10,7 @@ CALDAV_SERVER_TESTER_LIMIT_OBJECTS set, since it takes that many objects.
 
 import re
 from unittest.mock import Mock
+from urllib.parse import unquote
 
 import pytest
 from caldav.compatibility_hints import FeatureSet
@@ -25,6 +26,7 @@ DELETED = "multiget.deleted"
 LIMIT = "multiget.limit"
 PROPFIND = "propfind.limit"
 SEARCH = "search.limit"
+HREF = "url.encode-at.encoded.href"
 ENV = "CALDAV_SERVER_TESTER_LIMIT_OBJECTS"
 
 
@@ -47,7 +49,16 @@ class MultigetServer:
         propfind_status=None,
         query_status=207,
         keeps_deleted=False,
+        decodes_hrefs=True,
+        put_status=201,
+        refuses_encoded_href=False,
+        get_status=None,
     ):
+        self.decodes_hrefs = decodes_hrefs
+        self.put_status = put_status
+        self.refuses_encoded_href = refuses_encoded_href
+        self.get_status = get_status
+        self.put_urls = []
         self.keeps_deleted = keeps_deleted
         self.deleted = set()
         self.query_status = query_status
@@ -63,12 +74,15 @@ class MultigetServer:
 
     @staticmethod
     def _name(url):
-        return url.rstrip("/").rsplit("/", 1)[-1]
+        """A request path is decoded, as every server does"""
+        return unquote(url.rstrip("/").rsplit("/", 1)[-1])
 
     def put(self, url, body, headers=None):
         self.puts += 1
-        self.objects.add(self._name(url))
-        return Mock(status=201, headers={})
+        self.put_urls.append(url)
+        if self.put_status < 300:
+            self.objects.add(self._name(url))
+        return Mock(status=self.put_status, headers={})
 
     def delete(self, url, headers=None):
         if self._name(url) in self.objects:
@@ -83,7 +97,11 @@ class MultigetServer:
             return self._answer([(n, None) for n in sorted(self.objects)])
         if self.report_status != 207:
             return Mock(status=self.report_status, tree=None, raw="")
-        names = [self._name(h) for h in re.findall(r"<D:href>(.*?)</D:href>", body)]
+        hrefs = re.findall(r"<D:href>(.*?)</D:href>", body)
+        if self.refuses_encoded_href and any("%40" in h for h in hrefs):
+            return Mock(status=400, tree=None, raw="")
+        ## Robur takes an href in the body as it is, %40 and all
+        names = [self._name(h) if self.decodes_hrefs else h.rsplit("/", 1)[-1] for h in hrefs]
         served = self.objects | (self.deleted if self.keeps_deleted else set())
         entries = [(n, None if n in served else (self.missing_as or 404)) for n in names]
         if self.omit_missing:
@@ -100,6 +118,8 @@ class MultigetServer:
     def request(self, url, method="GET", body="", headers=None):
         """The raw answer, left unparsed"""
         if method == "GET":
+            if self.get_status:
+                return Mock(status=self.get_status, headers={})
             return Mock(status=200 if self._name(url) in self.objects else 404, headers={})
         assert method == "PROPFIND"
         if self.propfind_raises:
@@ -150,7 +170,7 @@ def _run(server, monkeypatch, objects=None):
     checker.calendar.url = URL.objectify(BASE)
     CheckMultiget(checker)._run_check()
     fs = checker._features_checked
-    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, DELETED, LIMIT, PROPFIND, SEARCH)}
+    return {f: fs.is_supported(f, return_type=dict) for f in (MISSING, DELETED, LIMIT, PROPFIND, SEARCH, HREF)}
 
 
 def test_a_404_entry_for_the_missing_href_is_full(monkeypatch):
@@ -204,7 +224,7 @@ def test_a_failing_multiget_is_ungraceful(monkeypatch):
 def test_the_limits_are_not_probed_by_default(monkeypatch):
     server = MultigetServer()
     verdicts = _run(server, monkeypatch)
-    assert server.puts == 2, "the present object, and the one deleted"
+    assert server.puts == 3, "the present object, the one deleted, and the one with an @"
     for feature in (LIMIT, PROPFIND, SEARCH):
         assert verdicts[feature]["support"] == "unknown"
         assert ENV in verdicts[feature]["behaviour"]
@@ -251,7 +271,7 @@ def test_an_unusable_object_count_does_not_probe(monkeypatch, value):
     checker.fixture_base_year = 2027
     checker.calendar.url = URL.objectify(BASE)
     CheckMultiget(checker)._run_check()
-    assert server.puts == 2, "the present object, and the one deleted"
+    assert server.puts == 3, "the present object, the one deleted, and the one with an @"
 
 
 def test_a_propfind_answered_507_as_a_whole_is_unsupported(monkeypatch):
@@ -289,3 +309,44 @@ def test_a_deleted_object_still_readable_is_unknown(monkeypatch):
     server = MultigetServer()
     server.delete = lambda url, headers=None: Mock(status=204)  # nothing is deleted
     assert _run(server, monkeypatch)[DELETED]["support"] == "unknown"
+
+
+def test_a_percent_40_href_that_resolves_is_full(monkeypatch):
+    server = MultigetServer()
+    assert _run(server, monkeypatch)[HREF]["support"] == "full"
+    assert not server.objects
+    assert any("csc_multiget_at%40example.invalid" in url for url in server.put_urls), "stored at its %40 URL"
+
+
+def test_a_multiget_refused_for_a_percent_40_href_is_ungraceful(monkeypatch):
+    server = MultigetServer(refuses_encoded_href=True)
+    assert _run(server, monkeypatch)[HREF]["support"] == "ungraceful"
+
+
+def test_found_under_neither_spelling_is_unknown(monkeypatch):
+    server = MultigetServer(omit_missing=True)
+    server.report = lambda url, body, depth=0: server._answer([])
+    assert _run(server, monkeypatch)[HREF]["support"] == "unknown"
+
+
+def test_a_failing_get_of_the_percent_40_url_is_unknown(monkeypatch):
+    server = MultigetServer(get_status=500)
+    assert _run(server, monkeypatch)[HREF]["support"] == "unknown"
+
+
+def test_a_missing_href_answered_as_existing_leaves_it_unknown(monkeypatch):
+    assert _run(MultigetServer(missing_as="propstat 200"), monkeypatch)[HREF]["support"] == "unknown"
+
+
+def test_robur_takes_a_percent_40_href_as_it_is(monkeypatch):
+    """A GET of the %40 URL serves the object, a multiget naming it does not"""
+    server = MultigetServer(decodes_hrefs=False)
+    found = _run(server, monkeypatch)[HREF]
+    assert found["support"] == "unsupported"
+    assert "literal" in found["behaviour"]
+    assert not server.objects
+
+
+def test_an_object_that_cannot_be_stored_leaves_it_unknown(monkeypatch):
+    server = MultigetServer(put_status=403)
+    assert _run(server, monkeypatch)[HREF]["support"] == "unknown"
