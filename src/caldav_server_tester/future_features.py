@@ -15,6 +15,11 @@ Once the caldav release that defines a feature is the floor in
 from caldav.compatibility_hints import FeatureSet
 
 FUTURE_FEATURES: dict[str, dict] = {
+    ## caldav PR 864 (https://github.com/python-caldav/caldav/pull/864)
+    "save-load.icalendar.attendee-once": {
+        "description": "Each ATTENDEE of an event comes back once.  'quirk' with behaviour 'stored twice' when every ATTENDEE line comes back twice, as an exact copy (Bedework 5, with or without ORGANIZER, RRULE or PARTSTAT); vcal.fix() drops an exact copy of an ATTENDEE line in the same component whenever iCalendar text is set on an object, whatever this hint says, so a client sees each attendee once.  'broken' when an attendee comes back twice with lines that differ, which the library keeps.",
+        "default": {"support": "full"},
+    },
     ## caldav PR 861 (https://github.com/python-caldav/caldav/pull/861)
     "url.encode-at.encoded.href": {
         "description": "Whether '%40' resolves in an href inside a REPORT body (a calendar-multiget), as it does in the request path.  RFC4918 section 8.3 makes such an href a URI reference, so the server should decode it as it decodes the path.  'unsupported' is the Robur case: a GET of '.../foo%40example.com.ics' serves the object, a multiget naming the same href answers 404, and a multiget naming '.../foo@example.com.ics' finds it.",

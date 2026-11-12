@@ -5453,6 +5453,44 @@ class CheckAttendeeParams(_RoundTrip, Check):
         return self._graded("full", *defaults)
 
 
+class CheckAttendeeOnce(_RoundTrip, Check):
+    """
+    Checks whether each ATTENDEE of an event comes back once.  Bedework 5
+    stores every ATTENDEE twice, as an exact copy; caldav drops such a copy
+    when it reads the data, so that is a quirk.  Copies that differ are
+    broken.  A dropped attendee is attendee-params' business: unknown here.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "attendee-once"
+    FEATURE = "save-load.icalendar.attendee-once"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_attendee_once"
+    WHAT = "an event with attendees"
+    EXTRA = CheckAttendeeParams.EXTRA
+
+    def _grade(self, raw):
+        stored = [line for line in component_lines(raw, "VEVENT") if line.upper().startswith("ATTENDEE")]
+        by_address = {}
+        for line in stored:
+            address, _ = CheckAttendeeParams._parse(line)
+            by_address.setdefault(address, []).append(line)
+        sent = list(CheckAttendeeParams.ATTENDEES)
+        if not set(sent) <= set(by_address):
+            return self._graded("unknown", "cannot test, the attendees are not all stored")
+        ## An attendee the server adds (the owner, say) is not graded
+        copies = {address: by_address[address] for address in sent if len(by_address[address]) > 1}
+        if not copies:
+            return "full"
+        if any(len(set(lines)) > 1 for lines in copies.values()):
+            return self._graded("broken", "an ATTENDEE comes back more than once, the copies differing")
+        counts = {len(lines) for lines in copies.values()}
+        times = "twice" if counts == {2} else " or ".join(f"{n} times" for n in sorted(counts))
+        if len(copies) < len(sent):
+            return self._graded("quirk", f"stored {times}: {', '.join(sorted(copies))}")
+        return self._graded("quirk", f"stored {times}")
+
+
 class CheckParticipant(_RoundTrip, Check):
     """
     Checks whether a PARTICIPANT component (RFC 9073 section 7.1) inside a
