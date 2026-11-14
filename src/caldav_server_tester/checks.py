@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import logging
 import math
 import os
@@ -12,7 +13,7 @@ from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from caldav.calendarobjectresource import Event, Journal, Todo, _quote_uid
+from caldav.calendarobjectresource import CalendarObjectResource, Event, Journal, Todo, _quote_uid
 from caldav.collection import Principal
 from caldav.compatibility_hints import FeatureSet
 from caldav.davobject import DAVObject
@@ -1633,6 +1634,7 @@ class PrepareCalendar(Check):
         "save-load.event.recurrences",
         "save-load.event.recurrences.count",
         "save-load.event.recurrences.exception",
+        "search.recurrences.exception.in-calendar-data",
         "save-load.todo.recurrences",
         "save-load.todo.recurrences.count",
         "save-load.event",
@@ -1873,8 +1875,14 @@ class PrepareCalendar(Check):
         Only what the server answered is graded: a PUT that fails without an
         answer (a dropped connection, a gateway) and a failed listing say
         nothing about the feature and are "unknown", with the reason.
+
+        What is stored is read by a GET, as the listing is a search: Bedework
+        3.10 and 5 leave the exception out of the calendar-data of a search
+        while a GET has it.  The listing against the GET grades
+        search.recurrences.exception.in-calendar-data.
         """
         feature = "save-load.event.recurrences.exception"
+        in_search = "search.recurrences.exception.in-calendar-data"
         exception_uid = "csc_monthly_recurring_with_exception"
         try:
             add_if_not_existing(
@@ -1904,6 +1912,7 @@ END:VCALENDAR""",
             self.set_feature(
                 feature, graded_refusal(e, "a master VEVENT with an exception VEVENT is refused ({answer})")
             )
+            self.set_feature(in_search, {"support": "unknown", "behaviour": "cannot test, the event was not stored"})
             return
 
         try:
@@ -1912,6 +1921,7 @@ END:VCALENDAR""",
             self.set_feature(
                 feature, {"support": "unknown", "behaviour": f"cannot test, listing the calendar failed ({e})"}
             )
+            self.set_feature(in_search, {"support": "unknown", "behaviour": "cannot test, the listing failed"})
             return
 
         def _uid(obj):
@@ -1922,12 +1932,17 @@ END:VCALENDAR""",
             except Exception:
                 return None
 
+        def _vevents(obj):
+            return len([c for c in obj.icalendar_instance.subcomponents if c.name == "VEVENT"])
+
         ours = [obj for obj in listing if _uid(obj) == exception_uid]
         if not ours:
             self.set_feature(
                 feature, {"support": "unknown", "behaviour": "cannot test, the stored event is not in the listing"}
             )
-        elif len(ours) > 1:
+            self.set_feature(in_search, {"support": "unknown", "behaviour": "cannot test, nothing listed"})
+            return
+        if len(ours) > 1:
             self.set_feature(
                 feature,
                 {
@@ -1935,18 +1950,48 @@ END:VCALENDAR""",
                     "behaviour": f"the exception is stored as a separate object ({len(ours)} objects with the UID)",
                 },
             )
+            self.set_feature(
+                in_search, {"support": "unknown", "behaviour": "cannot test, the exception is stored apart"}
+            )
+            return
+
+        listed = _vevents(ours[0])
+        try:
+            _load_by_get(ours[0])
+        except Exception as e:
+            self.set_feature(
+                feature, {"support": "unknown", "behaviour": f"cannot test, a GET of the stored event failed ({e})"}
+            )
+            self.set_feature(in_search, {"support": "unknown", "behaviour": "cannot test, the GET failed"})
+            return
+        stored = _vevents(ours[0])
+        if stored == 2:
+            self.set_feature(feature)
         else:
-            vevents = [c for c in ours[0].icalendar_instance.subcomponents if c.name == "VEVENT"]
-            if len(vevents) == 2:
-                self.set_feature(feature)
-            else:
-                self.set_feature(
-                    feature,
-                    {
-                        "support": "unsupported",
-                        "behaviour": f"stored as one object with {len(vevents)} VEVENTs instead of 2",
-                    },
-                )
+            self.set_feature(
+                feature,
+                {
+                    "support": "unsupported",
+                    "behaviour": f"stored as one object with {stored} VEVENTs instead of 2",
+                },
+            )
+            self.set_feature(in_search, {"support": "unknown", "behaviour": "cannot test, the exception is not stored"})
+            return
+        if listed == stored:
+            self.set_feature(in_search)
+        elif listed == 1:
+            self.set_feature(
+                in_search,
+                {"support": "unsupported", "behaviour": "the calendar-data of a search holds the master only"},
+            )
+        else:
+            self.set_feature(
+                in_search,
+                {
+                    "support": "unsupported",
+                    "behaviour": f"the calendar-data of a search holds {listed} VEVENTs where a GET has {stored}",
+                },
+            )
 
     def _create_test_events(self, calendar, cal_id, name, add_if_not_existing):
         """Create all the test event/task/journal objects in the calendar.
@@ -4276,6 +4321,18 @@ class CheckSynchronousWrite(Check):
         ## synchronous-write.create-calendar and .delete-calendar record those
         ## delays themselves, and the library waits for them there.
         self.set_feature("synchronous-write", {"support": "full", "save-load-delay": save_load})
+
+
+def _load_by_get(obj):
+    """Load ``obj`` by a GET and nothing else.
+
+    caldav's load() falls back to a calendar-multiget, and after a 404 to a
+    search by UID.  A caldav without load(fallbacks=...) still does the
+    latter: there only the multiget is turned off.
+    """
+    if "fallbacks" in inspect.signature(CalendarObjectResource.load).parameters:
+        return obj.load(fallbacks=False)
+    return obj.load(multiget_fallback=False)
 
 
 @contextlib.contextmanager

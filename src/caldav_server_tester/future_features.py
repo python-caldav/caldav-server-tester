@@ -15,6 +15,16 @@ Once the caldav release that defines a feature is the floor in
 from caldav.compatibility_hints import FeatureSet
 
 FUTURE_FEATURES: dict[str, dict] = {
+    ## caldav PR 867 (https://github.com/python-caldav/caldav/pull/867)
+    "search.recurrences.exception": {
+        "description": "A search handles the exceptions of a recurrence set (the components with a RECURRENCE-ID) as it handles any other component.  The children say in what way it does not",
+        "default": {"support": "full"},
+    },
+    "search.recurrences.exception.in-calendar-data": {
+        "description": "A search returns a recurring object with all its components: the exceptions (the components with a RECURRENCE-ID) along with the master, as a GET has them.  RFC 4791 section 9.6 makes a calendar-data element with no children ask for the whole object.  'unsupported' when the calendar-data of a search holds the master only (Bedework 3.10 and 5): a client expanding the recurrence set itself then gets each moved or changed occurrence as a plain one.  search() then loads the recurring objects it found again with a multiget",
+        "default": {"support": "full"},
+        "links": ["https://datatracker.ietf.org/doc/html/rfc4791#section-9.6"],
+    },
     ## caldav PR 864 (https://github.com/python-caldav/caldav/pull/864)
     "save-load.icalendar.attendee-once": {
         "description": "Each ATTENDEE of an event comes back once.  'quirk' with behaviour 'stored twice' when every ATTENDEE line comes back twice, as an exact copy (Bedework 5, with or without ORGANIZER, RRULE or PARTSTAT); vcal.fix() drops an exact copy of an ATTENDEE line in the same component whenever iCalendar text is set on an object, whatever this hint says, so a client sees each attendee once.  'broken' when an attendee comes back twice with lines that differ, which the library keeps.",
