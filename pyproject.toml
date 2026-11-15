@@ -102,6 +102,9 @@ known-first-party = ["caldav_server_tester"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["error"]
+# No async tests here; a pytest-asyncio installed system-wide would
+# otherwise fail the run with a deprecation warning made fatal above.
+addopts = "-p no:asyncio"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
