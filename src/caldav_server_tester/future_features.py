@@ -126,6 +126,18 @@ FUTURE_FEATURES: dict[str, dict] = {
         "default": {"support": "full"},
         "links": ["https://datatracker.ietf.org/doc/html/rfc4791#section-9.9"],
     },
+    ## caldav PR (feat/tzid-link)
+    "save-load.icalendar.tzid-link": {
+        "description": "An object whose TZID is a link name of the tz database (Europe/Oslo, a link to Europe/Berlin since tzdata 2022b; Asia/Calcutta, to Asia/Kolkata), sent with its VTIMEZONE, is stored with that TZID.  'ungraceful' when it is refused: Bedework 5 answers 403 with valid-calendar-object-resource and unknownTimezone, as its time zone service knows each zone by the TZID inside its definition only, and the definition of a link carries its target's.  save() then sends the zone the link points to instead, which keeps every time since 1970 where it was (before 1970 a link may have had rules of its own); save(raw_data=...) does not.  'quirk' when the TZID is stored as the zone it points to, the behaviour saying so.  'unsupported' when it comes back as another TZID while an event in the zone it points to keeps its own.",
+        "default": {"support": "full"},
+        "links": ["https://data.iana.org/time-zones/tz-link.html"],
+    },
+    ## caldav PR (feat/todo-dtstart-hint)
+    "save-load.todo.dtstart-without-due": {
+        "description": "A task with a DTSTART and no DUE (RFC 5545 section 3.6.2 allows either alone) is stored with its DTSTART.  'unsupported' when the DTSTART is dropped, the behaviour saying whether it is kept beside a DUE: Zimbra drops it, but keeps it where the task also has a DUE.",
+        "default": {"support": "full"},
+        "links": ["https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.2"],
+    },
 }
 
 

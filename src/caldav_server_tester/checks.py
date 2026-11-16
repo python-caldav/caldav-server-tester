@@ -5581,7 +5581,7 @@ class CheckVtimezone(_RoundTrip, Check):
     Checks whether the VTIMEZONE sent with an event comes back with it.  CCS
     returns the event's TZID without the VTIMEZONE that defines it.
 
-    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework refuses
+    Europe/Berlin rather than a zone such as Europe/Oslo: Bedework 5 refuses
     TZIDs that are tzdata link names, which would hide what is asked here.
     """
 
@@ -5631,6 +5631,76 @@ class CheckVtimezone(_RoundTrip, Check):
         return self._graded("unsupported", f"the event comes back with TZID={tzid} but no VTIMEZONE for it")
 
 
+class CheckTzidLink(_RoundTrip, Check):
+    """
+    Checks whether an event whose TZID is a tz database link name, sent with
+    its VTIMEZONE, is stored with that TZID.  Europe/Oslo has been a link to
+    Europe/Berlin since tzdata 2022b.  Bedework 5 refuses it with 403
+    unknownTimezone: its time zone service knows a zone only by the TZID
+    inside its definition, and a link's definition carries its target's.
+
+    A refusal, or a TZID other than either coming back ("unsupported"), counts
+    only where the same event in Europe/Berlin is stored, and is read back as
+    Europe/Berlin in the second case.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "tzid-link"
+    FEATURE = "save-load.icalendar.tzid-link"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_tzid_link_event"
+    WHAT = "an event in Europe/Oslo"
+    LINK = "Europe/Oslo"
+    TARGET = "Europe/Berlin"
+
+    def _body(self, tzid=LINK):
+        return self._ical(self.uid, vtimezone=CheckVtimezone.VTIMEZONE.replace(self.TARGET, tzid))
+
+    def _round_trip(self):
+        verdict = super()._round_trip()
+        support = verdict["support"] if isinstance(verdict, dict) else verdict
+        if support not in ("ungraceful", "unsupported"):
+            return verdict
+        ## The control: the same event in the zone the link points to
+        url = self._url(f"{self.uid}_control")
+        try:
+            status = self._status(self._put(url, self._body(self.TARGET)))
+            if status is None:
+                return self._graded("unknown", f"cannot test, an event in {self.TARGET} got no answer")
+            if not 200 <= status < 300:
+                return self._graded("unknown", f"cannot test, an event in {self.TARGET} is refused too ({status})")
+            if support == "ungraceful":
+                return verdict
+            response = self._answer(self.client.request, url)
+            if not self._ok(response):
+                return self._unreadable(self._status(response))
+            tzid = self._tzid(response.raw)
+            if tzid != self.TARGET:
+                return self._graded(
+                    "unknown", f"cannot test, every TZID is renamed: {self.TARGET} comes back as TZID={tzid}"
+                )
+            return verdict
+        finally:
+            self._delete(url)
+
+    @staticmethod
+    def _tzid(raw):
+        """The TZID of the event's DTSTART, or None"""
+        dtstart = next((line for line in component_lines(raw, "VEVENT") if line.upper().startswith("DTSTART")), "")
+        tzid = re.search(r";TZID=([^;:]*)", dtstart, re.IGNORECASE)
+        return tzid[1].strip('"') if tzid else None
+
+    def _grade(self, raw):
+        tzid = self._tzid(raw)
+        if not tzid:
+            return self._graded("unknown", "cannot test, the event came back without a TZID")
+        if tzid == self.LINK:
+            return "full"
+        if tzid == self.TARGET:
+            return self._graded("quirk", f"stored as TZID={self.TARGET}, the zone {self.LINK} points to")
+        return self._graded("unsupported", f"the event comes back with TZID={tzid}")
+
+
 class CheckXProperty(_RoundTrip, Check):
     """
     Checks whether an X- property (RFC 5545 section 3.8.8.2) is stored, in an
@@ -5667,6 +5737,52 @@ class CheckUnknownProperty(_RoundTrip, Check):
 
     def _grade(self, raw):
         return self._kept(raw, "ESTIMATED-DURATION")
+
+
+class CheckTodoDtstartWithoutDue(_RoundTrip, Check):
+    """
+    Checks whether a task with a DTSTART and no DUE is stored with its
+    DTSTART.  RFC 5545 section 3.6.2 allows either alone.  Zimbra drops the
+    DTSTART of such a task, and keeps both where there is a DUE.  Where it is
+    dropped, the same task with its DUE says which of the two this is.
+    """
+
+    depends_on = {PrepareCalendar}
+    LABEL = "todo-dtstart"
+    FEATURE = "save-load.todo.dtstart-without-due"
+    features_to_be_checked = {FEATURE}
+    UID = "csc_todo_dtstart_without_due"
+    WHAT = "a task with a DTSTART and no DUE"
+    COMPONENTS = ("VTODO",)
+
+    def _body(self):
+        return re.sub(r"\r\nDUE[^\r\n]*", "", self._ical(self.uid, todo=True))
+
+    def _grade(self, raw):
+        verdict = self._kept(raw, "DTSTART")
+        if verdict == "full":
+            return verdict
+        kept = self._kept_with_due()
+        if kept is None:
+            return verdict
+        return self._graded(
+            "unsupported",
+            "the DTSTART is dropped; with a DUE, both are kept" if kept else "the DTSTART is dropped, with a DUE too",
+        )
+
+    def _kept_with_due(self):
+        """Whether the same task with its DUE keeps its DTSTART; None where that cannot be told"""
+        uid = f"{self.uid}_control"
+        url = self._url(uid)
+        try:
+            if not self._ok(self._put(url, self._ical(uid, todo=True))):
+                return None
+            response = self._answer(self.client.request, url)
+            if not self._ok(response):
+                return None
+            return self._kept(response.raw, "DTSTART") == "full"
+        finally:
+            self._delete(url)
 
 
 class CheckTodoAttendee(_RoundTrip, Check):
