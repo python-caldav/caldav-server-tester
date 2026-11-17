@@ -288,6 +288,50 @@ class Check:
                 time.sleep(1)
         return None, self.RETRY_ATTEMPTS, error
 
+    def second_calendar(self, cal_id):
+        """An empty calendar at ``cal_id`` (also its name), for a probe that needs a second one.
+
+        Old ones by that name are deleted first (runs before the cal_id was
+        fixed made them by name only).  Where calendars cannot be deleted
+        (Synology), each one made would stay for good, so the one an
+        earlier run left at the cal_id is emptied and used again - unless
+        something in it will not go, which would skew the probe.  Where the
+        cal_id is still taken, say by a delete the server carries out late, a
+        calendar is made by name only.  Raises what ``make_calendar()`` raises.
+        """
+        principal = self.client.principal()
+        if self.checker.features_checked.is_supported("delete-calendar", str) == "unsupported":
+            left = principal.calendar(cal_id=cal_id)
+            if self._calendar_is_accessible(left) and self._emptied(left):
+                return left
+        else:
+            try:
+                named = [cal for cal in principal.calendars() if cal.name == cal_id]
+            except Exception:
+                named = []
+            for cal in named:
+                try:
+                    cal.delete()
+                except Exception:
+                    pass
+        try:
+            return principal.make_calendar(cal_id=cal_id, name=cal_id)
+        except DAVError:
+            return principal.make_calendar(name=cal_id)
+
+    @staticmethod
+    def _emptied(cal) -> bool:
+        """Delete everything in ``cal``; whether it is empty afterwards."""
+        try:
+            for obj in cal.objects():
+                try:
+                    obj.delete()
+                except DAVError:
+                    pass
+            return not list(cal.objects())
+        except DAVError:
+            return False
+
     @staticmethod
     def _worth_retrying(error) -> bool:
         """Could this refusal plausibly go the other way on the next ask?

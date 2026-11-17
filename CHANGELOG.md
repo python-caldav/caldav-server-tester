@@ -37,6 +37,7 @@ This release works with caldav 3.7.0: the tester carries the definitions of the 
 - A probe for a feature the installed caldav does not know no longer aborts the whole run.  The check logs a warning and loses that feature only, and a check reading it gets "unknown"; a check with no other feature is not run.
 - **`save.duplicate-uid.cross-calendar`** - whether saving the copy moved the original is read from a listing of the original calendar, not from a search by UID, which a stale search index answers wrongly.
 - **`save.if-none-match`** also puts an object with another UID under a taken name, as a new object saved there would have one: Bedework (3 and 5) refuses the same UID with 412, but another one with 500, which the library does not read as "exists".  It is now `ungraceful` there.
+- On a server that makes calendars but will not delete them (Synology), a run no longer leaves new calendars behind: the create/delete probe takes the calendar an earlier run left at its fixed cal_id as the evidence that creation works, instead of making a fresh `testcalendar-<uuid>` one, and the second calendars of the duplicate-UID and MOVE probes get fixed cal_ids, `csc_duplicate_uid_cal2` and `csc_move_cal2`, and are emptied and used again.  One test account had collected over 200 calendars.  `synchronous-write.create-calendar` stays unknown there after the first run, and a server that takes MKCOL only still gets a new calendar on every run.
 
 ## 1.8.0 - 2026-10-30
 
