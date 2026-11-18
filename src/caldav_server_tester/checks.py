@@ -1273,6 +1273,28 @@ class CheckMakeDeleteCalendar(Check):
             self.set_feature("delete-calendar", {"support": "unknown", "behaviour": _cannot})
             self.set_feature("delete-calendar.free-namespace", {"support": "unknown", "behaviour": _cannot})
             return
+        features = self.checker.features_checked
+        if (
+            leftover
+            and not features.is_supported("create-calendar.auto")
+            and features.is_supported("delete-calendar", str) == "unsupported"
+        ):
+            ## A previous run made the calendar at the fixed cal_id, and this
+            ## run has just failed to delete it.  On such a server (Synology)
+            ## the fresh cal_id below would stay for good, one more on every
+            ## run, so the leftover is taken as the evidence that creation
+            ## works.  Not where every cal_id answers (create-calendar.auto),
+            ## and not on a delete merely unknown: there a calendar at the
+            ## cal_id says nothing about an earlier run.
+            self.set_feature("create-calendar")
+            self._settle_unknown["synchronous-write.create-calendar"] = (
+                "not timed: calendars cannot be deleted here, so the calendar a previous run made is used"
+            )
+            self.set_feature(
+                "delete-calendar.free-namespace",
+                {"support": "unknown", "behaviour": "cannot test, delete-calendar not supported"},
+            )
+            return
         ## The fixed cal_id could not be created at all; a fresh unique cal_id
         ## tells us whether calendar creation works in the first place.
         unique_id = "testcalendar-" + str(uuid.uuid4())
@@ -8198,16 +8220,6 @@ class CheckDuplicateUID(Check):
 
         ## Reuse an event from PrepareCalendar instead of creating a new one
         test_uid = "csc_simple_event1"
-        cal2_name = "csc_duplicate_uid_cal2"
-
-        ## Try to find and delete existing cal2 test calendar
-        try:
-            for cal in self.client.principal().calendars():
-                if cal.name == cal2_name:
-                    cal.delete()
-                    break
-        except Exception:
-            pass
 
         try:
             ## Get existing event from first calendar (created by PrepareCalendar).
@@ -8223,9 +8235,8 @@ class CheckDuplicateUID(Check):
             ## Get the event data for reuse in cal2
             event_ical = event1.data
 
-            ## Create second calendar
             try:
-                cal2 = self.client.principal().make_calendar(name=cal2_name)
+                cal2 = self.second_calendar("csc_duplicate_uid_cal2")
             except DAVError:
                 self.set_feature(
                     "save.duplicate-uid.cross-calendar",
@@ -9810,15 +9821,8 @@ class CheckMove(Check):
 
     def _run_check(self) -> None:
         cal1 = self.checker.calendar
-        cal2_name = "csc_move_cal2"
         try:
-            for cal in self.client.principal().calendars():
-                if cal.name == cal2_name:
-                    cal.delete()
-        except Exception:
-            pass
-        try:
-            cal2 = self.client.principal().make_calendar(name=cal2_name)
+            cal2 = self.second_calendar("csc_move_cal2")
         except DAVError:
             self._unknown(self.features_to_be_checked, "cannot test, have access to only one calendar")
             return

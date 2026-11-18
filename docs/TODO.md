@@ -491,3 +491,24 @@ server deletes whatever the etag says, so skipping the header would change
 nothing.  Decide whether `delete(if_match=True)` should warn or raise when the
 hint says `broken`, or emulate the check with a GET and an etag compare
 before the DELETE (racy, but closer to what was asked for).
+
+## Re-runs on a server that cannot delete calendars
+
+(Clean-context review 2026-11-17, filed rather than fixed.)
+
+On a server that makes calendars but will not delete them (Synology),
+only the first run on an account creates the probes' calendars; later
+runs find them already there.  Two consequences:
+
+* The create/delete probe takes the calendar left at its fixed cal_id as
+  the evidence that creation works and records `create-calendar` as plain
+  `full`.  A first run that graded it `quirk` (the empty 207) or `fragile`
+  is overruled on every later run.  It should not upgrade the verdict,
+  say by keeping the configured profile's grade where that is worse.
+* The probes at fixed cal_ids - `caldav-server-checker-displayname-test`
+  in `_check_set_displayname`, and `CAL_ID`/`CAL_ID_MULTIPLE` of
+  `CheckSupportedComponentSet` - get 405 on MKCALENDAR from the second
+  run on, so `create-calendar.set-displayname`, `create-calendar.stable-url`
+  and the supported-component-set features come out `unknown`.  Reusing
+  the leftover where the question allows it (the component set can be
+  read off an existing calendar) would keep the verdicts.
