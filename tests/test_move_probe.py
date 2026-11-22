@@ -77,7 +77,7 @@ def test_an_error_status_after_moving_anyway_is_unsupported() -> None:
 
 class _Calendar:
     def __init__(self, server: "_Server", name: str) -> None:
-        self.server, self.name, self.url = server, name, f"http://example.invalid/{name}/"
+        self.server, self.name, self.url = server, name, f"http://example.com/{name}/"
         self.objects: dict[str, str] = {}  ## name -> UID
         self.deleted = False
 

@@ -253,28 +253,6 @@ The fix is to record a fragile verdict's retry window under a key of its own
 (`retry-window`), keep `delay` for asynchronous processing only, and have
 `record_worse` carry a displaced `delay` over.
 
-# One standard for placeholder URLs in fixtures and docstrings
-
-Test fixtures and docstrings invent a host whenever they need a URL, and every
-new invention is a link the `lychee` pre-push hook tries to resolve and then
-fails on.  `.lycheeignore` has two such hosts in it already
-(`https://host/`, `https://x/dav/`) and grew two more in September 2026
-(`http://dav/`, `https://h/`) — one of them only after a push was refused with
-the commits already approved.  Loopback URLs no longer count: the pre-push hook
-and the CI link check both run with `--exclude-loopback` since a
-`http://localhost/` fixture refused another push.
-
-Standardise on `example.com`, which RFC 2606 §3 reserves for exactly this and
-which link checkers know not to chase, and the ignore list stops growing.
-`.invalid` (RFC 2606 §2) would also work and reads more explicitly as
-unresolvable, but `example.com` is the more familiar convention and the point is
-to have *one*.
-
-The work is a sweep of `tests/` and the docstrings in
-`src/caldav_server_tester/`, plus dropping the placeholder entries from
-`.lycheeignore`.  Nothing depends on the current hostnames — they are never
-connected to — so it is a rename and a test run.
-
 # `auth.www-authenticate` and CheckWellKnown duplicate the raw-HTTP escape hatch
 
 (Clean-context review 2026-09-18, filed rather than fixed.)

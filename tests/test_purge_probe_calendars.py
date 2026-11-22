@@ -41,27 +41,27 @@ def _checker(calendars: list, **attrs) -> ServerQuirkChecker:
 class TestSweepProtectsUserCalendars:
     def test_user_supplied_calendar_is_never_deleted(self) -> None:
         """--caldav-calendar pointed at a real calendar that looks like a probe."""
-        victim = _cal("http://dav/joe/testcalendar-2019/", "My Tests")
+        victim = _cal("http://dav.example.com/joe/testcalendar-2019/", "My Tests")
         c = _checker([victim], calendar=victim, calendar_was_created=False)
         c._purge_probe_calendars()
         assert not victim.deleted
 
     def test_user_supplied_tasklist_and_journallist_are_spared(self) -> None:
-        tl = _cal("http://dav/joe/csc-tasks/", "Tasks")
-        jl = _cal("http://dav/joe/csc-journals/", "Journals")
+        tl = _cal("http://dav.example.com/joe/csc-tasks/", "Tasks")
+        jl = _cal("http://dav.example.com/joe/csc-journals/", "Journals")
         c = _checker([tl, jl], tasklist=tl, journallist=jl, calendar_was_created=False)
         c._purge_probe_calendars()
         assert not tl.deleted and not jl.deleted
 
     def test_a_calendar_the_tool_created_is_still_swept(self) -> None:
         """The guard must not disable the sweep's actual job."""
-        leftover = _cal("http://dav/joe/caldav-server-checker-calendar/", "probe")
+        leftover = _cal("http://dav.example.com/joe/caldav-server-checker-calendar/", "probe")
         c = _checker([leftover], calendar=None, calendar_was_created=True)
         assert c._purge_probe_calendars() == 1
         assert leftover.deleted
 
     def test_unrelated_calendars_are_untouched(self) -> None:
-        real = _cal("http://dav/joe/work/", "Work")
+        real = _cal("http://dav.example.com/joe/work/", "Work")
         c = _checker([real])
         assert c._purge_probe_calendars() == 0
         assert not real.deleted
@@ -71,7 +71,7 @@ class TestSweepMatchesTheProbeShape:
     def test_a_real_calendar_merely_prefixed_testcalendar_is_spared(self) -> None:
         """The free-namespace probe uses testcalendar-<uuid>; a human-named
         'testcalendar-2019' is not that shape and is not ours to delete."""
-        human = _cal("http://dav/joe/testcalendar-2019/", "Test calendar 2019")
+        human = _cal("http://dav.example.com/joe/testcalendar-2019/", "Test calendar 2019")
         c = _checker([human], calendar=None, calendar_was_created=True)
         assert c._purge_probe_calendars() == 0
         assert not human.deleted
@@ -79,7 +79,7 @@ class TestSweepMatchesTheProbeShape:
     def test_the_uuid_shaped_probe_calendar_is_still_swept(self) -> None:
         import uuid
 
-        probe = _cal(f"http://dav/joe/testcalendar-{uuid.uuid4()}/", "")
+        probe = _cal(f"http://dav.example.com/joe/testcalendar-{uuid.uuid4()}/", "")
         c = _checker([probe], calendar=None, calendar_was_created=True)
         assert c._purge_probe_calendars() == 1
         assert probe.deleted

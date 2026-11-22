@@ -728,7 +728,7 @@ class TestReportDoesNotCorruptFeatureData:
         client = Mock()
         client.features = FeatureSet()
         client.server_name = "X"
-        client.url = "https://x/dav/"
+        client.url = "https://example.com/dav/"
         checker = ServerQuirkChecker(client)
         # ALL sibling children present and equal-support -> they collapse to the
         # parent, but carry differing behaviour notes that must not be lost.
@@ -777,15 +777,15 @@ class TestPurgeProbeCalendars:
 
     def test_purges_probe_calendars_only(self) -> None:
         checker = self._checker()
-        real = self._cal("https://h/cal/61f72804-uuid/", name="Tobias Brox")
+        real = self._cal("https://example.com/cal/61f72804-uuid/", name="Tobias Brox")
         probes = [
-            self._cal("https://h/cal/caldav-server-checker-calendar/", "Calendar for checking"),
-            self._cal("https://h/cal/caldav-server-checker-mkdel-test/"),
-            self._cal("https://h/cal/caldav-server-checker-displayname-test/"),
-            self._cal("https://h/cal/testcalendar-2f1c8d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f/"),
-            self._cal("https://h/cal/csc-inbox-delivery-probe/", "csc-inbox-delivery-probe"),
+            self._cal("https://example.com/cal/caldav-server-checker-calendar/", "Calendar for checking"),
+            self._cal("https://example.com/cal/caldav-server-checker-mkdel-test/"),
+            self._cal("https://example.com/cal/caldav-server-checker-displayname-test/"),
+            self._cal("https://example.com/cal/testcalendar-2f1c8d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f/"),
+            self._cal("https://example.com/cal/csc-inbox-delivery-probe/", "csc-inbox-delivery-probe"),
             # created with name only (no cal_id) -> server-assigned URL, matched by name
-            self._cal("https://h/cal/server-assigned-uuid/", name="csc_duplicate_uid_cal2"),
+            self._cal("https://example.com/cal/server-assigned-uuid/", name="csc_duplicate_uid_cal2"),
         ]
         checker.principal = Mock()
         checker.principal.calendars.return_value = [real, *probes]
@@ -802,7 +802,9 @@ class TestPurgeProbeCalendars:
         checker = self._checker()
         checker.principal = Mock()
         checker.principal.calendars.return_value = []
-        attendee_probe = self._cal("https://h/cal/csc-inbox-probe-attendee-cal/", "csc-inbox-probe-attendee-cal")
+        attendee_probe = self._cal(
+            "https://example.com/cal/csc-inbox-probe-attendee-cal/", "csc-inbox-probe-attendee-cal"
+        )
         extra = Mock()
         extra.calendars.return_value = [attendee_probe]
         checker.extra_principals = [extra]
@@ -814,9 +816,9 @@ class TestPurgeProbeCalendars:
 
     def test_delete_failure_does_not_abort_sweep(self) -> None:
         checker = self._checker()
-        bad = self._cal("https://h/cal/testcalendar-11111111-2222-4333-8444-555555555555/")
+        bad = self._cal("https://example.com/cal/testcalendar-11111111-2222-4333-8444-555555555555/")
         bad.delete.side_effect = Exception("500")
-        good = self._cal("https://h/cal/testcalendar-66666666-7777-4888-8999-aaaaaaaaaaaa/")
+        good = self._cal("https://example.com/cal/testcalendar-66666666-7777-4888-8999-aaaaaaaaaaaa/")
         checker.principal = Mock()
         checker.principal.calendars.return_value = [bad, good]
         checker.extra_principals = []

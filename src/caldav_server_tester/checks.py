@@ -534,7 +534,7 @@ class CheckWWWAuthenticate(Check):
 class CheckWellKnown(Check):
     """Check that /.well-known/caldav discovery works per RFC 6764 section 5.
 
-    Makes a GET to https://host/.well-known/caldav (without following redirects)
+    Makes a GET to /.well-known/caldav on the server's host (without following redirects)
     and verifies the server responds with a 3xx redirect or 200 OK.
 
     Marked unknown for localhost/test servers where well-known is not applicable.

@@ -17,6 +17,8 @@ New features to be tested also need changes in the caldav project.  Please coord
 
 Every submission should ideally include some test code, documentation and a changelog entry.  In this project, inline-documentation and (for new features tested) descriptions in the [caldav compatibility_hints.py file](https://github.com/python-caldav/caldav/blob/master/caldav/compatibility_hints.py) suffice for the documentation.  I've traditionally not bothered adding much test code to the project - the compatibility test under the caldav project will run through all the checks - however, it's a cheap thing to do when it can be generated through the AI.
 
+When a test fixture or docstring needs a made-up URL, use `example.com` (RFC 2606 reserves it for this; a subdomain like `dav.example.com` is fine too), or a `.invalid` host where it must never resolve.  Any other made-up host is something the link checkers (the pre-push hook and CI) try to resolve, and they fail on it.
+
 ## Commit messages
 
 Please follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) and write messages in the imperative mood:
