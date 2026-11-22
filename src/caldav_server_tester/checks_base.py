@@ -321,15 +321,19 @@ class Check:
 
     @staticmethod
     def _emptied(cal) -> bool:
-        """Delete everything in ``cal``; whether it is empty afterwards."""
+        """Delete everything in ``cal``; whether it is empty afterwards.
+
+        Any error, not only a DAVError, counts as not emptied: the caller then
+        makes a new calendar rather than letting the whole check fail.
+        """
         try:
-            for obj in cal.objects():
+            for obj in cal.get_objects():
                 try:
                     obj.delete()
                 except DAVError:
                     pass
-            return not list(cal.objects())
-        except DAVError:
+            return not list(cal.get_objects())
+        except Exception:
             return False
 
     @staticmethod

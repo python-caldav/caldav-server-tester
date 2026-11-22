@@ -745,7 +745,7 @@ class TestSecondCalendar:
         cal = Mock()
         cal.name = name
         cal.events.return_value = []
-        cal.objects.side_effect = lambda: list(held)
+        cal.get_objects.side_effect = lambda: list(held)
         return cal
 
     def test_undeletable_reuses_and_empties_the_old_one(self) -> None:
@@ -764,6 +764,17 @@ class TestSecondCalendar:
     def test_undeletable_does_not_reuse_one_it_could_not_empty(self) -> None:
         check, principal = self._check("unsupported")
         principal.calendar.return_value = self._left("csc_probe_cal2", [Mock(), Mock()], keeps=1)
+
+        made = check.second_calendar("csc_probe_cal2")
+
+        assert made is principal.make_calendar.return_value
+
+    def test_undeletable_does_not_reuse_one_it_could_not_list(self) -> None:
+        """Any error listing the leftover, not only a DAVError, means make a new one."""
+        check, principal = self._check("unsupported")
+        old = self._left("csc_probe_cal2", [])
+        old.get_objects.side_effect = RuntimeError("sync REPORT went wrong")
+        principal.calendar.return_value = old
 
         made = check.second_calendar("csc_probe_cal2")
 
