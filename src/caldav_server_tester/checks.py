@@ -8388,7 +8388,7 @@ class CheckSyncToken(Check):
         ## Test 1: Check if sync tokens are supported at all
         ## Use disable_fallback=True to detect true server support
         try:
-            my_objects = cal.objects(disable_fallback=True)
+            my_objects = cal.get_objects(disable_fallback=True)
             sync_token = my_objects.sync_token
 
             if not sync_token or sync_token == "":
@@ -8422,11 +8422,11 @@ class CheckSyncToken(Check):
             )
 
             ## Get objects with new sync token
-            my_objects = cal.objects(disable_fallback=True)
+            my_objects = cal.get_objects(disable_fallback=True)
             sync_token1 = my_objects.sync_token
 
             ## Immediately check for changes (should be none)
-            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
+            my_changed_objects = cal.get_objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
             immediate_count = len(list(my_changed_objects))
 
             if immediate_count > 0:
@@ -8439,7 +8439,7 @@ class CheckSyncToken(Check):
             test_event.save()
 
             ## Check for changes immediately (time-based tokens need sleep(1))
-            my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
+            my_changed_objects = cal.get_objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
             changed_count_no_sleep = len(list(my_changed_objects))
 
             if changed_count_no_sleep == 0:
@@ -8449,7 +8449,7 @@ class CheckSyncToken(Check):
                 test_event.save()
                 time.sleep(1)
 
-                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
+                my_changed_objects = cal.get_objects_by_sync_token(sync_token=sync_token1, disable_fallback=True)
                 changed_count_with_sleep = len(list(my_changed_objects))
 
                 if changed_count_with_sleep >= 1:
@@ -8479,7 +8479,7 @@ class CheckSyncToken(Check):
                 time.sleep(1)
 
             try:
-                my_changed_objects = cal.objects_by_sync_token(sync_token=sync_token2, disable_fallback=True)
+                my_changed_objects = cal.get_objects_by_sync_token(sync_token=sync_token2, disable_fallback=True)
                 ## RFC 6578 3.2: a removed member comes back as a <response> of its
                 ## own with status 404, and the library builds an object for every
                 ## <response> in the multistatus - so a server that reports the

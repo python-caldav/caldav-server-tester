@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
+from caldav import Calendar
 from caldav.compatibility_hints import FeatureSet
 from caldav.davclient import DAVClient
 from caldav.elements import dav
@@ -16,12 +17,12 @@ class TestCheckSyncTokenAPI:
 
     def create_mock_calendar(self) -> Mock:
         """Helper to create a mock calendar object"""
-        cal = Mock()
+        cal = Mock(spec=Calendar)
 
-        # Mock objects() to return a sync token
+        # Mock get_objects() to return a sync token
         mock_objects = Mock()
         mock_objects.sync_token = "test-token-1"
-        cal.objects.return_value = mock_objects
+        cal.get_objects.return_value = mock_objects
 
         # Mock save_object to return an event
         mock_event = Mock()
@@ -34,7 +35,7 @@ class TestCheckSyncTokenAPI:
         mock_changed.sync_token = "test-token-2"
         mock_changed.__iter__ = Mock(return_value=iter([]))
         mock_changed.__len__ = Mock(return_value=0)
-        cal.objects_by_sync_token.return_value = mock_changed
+        cal.get_objects_by_sync_token.return_value = mock_changed
 
         return cal
 
@@ -77,7 +78,7 @@ class TestCheckSyncTokenAPI:
         # Mock no sync token support
         mock_objects = Mock()
         mock_objects.sync_token = ""
-        checker.calendar.objects.return_value = mock_objects
+        checker.calendar.get_objects.return_value = mock_objects
 
         check = CheckSyncToken(checker)
         check._run_check()
@@ -90,13 +91,13 @@ class TestCheckSyncTokenAPI:
         assert not checker.calendar.save_object.called
 
     def test_handles_sync_token_exception(self) -> None:
-        """If objects() raises exception, should mark as unsupported"""
+        """If get_objects() raises exception, should mark as unsupported"""
         checker = self.create_mock_checker()
 
-        # Mock exception on objects()
+        # Mock exception on get_objects()
         from caldav.lib.error import ReportError
 
-        checker.calendar.objects.side_effect = ReportError()
+        checker.calendar.get_objects.side_effect = ReportError()
 
         check = CheckSyncToken(checker)
         check._run_check()
@@ -127,7 +128,7 @@ class TestCheckSyncTokenAPI:
         delete_result.__len__ = Mock(return_value=0)
         delete_result.sync_token = "test-token-4"
 
-        checker.calendar.objects_by_sync_token.side_effect = [
+        checker.calendar.get_objects_by_sync_token.side_effect = [
             empty_result,  # Immediate check after creating
             empty_result,  # First modification (no sleep)
             changed_result,  # After sleep
@@ -165,7 +166,7 @@ class TestCheckSyncTokenAPI:
         delete_result.__len__ = Mock(return_value=0)
         delete_result.sync_token = "test-token-4"
 
-        checker.calendar.objects_by_sync_token.side_effect = [
+        checker.calendar.get_objects_by_sync_token.side_effect = [
             fragile_result,  # Immediate check shows content (fragile!)
             modified_result,  # Modification check (shows the change)
             delete_result,  # After deletion
@@ -186,7 +187,7 @@ def _refuse_token(*args, **kwargs):
 
 
 class _SyncResult:
-    """What ``objects_by_sync_token`` hands back: a token and some changes."""
+    """What ``get_objects_by_sync_token`` hands back: a token and some changes."""
 
     def __init__(self, token, changes=0):
         self.sync_token = token
@@ -213,12 +214,12 @@ class TestSyncTokenDeleteGrading:
         The two earlier sync calls are scripted so the probe walks straight past
         the fragile- and time-based-token tests to the deletion one.
         """
-        cal = Mock()
-        cal.objects.return_value = _SyncResult("token-1")
+        cal = Mock(spec=Calendar)
+        cal.get_objects.return_value = _SyncResult("token-1")
         cal.save_object.return_value = Mock(
             icalendar_instance=Mock(subcomponents=[{"SUMMARY": "Test"}]),
         )
-        cal.objects_by_sync_token.side_effect = [
+        cal.get_objects_by_sync_token.side_effect = [
             _SyncResult("token-1", changes=0),  ## nothing changed yet: not fragile
             _SyncResult("token-2", changes=1),  ## the edit shows up: not time-based
             final,  ## and this is the one under test

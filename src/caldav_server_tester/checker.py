@@ -303,19 +303,19 @@ class ServerQuirkChecker:
 
     ## Probe objects PrepareCalendar deliberately PUT far in the past (year 2000).
     ## Sliding-window servers (e.g. OX) hide these from listings/REPORT, so they
-    ## must be removed by direct URL rather than discovered via objects().
+    ## must be removed by direct URL rather than discovered via get_objects().
     HIDDEN_PROBE_UIDS = (checks.OLDDATE_EVENT_UID, checks.OLDDATE_TASK_UID)
 
     def _purge_csc_objects(self, calendars):
         """Delete every ``csc_*`` object from the given calendars.
 
-        Visible objects are found via ``objects()`` listing; the year-2000
+        Visible objects are found via ``get_objects()`` listing; the year-2000
         probes that a sliding window hides are additionally deleted by direct
         URL.  Returns a ``(removed, errors)`` tuple: ``removed`` is the number of
         objects deleted, ``errors`` is the number of listing/deletion failures
         (each also logged as a warning).  Callers that report cleanup success to
         the user must not claim success when ``errors`` is non-zero — otherwise a
-        server answering e.g. 403 to ``objects()`` looks like "nothing to clean".
+        server answering e.g. 403 to ``get_objects()`` looks like "nothing to clean".
         Failures of the direct-URL probe load are NOT counted: an absent probe
         (the common case) legitimately fails to load.
         """
@@ -328,7 +328,7 @@ class ServerQuirkChecker:
             seen.add(id(cal))
             ## listing-based: catches all visible csc_* objects
             try:
-                for obj in cal.objects():
+                for obj in cal.get_objects():
                     try:
                         uid = str(obj.icalendar_component.get("UID", ""))
                         if uid.startswith("csc_"):
