@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from caldav import Calendar
 from caldav.compatibility_hints import FeatureSet
 
 from caldav_server_tester.checker import ServerQuirkChecker
@@ -578,21 +579,22 @@ class TestPurgeErrorReporting:
 
     def test_listing_failure_is_counted(self) -> None:
         checker = self._checker()
-        cal = Mock()
-        cal.objects.side_effect = Exception("403 Forbidden")
+        cal = Mock(spec=Calendar)
+        cal.get_objects.side_effect = Exception("403 Forbidden")
         with patch("caldav.Event") as mock_event:
             mock_event.return_value.load.side_effect = Exception("probe absent")
             removed, errors = checker._purge_csc_objects([cal])
+        cal.get_objects.assert_called()
         assert removed == 0
         assert errors >= 1
 
     def test_delete_failure_is_counted(self) -> None:
         checker = self._checker()
-        cal = Mock()
+        cal = Mock(spec=Calendar)
         obj = Mock()
         obj.icalendar_component.get.return_value = "csc_simple_event1"
         obj.delete.side_effect = Exception("500 Server Error")
-        cal.objects.return_value = [obj]
+        cal.get_objects.return_value = [obj]
         with patch("caldav.Event") as mock_event:
             mock_event.return_value.load.side_effect = Exception("probe absent")
             removed, errors = checker._purge_csc_objects([cal])
@@ -601,10 +603,10 @@ class TestPurgeErrorReporting:
 
     def test_clean_purge_reports_no_errors(self) -> None:
         checker = self._checker()
-        cal = Mock()
+        cal = Mock(spec=Calendar)
         obj = Mock()
         obj.icalendar_component.get.return_value = "csc_simple_event1"
-        cal.objects.return_value = [obj]
+        cal.get_objects.return_value = [obj]
         with patch("caldav.Event") as mock_event:
             mock_event.return_value.load.side_effect = Exception("probe absent")
             removed, errors = checker._purge_csc_objects([cal])

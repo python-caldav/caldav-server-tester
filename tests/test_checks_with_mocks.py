@@ -20,6 +20,7 @@ from unittest.mock import Mock
 
 import icalendar
 import pytest
+from caldav import Calendar
 from caldav.compatibility_hints import FeatureSet
 from caldav.lib.error import DAVError, NotFoundError, ReportError
 
@@ -1428,8 +1429,8 @@ class TestCleanupDoesNotDeleteUserData:
     def test_preexisting_user_calendar_not_deleted(self) -> None:
         """#2: a calendar the tool merely found (not created) must survive cleanup."""
         checker = self._checker()
-        cal = Mock()
-        cal.objects.return_value = []  # nothing to purge
+        cal = Mock(spec=Calendar)
+        cal.get_objects.return_value = []  # nothing to purge
         checker.calendar = cal
         checker.tasklist = cal
         checker.journallist = cal
@@ -1443,10 +1444,12 @@ class TestCleanupDoesNotDeleteUserData:
     def test_user_data_object_not_purged(self) -> None:
         """#2: non-csc_ objects in a found calendar must not be deleted during purge."""
         checker = self._checker()
-        cal = Mock()
+        cal = Mock(spec=Calendar)
         user_obj = Mock()
         user_obj.icalendar_component.get.return_value = "real-user-meeting"
-        cal.objects.return_value = [user_obj]
+        csc_obj = Mock()
+        csc_obj.icalendar_component.get.return_value = "csc_simple_event1"
+        cal.get_objects.return_value = [user_obj, csc_obj]
         checker.calendar = cal
         checker.tasklist = cal
         checker.journallist = cal
@@ -1457,11 +1460,12 @@ class TestCleanupDoesNotDeleteUserData:
 
         cal.delete.assert_not_called()
         user_obj.delete.assert_not_called()
+        csc_obj.delete.assert_called()  # proves the listing was read at all
 
     def test_tool_created_calendar_is_deleted(self) -> None:
         """A calendar the tool created should still be deleted wholesale."""
         checker = self._checker()
-        cal = Mock()
+        cal = Mock(spec=Calendar)
         checker.calendar = cal
         checker.tasklist = cal
         checker.journallist = cal
