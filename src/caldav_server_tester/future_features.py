@@ -15,6 +15,12 @@ Once the caldav release that defines a feature is the floor in
 from caldav.compatibility_hints import FeatureSet
 
 FUTURE_FEATURES: dict[str, dict] = {
+    ## caldav branch chore/hints-2026-11-22, not yet a PR
+    "sync-token.deleted-rdate": {
+        "description": "A sync token issued before an event with RDATE and no RRULE was deleted is still accepted after the delete (RFC 6578 section 3.5.2; whether the delete is reported is sync-token.delete).  Not under sync-token.delete: Bedework 5 does not report deletions, yet its tokens keep working.  'ungraceful' when every such older token is refused with an error that does not name DAV:valid-sync-token (OX App Suite 7.10.6: 400, CAL-4002 'Invalid recurrence rule [rule null]', as it stores such an event as a series without a rule), so incremental sync of that calendar never works again; get_objects_by_sync_token() falls back to a full listing.  An event with both RRULE and RDATE is not affected.",
+        "default": {"support": "full"},
+        "links": ["https://datatracker.ietf.org/doc/html/rfc6578#section-3.5.2"],
+    },
     ## caldav PR 867 (https://github.com/python-caldav/caldav/pull/867)
     "search.recurrences.exception": {
         "description": "A search handles the exceptions of a recurrence set (the components with a RECURRENCE-ID) as it handles any other component.  The children say in what way it does not",

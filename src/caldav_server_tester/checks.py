@@ -8329,6 +8329,7 @@ class CheckSyncToken(Check):
     3. Fragile sync tokens (returns extra content, race conditions)
     4. Sync breaks on delete (server fails after object deletion)
     5. A token the server never issued isn't refused with DAV:valid-sync-token
+    6. A token stops working once an RDATE-only event is deleted (OX App Suite)
     """
 
     depends_on = {PrepareCalendar}
@@ -8336,43 +8337,140 @@ class CheckSyncToken(Check):
         "sync-token",
         "sync-token.delete",
         "sync-token.invalid-token",
+        "sync-token.deleted-rdate",
     }
+
+    ## Tests 5 and 6 run on a calendar of their own, see _check_tokens
+    OWN_CALENDAR = "csc_sync_token_cal"
 
     ## Tokens no server has issued: a URI, the form RFC 6578 section 3.2
     ## gives a token, and a 40-digit hex string, the form of a Xandikos
     ## token, which Xandikos treats differently from a malformed one
     NEVER_ISSUED_TOKENS = ("http://example.invalid/never-issued", "0" * 40)
 
+    def _token_answer(self, cal, token) -> tuple[str, str]:
+        """Send a sync-collection REPORT with ``token``, and grade the answer as a
+        refusal: 'full' for a 401/403 with DAV:valid-sync-token, 'quirk' for
+        another status with it, 'ungraceful' for an error without it, and
+        'broken' for no error at all; with what was seen.
+
+        The REPORT is sent through the low-level client, which raises only for a
+        401/403 and otherwise hands back the response, so the status and the
+        precondition can be read here.
+        """
+        query = self.client._build_sync_collection_body(sync_token=token, props=["getetag"])
+        try:
+            response = self.client.report(str(cal.url), query, depth=0)
+        except AuthorizationError as e:
+            if dav.ValidSyncToken.tag in e.preconditions:
+                return "full", "401/403 with valid-sync-token"
+            return "ungraceful", "401/403 without valid-sync-token"
+        except DAVError as e:
+            return "ungraceful", f"{type(e).__name__}"
+        status = response.status
+        if 200 <= status < 300:
+            return "broken", f"{status}, no error"
+        if dav.ValidSyncToken.tag in parse_preconditions(response.raw):
+            return "quirk", f"{status} with valid-sync-token"
+        return "ungraceful", f"{status} without valid-sync-token"
+
+    def _check_tokens(self, cal) -> None:
+        """Tests 5 and 6, on a calendar of their own where one can be made.
+
+        A server failing sync-token.deleted-rdate refuses every token older than
+        the delete of an RDATE-only event, never-issued ones included - and the
+        RDATE probe leaves such a tombstone on the checker's calendar.  On a
+        fresh calendar test 5 runs before test 6 puts one there.  Where there is
+        none (no second calendar, or none that can be deleted, so an earlier
+        run's is reused), test 5 is only graded where the server is expected to
+        handle such deletes; otherwise 'unknown', the same every run.
+        """
+        try:
+            own = self.second_calendar(self.OWN_CALENDAR)
+        except (DAVError, AuthorizationError):
+            own = None
+        fresh = own is not None and self.checker.features_checked.is_supported("delete-calendar", str) != "unsupported"
+        try:
+            if fresh or self.expected_features.is_supported("sync-token.deleted-rdate", str) == "full":
+                self._check_invalid_token(own if fresh else cal)
+            else:
+                self.set_feature(
+                    "sync-token.invalid-token",
+                    {
+                        "support": "unknown",
+                        "behaviour": "no fresh calendar, and a deleted RDATE-only event may break every older token",
+                    },
+                )
+            if own is None:
+                self.set_feature(
+                    "sync-token.deleted-rdate",
+                    {"support": "unknown", "behaviour": "cannot test, have access to only one calendar"},
+                )
+            else:
+                self._check_deleted_rdate(own)
+        finally:
+            if fresh:
+                with contextlib.suppress(Exception):
+                    own.delete()
+
+    def _check_deleted_rdate(self, cal) -> None:
+        """Test 6: does a token survive the delete of an event with RDATE and no RRULE?
+
+        OX App Suite stores such an event as a series without a rule, and once it
+        is deleted answers every older token with a bare 400.
+        """
+        base = self.checker.fixture_base_year
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//caldav-server-tester//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:csc_sync_deleted_rdate\r\nDTSTAMP:20200101T000000Z\r\n"
+            f"DTSTART:{base}0301T120000Z\r\nDURATION:PT1H\r\n"
+            f"RDATE:{base}0308T120000Z,{base}0315T120000Z\r\n"
+            "SUMMARY:sync-token.deleted-rdate probe\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        try:
+            event = cal.save_object(Event, ical=ical)
+            token = cal.get_objects(disable_fallback=True).sync_token
+        except (DAVError, AuthorizationError, ReportError) as e:
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": "unknown", "behaviour": f"could not set up the probe: {type(e).__name__}"},
+            )
+            return
+        if self.checker.features_checked.is_supported("sync-token", dict).get("behaviour") == "time-based":
+            time.sleep(1)
+        try:
+            event.delete()
+        except (DAVError, AuthorizationError) as e:
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": "unknown", "behaviour": f"could not delete the probe event: {type(e).__name__}"},
+            )
+            return
+        grade, what = self._token_answer(cal, token)
+        if grade == "broken":
+            self.set_feature("sync-token.deleted-rdate", True)
+        else:
+            ## a refusal naming valid-sync-token still tells the client to start over
+            support = "quirk" if grade in ("full", "quirk") else "ungraceful"
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": support, "behaviour": f"a token older than the delete gets {what}"},
+            )
+
     def _check_invalid_token(self, cal) -> None:
         """Probe how the server refuses a sync token it never issued.
 
         RFC 6578 section 3.2 refuses it with the DAV:valid-sync-token
         precondition, and RFC 4918 section 16 suggests a 403 for a request
-        that will always fail.  The REPORT is sent through the low-level client,
-        which raises only for a 401/403 and otherwise hands back the response,
-        so the probe reads the status and the precondition itself and can tell
-        a 412 with the precondition from a 500 without it.
+        that will always fail.  See _token_answer for how the answer is read: it
+        tells a 412 with the precondition from a 500 without it.
         """
         support = "full"
         observed = []
         for token in self.NEVER_ISSUED_TOKENS:
-            query = self.client._build_sync_collection_body(sync_token=token, props=["getetag"])
-            try:
-                response = self.client.report(str(cal.url), query, depth=0)
-            except AuthorizationError as e:
-                if dav.ValidSyncToken.tag in e.preconditions:
-                    continue
-                grade, what = "ungraceful", "401/403 without valid-sync-token"
-            except DAVError as e:
-                grade, what = "ungraceful", f"{type(e).__name__}"
-            else:
-                status = response.status
-                if 200 <= status < 300:
-                    grade, what = "broken", f"{status}, no error"
-                elif dav.ValidSyncToken.tag in parse_preconditions(response.raw):
-                    grade, what = "quirk", f"{status} with valid-sync-token"
-                else:
-                    grade, what = "ungraceful", f"{status} without valid-sync-token"
+            grade, what = self._token_answer(cal, token)
+            if grade == "full":
+                continue
             observed.append(f"{token!r}: {what}")
             if is_worse(grade, support):
                 support = grade
@@ -8514,9 +8612,10 @@ class CheckSyncToken(Check):
                 except Exception:
                     pass
 
-        ## Test 5: a token the server never issued.  Last, so a crash in it
-        ## can't cost the results above
-        self._check_invalid_token(cal)
+        ## Tests 5 and 6: a token the server never issued, and one older than
+        ## the delete of an RDATE-only event.  Last, so a crash in them can't
+        ## cost the results above
+        self._check_tokens(cal)
 
 
 class _RawSync:
