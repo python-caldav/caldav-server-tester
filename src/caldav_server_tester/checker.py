@@ -25,7 +25,7 @@ PROBE_CALENDAR_PREFIXES = (
     "caldav-server-checker",  # main test calendar + mkdel / display-name probes
     "testcalendar-",  # free-namespace uniqueness probe
     "csc-",  # inbox-delivery / attendee / display-name-relocation probes
-    "csc_",  # duplicate-uid second calendar (created by name only)
+    "csc_",  # duplicate-uid and move second calendars, encode-at calendar
 )
 
 
@@ -450,9 +450,10 @@ class ServerQuirkChecker:
 
         Matches a calendar's ``cal_id`` (the last URL segment) or its display
         name against ``PROBE_CALENDAR_PREFIXES``.  The display-name check catches
-        the duplicate-uid calendar, which is created by name only and so lives at
-        a server-assigned URL.  A listing/delete failure is logged and skipped so
-        one stuck calendar can't abort the rest of the sweep.  Returns the number
+        a second calendar (duplicate-uid, move) made by name only at a
+        server-assigned URL, by an older run or because its fixed cal_id was
+        taken.  A listing/delete failure is logged and skipped so one stuck
+        calendar can't abort the rest of the sweep.  Returns the number
         of calendars deleted.
         """
 

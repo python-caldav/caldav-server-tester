@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from caldav.compatibility_hints import _RENAMED_FEATURES, FeatureSet
-from caldav.lib.error import NotFoundError
+from caldav.lib.error import DAVError, NotFoundError
 
 from caldav_server_tester.checks_base import Check, ProbedFeatureSet
 
@@ -713,3 +713,98 @@ class TestCheckFeatureUnknownToCaldav:
 
         with pytest.raises(AssertionError):
             TestCheck(self.create_checker("assert")).run_check()
+
+
+class TestSecondCalendar:
+    """Check.second_calendar: an empty calendar at a fixed cal_id, for a probe that needs two.
+
+    Made afresh where calendars can be deleted.  Where they cannot (Synology),
+    each one made would stay for good, so the one an earlier run left at that
+    cal_id is emptied and used again.
+    """
+
+    def _check(self, delete_calendar: str) -> tuple[Check, Mock]:
+        checker = Mock()
+        checker._features_checked = FeatureSet()
+        checker.features_checked = checker._features_checked
+        checker.debug_mode = None
+        checker._client_obj = Mock()
+        checker._client_obj.features = FeatureSet()
+        checker.features_checked.set_feature("delete-calendar", {"support": delete_calendar})
+        principal = checker._client_obj.principal.return_value
+        principal.calendars.return_value = []
+        return Check(checker), principal
+
+    @staticmethod
+    def _left(name: str, objects: list[Mock], keeps: int = 0) -> Mock:
+        """A calendar left by an earlier run; the last ``keeps`` objects survive a delete."""
+        held = list(objects)
+        doomed = objects[: len(objects) - keeps]
+        for obj in doomed:
+            obj.delete.side_effect = lambda obj=obj: held.remove(obj)
+        cal = Mock()
+        cal.name = name
+        cal.events.return_value = []
+        cal.get_objects.side_effect = lambda: list(held)
+        return cal
+
+    def test_undeletable_reuses_and_empties_the_old_one(self) -> None:
+        check, principal = self._check("unsupported")
+        objects = [Mock(), Mock()]
+        old = self._left("csc_probe_cal2", objects)
+        principal.calendar.return_value = old
+
+        assert check.second_calendar("csc_probe_cal2") is old
+
+        principal.calendar.assert_called_with(cal_id="csc_probe_cal2")
+        principal.make_calendar.assert_not_called()
+        for obj in objects:
+            obj.delete.assert_called_once()
+
+    def test_undeletable_does_not_reuse_one_it_could_not_empty(self) -> None:
+        check, principal = self._check("unsupported")
+        principal.calendar.return_value = self._left("csc_probe_cal2", [Mock(), Mock()], keeps=1)
+
+        made = check.second_calendar("csc_probe_cal2")
+
+        assert made is principal.make_calendar.return_value
+
+    def test_undeletable_does_not_reuse_one_it_could_not_list(self) -> None:
+        """Any error listing the leftover, not only a DAVError, means make a new one."""
+        check, principal = self._check("unsupported")
+        old = self._left("csc_probe_cal2", [])
+        old.get_objects.side_effect = RuntimeError("sync REPORT went wrong")
+        principal.calendar.return_value = old
+
+        made = check.second_calendar("csc_probe_cal2")
+
+        assert made is principal.make_calendar.return_value
+
+    def test_undeletable_makes_one_at_the_fixed_cal_id_when_none_is_left(self) -> None:
+        check, principal = self._check("unsupported")
+        principal.calendar.return_value.events.side_effect = NotFoundError("gone")
+
+        made = check.second_calendar("csc_probe_cal2")
+
+        assert made is principal.make_calendar.return_value
+        principal.make_calendar.assert_called_once_with(cal_id="csc_probe_cal2", name="csc_probe_cal2")
+
+    def test_deletable_deletes_old_ones_by_name_and_makes_a_new(self) -> None:
+        check, principal = self._check("full")
+        old = self._left("csc_probe_cal2", [])
+        principal.calendars.return_value = [self._left("other", []), old]
+
+        made = check.second_calendar("csc_probe_cal2")
+
+        old.delete.assert_called_once()
+        assert made is principal.make_calendar.return_value
+        principal.make_calendar.assert_called_once_with(cal_id="csc_probe_cal2", name="csc_probe_cal2")
+
+    def test_a_taken_cal_id_falls_back_to_one_made_by_name(self) -> None:
+        """A delete the server carries out late leaves the cal_id taken for a while."""
+        check, principal = self._check("full")
+        fresh = Mock()
+        principal.make_calendar.side_effect = [DAVError("405 Method Not Allowed"), fresh]
+
+        assert check.second_calendar("csc_probe_cal2") is fresh
+        principal.make_calendar.assert_called_with(name="csc_probe_cal2")

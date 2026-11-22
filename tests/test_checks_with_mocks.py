@@ -1828,3 +1828,84 @@ class TestLeftoverCalendarEvidence:
         CheckMakeDeleteCalendar(checker)._probe_make_delete()
 
         assert checker.features_checked.is_supported("create-calendar", str) == "full"
+
+
+class TestUndeletableCalendars:
+    """A server that makes calendars but will not delete them (Synology).
+
+    Every calendar the probe makes there stays for good, so a calendar made
+    afresh on each run piles up: one test account held over 200 of them.  The
+    make/delete probe is to use what an earlier run left instead.
+    """
+
+    def _server(self, monkeypatch, existing: set[str], auto: bool = False) -> tuple[ServerQuirkChecker, list[str]]:
+        """A checker against a server holding calendars ``existing``; the list fills with every cal_id made.
+
+        ``auto``: every cal_id answers, as on a server that makes a calendar on access."""
+        import caldav_server_tester.checks as checks_mod
+
+        made: list[str] = []
+        held = set(existing)
+
+        def calendar(cal_id=None, **_kwargs):
+            cal = Mock()
+            if cal_id in held or auto:
+                cal.events.return_value = []
+            else:
+                cal.events.side_effect = NotFoundError("Node could not be found")
+            return cal
+
+        def make_calendar(cal_id=None, **_kwargs):
+            if cal_id in held:
+                raise DAVError("405 Method Not Allowed")
+            held.add(cal_id)
+            made.append(cal_id)
+            return calendar(cal_id)
+
+        def refuse(_self):
+            raise DAVError("403 Forbidden")
+
+        client = Mock()
+        client.features = FeatureSet()
+        client.request = Mock(return_value="response")
+        checker = ServerQuirkChecker(client, debug_mode=None)
+        checker.principal = Mock()
+        checker.principal.calendar.side_effect = calendar
+        checker.principal.make_calendar.side_effect = make_calendar
+        checker.principal.calendars.return_value = [calendar(c) for c in held]
+        checker._checks_run.add(CheckGetCurrentUserPrincipal)
+        monkeypatch.setattr(checks_mod.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(checks_mod.DAVObject, "delete", refuse)
+        return checker, made
+
+    def test_a_rerun_makes_no_calendar(self, monkeypatch) -> None:
+        checker, made = self._server(monkeypatch, {CheckMakeDeleteCalendar.MKDEL_CAL_ID})
+
+        check = CheckMakeDeleteCalendar(checker)
+        check._probe_make_delete()
+        check._record_settle_delays()
+
+        assert made == []
+        features = checker.features_checked
+        assert features.is_supported("create-calendar", str) == "full"
+        assert features.is_supported("delete-calendar", str) == "unsupported"
+        assert features.is_supported("delete-calendar.free-namespace", str) == "unknown"
+        assert "previous run" in features.is_supported("synchronous-write.create-calendar", dict)["behaviour"]
+
+    def test_the_first_run_makes_one(self, monkeypatch) -> None:
+        checker, made = self._server(monkeypatch, set())
+
+        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+
+        assert made == [CheckMakeDeleteCalendar.MKDEL_CAL_ID]
+        assert checker.features_checked.is_supported("create-calendar", str) == "full"
+        assert checker.features_checked.is_supported("delete-calendar", str) == "unsupported"
+
+    def test_on_a_server_making_calendars_on_access_any_cal_id_is_no_leftover(self, monkeypatch) -> None:
+        """There every cal_id answers, so one at the fixed cal_id says nothing about an earlier run."""
+        checker, _made = self._server(monkeypatch, set(), auto=True)
+        checker.principal.make_calendar.side_effect = DAVError("403 Forbidden")
+
+        CheckMakeDeleteCalendar(checker)._probe_make_delete()
+
+        assert checker.features_checked.is_supported("create-calendar", str) == "unsupported"
