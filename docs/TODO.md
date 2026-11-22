@@ -494,17 +494,21 @@ before the DELETE (racy, but closer to what was asked for).
 
 ## Re-runs on a server that cannot delete calendars
 
-(Clean-context review 2026-11-17, filed rather than fixed.)
+(Clean-context reviews 2026-11-17 and 2026-11-22, filed rather than fixed.)
 
 On a server that makes calendars but will not delete them (Synology),
 only the first run on an account creates the probes' calendars; later
-runs find them already there.  Two consequences:
+runs find them already there.  Consequences, and gaps left by the
+reuse:
 
 * The create/delete probe takes the calendar left at its fixed cal_id as
   the evidence that creation works and records `create-calendar` as plain
   `full`.  A first run that graded it `quirk` (the empty 207) or `fragile`
   is overruled on every later run.  It should not upgrade the verdict,
   say by keeping the configured profile's grade where that is worse.
+  The same goes for a server taking MKCOL only: a leftover at
+  `MKDEL_CAL_ID` from an older run gets `create-calendar` recorded as
+  plain `full`, losing the MKCOL grade.
 * The probes at fixed cal_ids - `caldav-server-checker-displayname-test`
   in `_check_set_displayname`, and `CAL_ID`/`CAL_ID_MULTIPLE` of
   `CheckSupportedComponentSet` - get 405 on MKCALENDAR from the second
@@ -512,3 +516,16 @@ runs find them already there.  Two consequences:
   and the supported-component-set features come out `unknown`.  Reusing
   the leftover where the question allows it (the component set can be
   read off an existing calendar) would keep the verdicts.
+* A leftover second calendar that cannot be emptied still costs one
+  calendar per run: `second_calendar()` will not reuse a calendar with
+  objects it could not delete (they would skew the probe), so it makes
+  one by name only, and the leftover stays.  Giving up with `unknown`
+  instead would stop the leak at the price of the probe's verdict.
+* Test gaps in the reuse (`tests/test_check_base.py`,
+  `tests/test_checks_with_mocks.py`): a leftover whose delete grades
+  `unknown` or `fragile` must still fall through to the
+  `testcalendar-<uuid>` path; nothing checks that `CheckMove` and
+  `CheckDuplicateUID` reuse the leftover; and the mock in
+  `test_undeletable_does_not_reuse_one_it_could_not_empty` accepts
+  `make_calendar(cal_id=...)`, where a real server answers 405, so the
+  test does not show which call made the calendar.
