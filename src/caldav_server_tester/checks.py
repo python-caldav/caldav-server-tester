@@ -42,6 +42,10 @@ utc = timezone.utc
 ## source of truth: checker.cleanup_test_data() needs the same id to find
 ## leftovers without re-running the checks.
 TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
+## The checker calendar's name where the server profile names none
+TEST_CALENDAR_NAME = "Calendar for checking server feature support"
+## What CheckProppatchDelay renames the checker calendar to, for a moment
+PROPPATCH_PROBE_NAME = "csc proppatch probe "
 
 ## UIDs of the two probe objects PrepareCalendar deliberately PUTs far in the
 ## past (year 2000) to detect sliding-window servers.  Referenced by the
@@ -3338,7 +3342,7 @@ END:VCALENDAR""",
         test_cal_info = self.checker.expected_features.is_supported(
             "test-calendar.compatibility-tests", return_type=dict
         )
-        name = test_cal_info.get("name", "Calendar for checking server feature support")
+        name = test_cal_info.get("name", TEST_CALENDAR_NAME)
 
         self._find_or_create_calendar(cal_id, name, test_cal_info)
         calendar = self.checker.calendar
@@ -4422,7 +4426,13 @@ class CheckProppatchDelay(Check):
             self.set_feature(feature, {"support": "unknown", "behaviour": "no calendar to write to"})
             return
         original = self._display_name(cal)
-        probe = f"csc proppatch probe {uuid.uuid4().hex[:8]}"
+        if original and original.startswith(PROPPATCH_PROBE_NAME):
+            ## A run killed between the rename and the restore left this
+            ## behind; restoring it would keep it for good
+            original = self.expected_features.is_supported("test-calendar.compatibility-tests", dict).get(
+                "name", TEST_CALENDAR_NAME
+            )
+        probe = f"{PROPPATCH_PROBE_NAME}{uuid.uuid4().hex[:8]}"
         waited = 0
         try:
             with self.checker.without_write_delay(), proppatch_wait(cal.client, {"support": "full"}):
@@ -4711,6 +4721,8 @@ class CheckIfMatchOptional(Check):
 
 ## RFC 9110 section 8.8.3: entity-tag = [ "W/" ] DQUOTE *etagc DQUOTE
 ENTITY_TAG = re.compile(r'(W/)?"[^"]*"')
+## The opaque-tag of RFC 9110 section 8.8.3 without its quotes: etagc only
+BARE_ETAG = re.compile(r"[\x21\x23-\x7e\x80-\xff]+")
 
 
 class _StatusOnly(NamedTuple):
@@ -5093,6 +5105,19 @@ class CheckPutEtag(_RawPut, Check):
                 self.set_feature(
                     "save.etag",
                     {"support": "broken", "behaviour": "percent-encoded; the decoded etag is refused in If-Match too"},
+                )
+            return
+        if BARE_ETAG.fullmatch(etag):
+            ## An entity-tag without its quotes (Robur).  caldav after 3.7.0
+            ## quotes a bare ETag header itself (python-caldav/caldav e2bcb7c8),
+            ## so where the quoted form is taken back a client gets a working
+            ## etag: a quirk.
+            if self._ok(self._put(url, ical, f'"{etag}"')):
+                self.set_feature("save.etag", {"support": "quirk", "behaviour": "unquoted"})
+            else:
+                self.set_feature(
+                    "save.etag",
+                    {"support": "broken", "behaviour": "unquoted; the quoted etag is refused in If-Match too"},
                 )
             return
         self.set_feature("save.etag", {"support": "broken", "behaviour": f"malformed etag {etag!r}"})
@@ -9878,7 +9903,7 @@ class CheckMove(Check):
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"move", "move.overwrite", "move.if-match"}
+    features_to_be_checked = {"move", "move.overwrite.existing", "move.overwrite.free-name", "move.if-match"}
 
     def _event(self, uid: str) -> str:
         ts = (datetime.now(tz=utc) + timedelta(days=30)).strftime("%Y%m%dT%H%M%SZ")
@@ -9934,11 +9959,15 @@ class CheckMove(Check):
                 return
             made.append(first)
             name = self._name(first.url)
-            status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name, Overwrite="F")
+            ## No Overwrite header: Bedework refuses every `Overwrite: F` with
+            ## 412, onto a free name too, and would look as if it cannot move
+            status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name)
             moved = grade_move(status, in_source=_holds(cal1, name), in_target=_holds(cal2, name))
             self.set_feature("move", moved)
             if moved is not True:
-                self._unknown(("move.overwrite", "move.if-match"), "MOVE itself did not work")
+                self._unknown(
+                    ("move.overwrite.existing", "move.overwrite.free-name", "move.if-match"), "MOVE itself did not work"
+                )
                 return
             self._probe_overwrite(cal1, cal2, made)
             self._probe_if_match(cal1, cal2, made)
@@ -9956,16 +9985,34 @@ class CheckMove(Check):
         the destination: Zimbra names every object <uid>.ics, whatever URL it is put at.
         """
         try:
+            free = cal1.add_event(self._event("csc_move_event2_free"))
+            made.append(free)
             taken = cal2.add_event(self._event("csc_move_event2_target"))
             second = cal1.add_event(self._event("csc_move_event2"))
             made.append(second)
         except (DAVError, AuthorizationError) as e:
-            self._unknown(("move.overwrite",), f"could not set up the probe: {type(e).__name__}")
+            self._unknown(
+                ("move.overwrite.existing", "move.overwrite.free-name"),
+                f"could not set up the probe: {type(e).__name__}",
+            )
             return
+        ## First onto a free name, where `Overwrite: F` must not stop the MOVE
+        ## (Bedework refuses it there too, with 412)
+        free_status = self._move(str(free.url), str(cal2.url).rstrip("/") + "/" + self._name(free.url), Overwrite="F")
+        if self._moved(cal1, cal2, free):
+            self.set_feature("move.overwrite.free-name", True)
+        else:
+            self.set_feature(
+                "move.overwrite.free-name",
+                {
+                    "support": "broken",
+                    "behaviour": f"a MOVE with Overwrite: F onto a free name answered {free_status}; one without it works",
+                },
+            )
         status = self._move(str(second.url), str(taken.url), Overwrite="F")
         moved = self._moved(cal1, cal2, second) or self._uid_at(str(taken.url)) != "csc_move_event2_target"
         self.set_feature(
-            "move.overwrite", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
+            "move.overwrite.existing", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
         )
 
     def _probe_if_match(self, cal1, cal2, made: list) -> None:
@@ -9978,7 +10025,8 @@ class CheckMove(Check):
             self._unknown(("move.if-match",), f"could not set up the probe: {type(e).__name__}")
             return
         free = str(cal2.url).rstrip("/") + "/csc_move_free.ics"
-        status = self._move(str(third.url), free, Overwrite="F", **{"If-Match": '"csc-outdated"'})
+        ## No Overwrite header, which Bedework refuses on its own (see above)
+        status = self._move(str(third.url), free, **{"If-Match": '"csc-outdated"'})
         moved = self._moved(cal1, cal2, third) or _holds(cal2, "csc_move_free.ics")
         self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match", moved=moved))
 

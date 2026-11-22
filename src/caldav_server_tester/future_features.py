@@ -47,7 +47,13 @@ FUTURE_FEATURES: dict[str, dict] = {
         "default": {"support": "full"},
     },
     "move.overwrite": {
-        "description": "A MOVE with 'Overwrite: F' onto an object that already exists at the destination fails with 412 and changes nothing, as RFC 4918 section 10.6 requires.  Where unsupported, the MOVE replaces the object at the destination."
+        "description": "A MOVE honours 'Overwrite: F' (RFC 4918 section 10.6): it refuses to replace an object at the destination, and moves onto a free name as without the header.  Derived from the two subfeatures."
+    },
+    "move.overwrite.existing": {
+        "description": "A MOVE with 'Overwrite: F' onto an object that already exists at the destination fails with 412 and changes nothing, as RFC 4918 section 10.6 requires.  Where unsupported, the MOVE replaces the object at the destination.  'ungraceful' when it is refused with another status (GMX: 405) and nothing is moved."
+    },
+    "move.overwrite.free-name": {
+        "description": "A MOVE with 'Overwrite: F' onto a name that is free at the destination moves the object, as one without the header does.  'broken' when it is refused (Bedework 3.10 and 5: 412), so the header can only be sent where the name is known to be taken."
     },
     "move.if-match": {
         "description": "A MOVE with an If-Match the object no longer has fails with 412 and moves nothing (RFC 9110 section 13.1.1).  Where unsupported, a MOVE cannot guard against an object changed since it was read."
