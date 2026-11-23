@@ -79,6 +79,8 @@ class _Calendar:
     def __init__(self, server: "_Server", name: str) -> None:
         self.server, self.name, self.url = server, name, f"http://example.com/{name}/"
         self.objects: dict[str, str] = {}  ## name -> UID
+        self.ghosts: set[str] = set()  ## listed, but gone (Bedework 3, after a MOVE)
+        self.unlisted: set[str] = set()  ## there, but not listed yet
         self.deleted = False
 
     def add_event(self, ical: str) -> Mock:
@@ -90,7 +92,8 @@ class _Calendar:
         return obj
 
     def children(self) -> list:
-        return [(self.url + name, None, None) for name in self.objects]
+        listed = (set(self.objects) - self.unlisted) | self.ghosts
+        return [(self.url + name, None, None) for name in listed]
 
     def delete(self) -> None:
         self.deleted = True
@@ -112,9 +115,11 @@ class _Server:
         mode: str = "refuse",
         second_calendar: bool = True,
         refuse_overwrite_f: bool = False,
+        stale_listings: bool = False,
     ) -> None:
         self.move_status, self.precondition, self.mode = move_status, precondition, mode
         self.refuse_overwrite_f = refuse_overwrite_f
+        self.stale_listings = stale_listings
         self.moves: list[dict] = []  ## the headers of each MOVE
         self.cal1 = _Calendar(self, "cal1")
         self.cal2 = _Calendar(self, "csc_move_cal2")
@@ -146,6 +151,9 @@ class _Server:
         if mode == "move":
             source.objects.pop(name, None)
             target.objects[new] = uid
+            if self.stale_listings:
+                source.ghosts.add(name)
+                target.unlisted.add(new)
         elif mode == "copy":
             target.objects[uid + ".ics"] = uid
         elif mode == "overwrite":
@@ -254,3 +262,12 @@ def test_overwrite_f_onto_a_free_name_that_moves_changes_nothing() -> None:
     assert verdicts["move.overwrite.existing"]["support"] == "full"
     assert verdicts["move.overwrite.free-name"]["support"] == "full"
     assert any(m.get("Overwrite") == "F" for m in server.moves)
+
+
+def test_stale_listings_with_a_truthful_get_are_not_a_broken_move() -> None:
+    """Bedework 3: after a MOVE the source listing keeps the object for good and
+    the target listing shows it only seconds later, while a GET answers 404 at
+    the source and 200 at the target right away."""
+    verdicts = _run(_Server(stale_listings=True, precondition=201, mode="move"))
+    assert verdicts["move"]["support"] == "full"
+    assert verdicts["move.if-match"]["support"] == "unsupported"

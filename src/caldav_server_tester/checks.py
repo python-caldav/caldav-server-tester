@@ -9898,8 +9898,9 @@ class CheckMove(Check):
     calendar only (see save.duplicate-uid.cross-calendar).
 
     Where an object ended up is read from a listing of each calendar
-    (PROPFIND, depth 1), not from a GET or a search: Zimbra still answers a
-    request for an object's old URL after it has moved.
+    (PROPFIND, depth 1) and a GET together, not from a search: Zimbra still
+    answers a GET of an object's old URL after it has moved, while Bedework
+    3's listings lag behind a MOVE (see _in_source and _in_target).
     """
 
     depends_on = {PrepareCalendar}
@@ -9928,7 +9929,23 @@ class CheckMove(Check):
         """Whether ``obj`` left ``cal1``, or turned up in ``cal2`` under its own
         name (Zimbra names every object <uid>.ics, wherever it is put)"""
         name = self._name(obj.url)
-        return not _holds(cal1, name) or _holds(cal2, name)
+        return not self._in_source(cal1, name) or self._in_target(cal2, name)
+
+    ## Where an object is, from a listing and a GET together: Zimbra still answers
+    ## a GET of an object's old URL after a MOVE, while Bedework 3's listings are
+    ## stale - the source keeps listing a moved object for good, the target lists
+    ## it seconds later - although its GET answers right away.
+    def _in_source(self, calendar, name: str) -> bool:
+        return _holds(calendar, name) and self._get_status(str(calendar.url).rstrip("/") + "/" + name) != 404
+
+    def _in_target(self, calendar, name: str) -> bool:
+        return _holds(calendar, name) or self._get_status(str(calendar.url).rstrip("/") + "/" + name) == 200
+
+    def _get_status(self, url: str) -> int | None:
+        try:
+            return self.client.request(url).status
+        except DAVError:
+            return None
 
     def _uid_at(self, url: str) -> str | None:
         """The UID of the object a GET of ``url`` answers with, None for none"""
@@ -9962,7 +9979,7 @@ class CheckMove(Check):
             ## No Overwrite header: Bedework refuses every `Overwrite: F` with
             ## 412, onto a free name too, and would look as if it cannot move
             status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name)
-            moved = grade_move(status, in_source=_holds(cal1, name), in_target=_holds(cal2, name))
+            moved = grade_move(status, in_source=self._in_source(cal1, name), in_target=self._in_target(cal2, name))
             self.set_feature("move", moved)
             if moved is not True:
                 self._unknown(
@@ -10027,7 +10044,7 @@ class CheckMove(Check):
         free = str(cal2.url).rstrip("/") + "/csc_move_free.ics"
         ## No Overwrite header, which Bedework refuses on its own (see above)
         status = self._move(str(third.url), free, **{"If-Match": '"csc-outdated"'})
-        moved = self._moved(cal1, cal2, third) or _holds(cal2, "csc_move_free.ics")
+        moved = self._moved(cal1, cal2, third) or self._in_target(cal2, "csc_move_free.ics")
         self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match", moved=moved))
 
 
