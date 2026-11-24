@@ -12,7 +12,7 @@ from caldav_server_tester.checks import CheckMove, grade_move, grade_preconditio
 
 
 def test_the_move_features_are_defined() -> None:
-    for name in ("move", "move.overwrite", "move.if-match"):
+    for name in ("move", "move.overwrite", "move.overwrite.existing", "move.overwrite.free-name", "move.if-match"):
         assert "description" in FeatureSet.find_feature(name)
 
 
@@ -79,6 +79,8 @@ class _Calendar:
     def __init__(self, server: "_Server", name: str) -> None:
         self.server, self.name, self.url = server, name, f"http://example.com/{name}/"
         self.objects: dict[str, str] = {}  ## name -> UID
+        self.ghosts: set[str] = set()  ## listed, but gone (Bedework 3, after a MOVE)
+        self.unlisted: set[str] = set()  ## there, but not listed yet
         self.deleted = False
 
     def add_event(self, ical: str) -> Mock:
@@ -90,7 +92,8 @@ class _Calendar:
         return obj
 
     def children(self) -> list:
-        return [(self.url + name, None, None) for name in self.objects]
+        listed = (set(self.objects) - self.unlisted) | self.ghosts
+        return [(self.url + name, None, None) for name in listed]
 
     def delete(self) -> None:
         self.deleted = True
@@ -101,12 +104,23 @@ class _Server:
     plain MOVE; a MOVE that should fail with 412 gets ``precondition``, and
     what happens to it is ``mode``: "refuse" (nothing), "move" (moved anyway),
     "copy" (copied into the target as <uid>.ics, the source kept), or
-    "overwrite" (the destination replaced, the source kept)"""
+    "overwrite" (the destination replaced, the source kept).  With
+    ``refuse_overwrite_f`` every MOVE carrying ``Overwrite: F`` is refused with
+    412, onto a free name too (Bedework)"""
 
     def __init__(
-        self, move_status: int = 201, precondition: int = 412, mode: str = "refuse", second_calendar: bool = True
+        self,
+        move_status: int = 201,
+        precondition: int = 412,
+        mode: str = "refuse",
+        second_calendar: bool = True,
+        refuse_overwrite_f: bool = False,
+        stale_listings: bool = False,
     ) -> None:
         self.move_status, self.precondition, self.mode = move_status, precondition, mode
+        self.refuse_overwrite_f = refuse_overwrite_f
+        self.stale_listings = stale_listings
+        self.moves: list[dict] = []  ## the headers of each MOVE
         self.cal1 = _Calendar(self, "cal1")
         self.cal2 = _Calendar(self, "csc_move_cal2")
         self.principal = Mock()
@@ -125,7 +139,10 @@ class _Server:
             calendar, name = self._by_url(url)
             uid = calendar.objects.get(name)
             return Mock(status=200 if uid else 404, raw=f"BEGIN:VEVENT\r\nUID:{uid}\r\nEND:VEVENT\r\n" if uid else "")
+        self.moves.append(dict(headers))
         (source, name), (target, new) = self._by_url(url), self._by_url(headers["Destination"])
+        if self.refuse_overwrite_f and headers.get("Overwrite") == "F":
+            return Mock(status=412)
         guarded = "If-Match" in headers or new in target.objects
         status, mode = (self.precondition, self.mode) if guarded else (self.move_status, "move")
         if not guarded and not 200 <= status < 300:
@@ -134,6 +151,9 @@ class _Server:
         if mode == "move":
             source.objects.pop(name, None)
             target.objects[new] = uid
+            if self.stale_listings:
+                source.ghosts.add(name)
+                target.unlisted.add(new)
         elif mode == "copy":
             target.objects[uid + ".ics"] = uid
         elif mode == "overwrite":
@@ -152,14 +172,14 @@ def _run(server: _Server) -> dict:
     CheckMove(checker)._run_check()
     return {
         name: checker._features_checked.is_supported(name, return_type=dict)
-        for name in ("move", "move.overwrite", "move.if-match")
+        for name in ("move", "move.overwrite.existing", "move.overwrite.free-name", "move.if-match")
     }
 
 
 def test_a_server_honouring_move_and_its_preconditions_is_full_and_left_clean() -> None:
     server = _Server()
     assert {name: verdict["support"] for name, verdict in _run(server).items()} == dict.fromkeys(
-        ("move", "move.overwrite", "move.if-match"), "full"
+        ("move", "move.overwrite.existing", "move.overwrite.free-name", "move.if-match"), "full"
     )
     assert server.cal2.deleted
     assert not server.cal1.objects
@@ -175,7 +195,7 @@ def test_without_move_its_preconditions_are_unknown() -> None:
     server = _Server(move_status=405)
     verdicts = _run(server)
     assert verdicts["move"]["support"] == "unsupported"
-    assert verdicts["move.overwrite"]["support"] == "unknown"
+    assert verdicts["move.overwrite.existing"]["support"] == "unknown"
     assert verdicts["move.if-match"]["support"] == "unknown"
     assert server.cal2.deleted
 
@@ -183,33 +203,71 @@ def test_without_move_its_preconditions_are_unknown() -> None:
 def test_preconditions_refused_with_409_are_ungraceful() -> None:
     verdicts = _run(_Server(precondition=409))
     assert verdicts["move"]["support"] == "full"
-    assert verdicts["move.overwrite"]["support"] == "ungraceful"
+    assert verdicts["move.overwrite.existing"]["support"] == "ungraceful"
     assert verdicts["move.if-match"]["support"] == "ungraceful"
 
 
 def test_preconditions_ignored_are_unsupported() -> None:
     verdicts = _run(_Server(precondition=204, mode="move"))
-    assert verdicts["move.overwrite"]["support"] == "unsupported"
+    assert verdicts["move.overwrite.existing"]["support"] == "unsupported"
     assert verdicts["move.if-match"]["support"] == "unsupported"
 
 
 def test_moving_anyway_while_answering_an_error_is_unsupported() -> None:
     verdicts = _run(_Server(precondition=500, mode="move"))
-    assert verdicts["move.overwrite"]["support"] == "unsupported"
+    assert verdicts["move.overwrite.existing"]["support"] == "unsupported"
     assert verdicts["move.if-match"]["support"] == "unsupported"
 
 
 def test_a_copy_under_the_uid_name_is_not_moving_nothing() -> None:
     """Zimbra names every object <uid>.ics, wherever it is put"""
     verdicts = _run(_Server(precondition=500, mode="copy"))
-    assert verdicts["move.overwrite"]["support"] == "unsupported"
+    assert verdicts["move.overwrite.existing"]["support"] == "unsupported"
     assert verdicts["move.if-match"]["support"] == "unsupported"
 
 
 def test_an_overwritten_destination_is_not_moving_nothing() -> None:
-    assert _run(_Server(precondition=500, mode="overwrite"))["move.overwrite"]["support"] == "unsupported"
+    assert _run(_Server(precondition=500, mode="overwrite"))["move.overwrite.existing"]["support"] == "unsupported"
 
 
 def test_a_multi_status_answer_that_moved_nothing_is_ungraceful() -> None:
     ## RFC 4918 section 9.9.4: a 207 reports a failure, here the 412 inside it
     assert grade_precondition(207, "Overwrite: F", moved=False)["support"] == "ungraceful"
+
+
+def test_the_plain_move_and_the_if_match_probe_send_no_overwrite_header() -> None:
+    """Bedework refuses every `Overwrite: F`, onto a free name too: a header on
+    the plain MOVE made it look as if Bedework could not move at all."""
+    server = _Server()
+    _run(server)
+    plain, if_match = server.moves[0], [m for m in server.moves if "If-Match" in m]
+    assert "Overwrite" not in plain
+    assert if_match and all("Overwrite" not in m for m in if_match)
+
+
+def test_overwrite_f_refused_onto_a_free_name_is_broken_there_only() -> None:
+    """Bedework: 412 to every `Overwrite: F`.  Onto an existing object that is
+    what RFC 4918 asks; onto a free name it stops a MOVE that should work."""
+    verdicts = _run(_Server(refuse_overwrite_f=True))
+    assert verdicts["move"]["support"] == "full"
+    assert verdicts["move.overwrite.existing"]["support"] == "full"
+    assert verdicts["move.overwrite.free-name"]["support"] == "broken"
+    assert "412" in verdicts["move.overwrite.free-name"]["behaviour"]
+    assert verdicts["move.if-match"]["support"] == "full"
+
+
+def test_overwrite_f_onto_a_free_name_that_moves_changes_nothing() -> None:
+    server = _Server()
+    verdicts = _run(server)
+    assert verdicts["move.overwrite.existing"]["support"] == "full"
+    assert verdicts["move.overwrite.free-name"]["support"] == "full"
+    assert any(m.get("Overwrite") == "F" for m in server.moves)
+
+
+def test_stale_listings_with_a_truthful_get_are_not_a_broken_move() -> None:
+    """Bedework 3: after a MOVE the source listing keeps the object for good and
+    the target listing shows it only seconds later, while a GET answers 404 at
+    the source and 200 at the target right away."""
+    verdicts = _run(_Server(stale_listings=True, precondition=201, mode="move"))
+    assert verdicts["move"]["support"] == "full"
+    assert verdicts["move.if-match"]["support"] == "unsupported"

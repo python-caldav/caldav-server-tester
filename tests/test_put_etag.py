@@ -201,9 +201,24 @@ def test_percent_encoded_etag_refused_in_both_forms_says_so():
 
 
 def test_malformed_etag_is_broken():
-    etag, _ = _run(EtagServer(put_etag="tag-1"))
+    etag, _ = _run(EtagServer(put_etag='tag "1'))
     assert etag["support"] == "broken"
-    assert "tag-1" in etag["behaviour"]
+    assert "malformed" in etag["behaviour"]
+
+
+def test_unquoted_etag_taken_back_quoted_is_a_quirk():
+    """The Robur shape: ``ETag: a22c...`` on a PUT, ``"a22c..."`` on a GET.
+    The CalDAV library quotes a bare ETag itself, so a client gets a working
+    etag - a quirk, not a breakage."""
+    bare = "a22ccfb2985aed13f50b4991a110d32253fd99aa"
+    etag, _ = _run(EtagServer(put_etag=bare, get_etag=f'"{bare}"', accepts={f'"{bare}"'}))
+    assert etag == {"support": "quirk", "behaviour": "unquoted"}
+
+
+def test_unquoted_etag_refused_quoted_too_is_broken():
+    etag, _ = _run(EtagServer(put_etag="tag-1", accepts=set()))
+    assert etag["support"] == "broken"
+    assert "unquoted" in etag["behaviour"]
 
 
 def test_valid_etag_refused_in_if_match_is_broken():

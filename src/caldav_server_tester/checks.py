@@ -42,6 +42,10 @@ utc = timezone.utc
 ## source of truth: checker.cleanup_test_data() needs the same id to find
 ## leftovers without re-running the checks.
 TEST_CALENDAR_CAL_ID = "caldav-server-checker-calendar"
+## The checker calendar's name where the server profile names none
+TEST_CALENDAR_NAME = "Calendar for checking server feature support"
+## What CheckProppatchDelay renames the checker calendar to, for a moment
+PROPPATCH_PROBE_NAME = "csc proppatch probe "
 
 ## UIDs of the two probe objects PrepareCalendar deliberately PUTs far in the
 ## past (year 2000) to detect sliding-window servers.  Referenced by the
@@ -3338,7 +3342,7 @@ END:VCALENDAR""",
         test_cal_info = self.checker.expected_features.is_supported(
             "test-calendar.compatibility-tests", return_type=dict
         )
-        name = test_cal_info.get("name", "Calendar for checking server feature support")
+        name = test_cal_info.get("name", TEST_CALENDAR_NAME)
 
         self._find_or_create_calendar(cal_id, name, test_cal_info)
         calendar = self.checker.calendar
@@ -4422,7 +4426,13 @@ class CheckProppatchDelay(Check):
             self.set_feature(feature, {"support": "unknown", "behaviour": "no calendar to write to"})
             return
         original = self._display_name(cal)
-        probe = f"csc proppatch probe {uuid.uuid4().hex[:8]}"
+        if original and original.startswith(PROPPATCH_PROBE_NAME):
+            ## A run killed between the rename and the restore left this
+            ## behind; restoring it would keep it for good
+            original = self.expected_features.is_supported("test-calendar.compatibility-tests", dict).get(
+                "name", TEST_CALENDAR_NAME
+            )
+        probe = f"{PROPPATCH_PROBE_NAME}{uuid.uuid4().hex[:8]}"
         waited = 0
         try:
             with self.checker.without_write_delay(), proppatch_wait(cal.client, {"support": "full"}):
@@ -4711,6 +4721,8 @@ class CheckIfMatchOptional(Check):
 
 ## RFC 9110 section 8.8.3: entity-tag = [ "W/" ] DQUOTE *etagc DQUOTE
 ENTITY_TAG = re.compile(r'(W/)?"[^"]*"')
+## The opaque-tag of RFC 9110 section 8.8.3 without its quotes: etagc only
+BARE_ETAG = re.compile(r"[\x21\x23-\x7e\x80-\xff]+")
 
 
 class _StatusOnly(NamedTuple):
@@ -5093,6 +5105,19 @@ class CheckPutEtag(_RawPut, Check):
                 self.set_feature(
                     "save.etag",
                     {"support": "broken", "behaviour": "percent-encoded; the decoded etag is refused in If-Match too"},
+                )
+            return
+        if BARE_ETAG.fullmatch(etag):
+            ## An entity-tag without its quotes (Robur).  caldav after 3.7.0
+            ## quotes a bare ETag header itself (python-caldav/caldav e2bcb7c8),
+            ## so where the quoted form is taken back a client gets a working
+            ## etag: a quirk.
+            if self._ok(self._put(url, ical, f'"{etag}"')):
+                self.set_feature("save.etag", {"support": "quirk", "behaviour": "unquoted"})
+            else:
+                self.set_feature(
+                    "save.etag",
+                    {"support": "broken", "behaviour": "unquoted; the quoted etag is refused in If-Match too"},
                 )
             return
         self.set_feature("save.etag", {"support": "broken", "behaviour": f"malformed etag {etag!r}"})
@@ -8329,6 +8354,7 @@ class CheckSyncToken(Check):
     3. Fragile sync tokens (returns extra content, race conditions)
     4. Sync breaks on delete (server fails after object deletion)
     5. A token the server never issued isn't refused with DAV:valid-sync-token
+    6. A token stops working once an RDATE-only event is deleted (OX App Suite)
     """
 
     depends_on = {PrepareCalendar}
@@ -8336,43 +8362,140 @@ class CheckSyncToken(Check):
         "sync-token",
         "sync-token.delete",
         "sync-token.invalid-token",
+        "sync-token.deleted-rdate",
     }
+
+    ## Tests 5 and 6 run on a calendar of their own, see _check_tokens
+    OWN_CALENDAR = "csc_sync_token_cal"
 
     ## Tokens no server has issued: a URI, the form RFC 6578 section 3.2
     ## gives a token, and a 40-digit hex string, the form of a Xandikos
     ## token, which Xandikos treats differently from a malformed one
     NEVER_ISSUED_TOKENS = ("http://example.invalid/never-issued", "0" * 40)
 
+    def _token_answer(self, cal, token) -> tuple[str, str]:
+        """Send a sync-collection REPORT with ``token``, and grade the answer as a
+        refusal: 'full' for a 401/403 with DAV:valid-sync-token, 'quirk' for
+        another status with it, 'ungraceful' for an error without it, and
+        'broken' for no error at all; with what was seen.
+
+        The REPORT is sent through the low-level client, which raises only for a
+        401/403 and otherwise hands back the response, so the status and the
+        precondition can be read here.
+        """
+        query = self.client._build_sync_collection_body(sync_token=token, props=["getetag"])
+        try:
+            response = self.client.report(str(cal.url), query, depth=0)
+        except AuthorizationError as e:
+            if dav.ValidSyncToken.tag in e.preconditions:
+                return "full", "401/403 with valid-sync-token"
+            return "ungraceful", "401/403 without valid-sync-token"
+        except DAVError as e:
+            return "ungraceful", f"{type(e).__name__}"
+        status = response.status
+        if 200 <= status < 300:
+            return "broken", f"{status}, no error"
+        if dav.ValidSyncToken.tag in parse_preconditions(response.raw):
+            return "quirk", f"{status} with valid-sync-token"
+        return "ungraceful", f"{status} without valid-sync-token"
+
+    def _check_tokens(self, cal) -> None:
+        """Tests 5 and 6, on a calendar of their own where one can be made.
+
+        A server failing sync-token.deleted-rdate refuses every token older than
+        the delete of an RDATE-only event, never-issued ones included - and the
+        RDATE probe leaves such a tombstone on the checker's calendar.  On a
+        fresh calendar test 5 runs before test 6 puts one there.  Where there is
+        none (no second calendar, or none that can be deleted, so an earlier
+        run's is reused), test 5 is only graded where the server is expected to
+        handle such deletes; otherwise 'unknown', the same every run.
+        """
+        try:
+            own = self.second_calendar(self.OWN_CALENDAR)
+        except (DAVError, AuthorizationError):
+            own = None
+        fresh = own is not None and self.checker.features_checked.is_supported("delete-calendar", str) != "unsupported"
+        try:
+            if fresh or self.expected_features.is_supported("sync-token.deleted-rdate", str) == "full":
+                self._check_invalid_token(own if fresh else cal)
+            else:
+                self.set_feature(
+                    "sync-token.invalid-token",
+                    {
+                        "support": "unknown",
+                        "behaviour": "no fresh calendar, and a deleted RDATE-only event may break every older token",
+                    },
+                )
+            if own is None:
+                self.set_feature(
+                    "sync-token.deleted-rdate",
+                    {"support": "unknown", "behaviour": "cannot test, have access to only one calendar"},
+                )
+            else:
+                self._check_deleted_rdate(own)
+        finally:
+            if fresh:
+                with contextlib.suppress(Exception):
+                    own.delete()
+
+    def _check_deleted_rdate(self, cal) -> None:
+        """Test 6: does a token survive the delete of an event with RDATE and no RRULE?
+
+        OX App Suite stores such an event as a series without a rule, and once it
+        is deleted answers every older token with a bare 400.
+        """
+        base = self.checker.fixture_base_year
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//caldav-server-tester//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:csc_sync_deleted_rdate\r\nDTSTAMP:20200101T000000Z\r\n"
+            f"DTSTART:{base}0301T120000Z\r\nDURATION:PT1H\r\n"
+            f"RDATE:{base}0308T120000Z,{base}0315T120000Z\r\n"
+            "SUMMARY:sync-token.deleted-rdate probe\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        try:
+            event = cal.save_object(Event, ical=ical)
+            token = cal.get_objects(disable_fallback=True).sync_token
+        except (DAVError, AuthorizationError, ReportError) as e:
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": "unknown", "behaviour": f"could not set up the probe: {type(e).__name__}"},
+            )
+            return
+        if self.checker.features_checked.is_supported("sync-token", dict).get("behaviour") == "time-based":
+            time.sleep(1)
+        try:
+            event.delete()
+        except (DAVError, AuthorizationError) as e:
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": "unknown", "behaviour": f"could not delete the probe event: {type(e).__name__}"},
+            )
+            return
+        grade, what = self._token_answer(cal, token)
+        if grade == "broken":
+            self.set_feature("sync-token.deleted-rdate", True)
+        else:
+            ## a refusal naming valid-sync-token still tells the client to start over
+            support = "quirk" if grade in ("full", "quirk") else "ungraceful"
+            self.set_feature(
+                "sync-token.deleted-rdate",
+                {"support": support, "behaviour": f"a token older than the delete gets {what}"},
+            )
+
     def _check_invalid_token(self, cal) -> None:
         """Probe how the server refuses a sync token it never issued.
 
         RFC 6578 section 3.2 refuses it with the DAV:valid-sync-token
         precondition, and RFC 4918 section 16 suggests a 403 for a request
-        that will always fail.  The REPORT is sent through the low-level client,
-        which raises only for a 401/403 and otherwise hands back the response,
-        so the probe reads the status and the precondition itself and can tell
-        a 412 with the precondition from a 500 without it.
+        that will always fail.  See _token_answer for how the answer is read: it
+        tells a 412 with the precondition from a 500 without it.
         """
         support = "full"
         observed = []
         for token in self.NEVER_ISSUED_TOKENS:
-            query = self.client._build_sync_collection_body(sync_token=token, props=["getetag"])
-            try:
-                response = self.client.report(str(cal.url), query, depth=0)
-            except AuthorizationError as e:
-                if dav.ValidSyncToken.tag in e.preconditions:
-                    continue
-                grade, what = "ungraceful", "401/403 without valid-sync-token"
-            except DAVError as e:
-                grade, what = "ungraceful", f"{type(e).__name__}"
-            else:
-                status = response.status
-                if 200 <= status < 300:
-                    grade, what = "broken", f"{status}, no error"
-                elif dav.ValidSyncToken.tag in parse_preconditions(response.raw):
-                    grade, what = "quirk", f"{status} with valid-sync-token"
-                else:
-                    grade, what = "ungraceful", f"{status} without valid-sync-token"
+            grade, what = self._token_answer(cal, token)
+            if grade == "full":
+                continue
             observed.append(f"{token!r}: {what}")
             if is_worse(grade, support):
                 support = grade
@@ -8514,9 +8637,10 @@ class CheckSyncToken(Check):
                 except Exception:
                     pass
 
-        ## Test 5: a token the server never issued.  Last, so a crash in it
-        ## can't cost the results above
-        self._check_invalid_token(cal)
+        ## Tests 5 and 6: a token the server never issued, and one older than
+        ## the delete of an RDATE-only event.  Last, so a crash in them can't
+        ## cost the results above
+        self._check_tokens(cal)
 
 
 class _RawSync:
@@ -9774,12 +9898,13 @@ class CheckMove(Check):
     calendar only (see save.duplicate-uid.cross-calendar).
 
     Where an object ended up is read from a listing of each calendar
-    (PROPFIND, depth 1), not from a GET or a search: Zimbra still answers a
-    request for an object's old URL after it has moved.
+    (PROPFIND, depth 1) and a GET together, not from a search: Zimbra still
+    answers a GET of an object's old URL after it has moved, while Bedework
+    3's listings lag behind a MOVE (see _in_source and _in_target).
     """
 
     depends_on = {PrepareCalendar}
-    features_to_be_checked = {"move", "move.overwrite", "move.if-match"}
+    features_to_be_checked = {"move", "move.overwrite.existing", "move.overwrite.free-name", "move.if-match"}
 
     def _event(self, uid: str) -> str:
         ts = (datetime.now(tz=utc) + timedelta(days=30)).strftime("%Y%m%dT%H%M%SZ")
@@ -9804,7 +9929,23 @@ class CheckMove(Check):
         """Whether ``obj`` left ``cal1``, or turned up in ``cal2`` under its own
         name (Zimbra names every object <uid>.ics, wherever it is put)"""
         name = self._name(obj.url)
-        return not _holds(cal1, name) or _holds(cal2, name)
+        return not self._in_source(cal1, name) or self._in_target(cal2, name)
+
+    ## Where an object is, from a listing and a GET together: Zimbra still answers
+    ## a GET of an object's old URL after a MOVE, while Bedework 3's listings are
+    ## stale - the source keeps listing a moved object for good, the target lists
+    ## it seconds later - although its GET answers right away.
+    def _in_source(self, calendar, name: str) -> bool:
+        return _holds(calendar, name) and self._get_status(str(calendar.url).rstrip("/") + "/" + name) != 404
+
+    def _in_target(self, calendar, name: str) -> bool:
+        return _holds(calendar, name) or self._get_status(str(calendar.url).rstrip("/") + "/" + name) == 200
+
+    def _get_status(self, url: str) -> int | None:
+        try:
+            return self.client.request(url).status
+        except DAVError:
+            return None
 
     def _uid_at(self, url: str) -> str | None:
         """The UID of the object a GET of ``url`` answers with, None for none"""
@@ -9835,11 +9976,15 @@ class CheckMove(Check):
                 return
             made.append(first)
             name = self._name(first.url)
-            status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name, Overwrite="F")
-            moved = grade_move(status, in_source=_holds(cal1, name), in_target=_holds(cal2, name))
+            ## No Overwrite header: Bedework refuses every `Overwrite: F` with
+            ## 412, onto a free name too, and would look as if it cannot move
+            status = self._move(str(first.url), str(cal2.url).rstrip("/") + "/" + name)
+            moved = grade_move(status, in_source=self._in_source(cal1, name), in_target=self._in_target(cal2, name))
             self.set_feature("move", moved)
             if moved is not True:
-                self._unknown(("move.overwrite", "move.if-match"), "MOVE itself did not work")
+                self._unknown(
+                    ("move.overwrite.existing", "move.overwrite.free-name", "move.if-match"), "MOVE itself did not work"
+                )
                 return
             self._probe_overwrite(cal1, cal2, made)
             self._probe_if_match(cal1, cal2, made)
@@ -9857,16 +10002,34 @@ class CheckMove(Check):
         the destination: Zimbra names every object <uid>.ics, whatever URL it is put at.
         """
         try:
+            free = cal1.add_event(self._event("csc_move_event2_free"))
+            made.append(free)
             taken = cal2.add_event(self._event("csc_move_event2_target"))
             second = cal1.add_event(self._event("csc_move_event2"))
             made.append(second)
         except (DAVError, AuthorizationError) as e:
-            self._unknown(("move.overwrite",), f"could not set up the probe: {type(e).__name__}")
+            self._unknown(
+                ("move.overwrite.existing", "move.overwrite.free-name"),
+                f"could not set up the probe: {type(e).__name__}",
+            )
             return
+        ## First onto a free name, where `Overwrite: F` must not stop the MOVE
+        ## (Bedework refuses it there too, with 412)
+        free_status = self._move(str(free.url), str(cal2.url).rstrip("/") + "/" + self._name(free.url), Overwrite="F")
+        if self._moved(cal1, cal2, free):
+            self.set_feature("move.overwrite.free-name", True)
+        else:
+            self.set_feature(
+                "move.overwrite.free-name",
+                {
+                    "support": "broken",
+                    "behaviour": f"a MOVE with Overwrite: F onto a free name answered {free_status}; one without it works",
+                },
+            )
         status = self._move(str(second.url), str(taken.url), Overwrite="F")
         moved = self._moved(cal1, cal2, second) or self._uid_at(str(taken.url)) != "csc_move_event2_target"
         self.set_feature(
-            "move.overwrite", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
+            "move.overwrite.existing", grade_precondition(status, "Overwrite: F onto an existing object", moved=moved)
         )
 
     def _probe_if_match(self, cal1, cal2, made: list) -> None:
@@ -9879,8 +10042,9 @@ class CheckMove(Check):
             self._unknown(("move.if-match",), f"could not set up the probe: {type(e).__name__}")
             return
         free = str(cal2.url).rstrip("/") + "/csc_move_free.ics"
-        status = self._move(str(third.url), free, Overwrite="F", **{"If-Match": '"csc-outdated"'})
-        moved = self._moved(cal1, cal2, third) or _holds(cal2, "csc_move_free.ics")
+        ## No Overwrite header, which Bedework refuses on its own (see above)
+        status = self._move(str(third.url), free, **{"If-Match": '"csc-outdated"'})
+        moved = self._moved(cal1, cal2, third) or self._in_target(cal2, "csc_move_free.ics")
         self.set_feature("move.if-match", grade_precondition(status, "an outdated If-Match", moved=moved))
 
 

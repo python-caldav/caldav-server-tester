@@ -7,7 +7,7 @@ from caldav import Calendar
 from caldav.compatibility_hints import FeatureSet
 from caldav.davclient import DAVClient
 from caldav.elements import dav
-from caldav.lib.error import AuthorizationError, ReportError
+from caldav.lib.error import AuthorizationError, DAVError, ReportError
 
 from caldav_server_tester.checks import CheckSyncToken
 
@@ -52,6 +52,7 @@ class TestCheckSyncTokenAPI:
         checker.expected_features = FeatureSet()
         checker.calendar = self.create_mock_calendar()
         checker.fixture_base_year = 2027
+        _give_own_calendar(checker)
         return checker
 
     def test_uses_save_object_not_save_event(self) -> None:
@@ -181,6 +182,17 @@ class TestCheckSyncTokenAPI:
         assert result.get("support") == "fragile"
 
 
+def _give_own_calendar(checker) -> Mock:
+    """The calendar of their own that tests 5 and 6 run on."""
+    own = Mock(spec=Calendar)
+    own.url = "http://caldav.example.com/own/"
+    own.get_objects.return_value = _SyncResult("token-own")
+    principal = checker._client_obj.principal.return_value
+    principal.calendars.return_value = []
+    principal.make_calendar.return_value = own
+    return own
+
+
 def _refuse_token(*args, **kwargs):
     """A REPORT for a never-issued token, refused as RFC 6578 section 3.2 says."""
     raise AuthorizationError(reason="Forbidden", preconditions=[dav.ValidSyncToken.tag])
@@ -236,6 +248,7 @@ class TestSyncTokenDeleteGrading:
         checker.expected_features = FeatureSet()
         checker.calendar = cal
         checker.fixture_base_year = 2027
+        _give_own_calendar(checker)
         return checker
 
     def _run(self, final):
@@ -278,9 +291,11 @@ class TestSyncTokenInvalidTokenGrading:
             else:
                 status, body = answer
                 side_effects.append(Mock(status=status, raw=body))
+        ## and the sync-token.deleted-rdate probe after them, which keeps working
+        side_effects.append(Mock(status=207, raw="<D:multistatus xmlns:D='DAV:'/>"))
         checker._client_obj.report.side_effect = side_effects
         CheckSyncToken(checker)._run_check()
-        assert checker._client_obj.report.call_count == len(answers)
+        assert checker._client_obj.report.call_count == len(answers) + 1
         return checker._features_checked.is_supported("sync-token.invalid-token", dict)
 
     _refused = AuthorizationError(reason="Forbidden", preconditions=[dav.ValidSyncToken.tag])
@@ -314,7 +329,8 @@ class TestSyncTokenInvalidTokenGrading:
         checker._client_obj.report.side_effect = _refuse_token
         checker._client_obj._build_sync_collection_body = DAVClient._build_sync_collection_body
         CheckSyncToken(checker)._run_check()
-        for call in checker._client_obj.report.call_args_list:
+        ## the last REPORT is the sync-token.deleted-rdate probe's, with a real token
+        for call in checker._client_obj.report.call_args_list[:-1]:
             assert b"token-" not in call.args[1]
 
     def test_an_error_other_than_401_403_is_ungraceful(self) -> None:
@@ -329,3 +345,141 @@ class TestSyncTokenInvalidTokenGrading:
         with pytest.raises(RuntimeError):
             CheckSyncToken(checker)._run_check()
         assert checker._features_checked.is_supported("sync-token.delete", str) == "unsupported"
+
+
+class TestSyncTokenDeletedRdate:
+    """`sync-token.deleted-rdate`: does a token survive the delete of an RDATE-only event?
+
+    OX App Suite stores such an event as a series without a rule; once it is
+    deleted, every older token gets a bare 400.  The probe runs on a calendar of
+    its own, and so does the sync-token.invalid-token probe, first: on a
+    calendar holding such a tombstone, a server like that refuses the
+    never-issued tokens for that reason, not for being never issued.
+    """
+
+    _refused = AuthorizationError(reason="Forbidden", preconditions=[dav.ValidSyncToken.tag])
+
+    def _checker(self, own=True, expected=None):
+        checker = TestSyncTokenDeleteGrading()._checker(_SyncResult("token-3", changes=1))
+        checker._client_obj.features = FeatureSet(expected or {})
+        principal = checker._client_obj.principal.return_value
+        principal.calendars.return_value = []
+        if own:
+            cal = Mock(spec=Calendar)
+            cal.url = "http://caldav.example.com/own/"
+            cal.get_objects.return_value = _SyncResult("token-before-delete")
+            self.event = Mock()
+            cal.save_object.return_value = self.event
+            principal.make_calendar.return_value = cal
+            self.own = cal
+        else:
+            principal.make_calendar.side_effect = DAVError("no second calendar")
+        return checker
+
+    def _run(self, checker, *answers):
+        """Each answer is a (status, body) pair or an exception to raise."""
+        replies = []
+        for answer in answers:
+            if isinstance(answer, tuple):
+                status, body = answer
+                replies.append(Mock(status=status, raw=body))
+            else:
+                replies.append(answer)
+        checker._client_obj.report.side_effect = replies
+        check = CheckSyncToken(checker)
+        check.expected_features = checker._client_obj.features
+        check._run_check()
+        return checker._features_checked
+
+    _ok = (207, "<D:multistatus xmlns:D='DAV:'/>")
+
+    def test_a_token_that_survives_the_delete_is_full(self) -> None:
+        checker = self._checker()
+        features = self._run(checker, self._refused, self._refused, self._ok)
+        assert features.is_supported("sync-token.deleted-rdate", str) == "full"
+
+    def test_a_bare_400_is_ungraceful(self) -> None:
+        """OX App Suite: CAL-4002, no DAV:valid-sync-token."""
+        checker = self._checker()
+        features = self._run(checker, self._refused, self._refused, (400, ""))
+        result = features.is_supported("sync-token.deleted-rdate", dict)
+        assert result["support"] == "ungraceful"
+        assert "400 without valid-sync-token" in result["behaviour"]
+
+    def test_a_refusal_naming_valid_sync_token_is_a_quirk(self) -> None:
+        """The token should work, but a client knows to sync from scratch."""
+        checker = self._checker()
+        features = self._run(checker, self._refused, self._refused, self._refused)
+        assert features.is_supported("sync-token.deleted-rdate", str) == "quirk"
+
+    def test_the_event_has_rdate_and_no_rrule_and_is_deleted_first(self) -> None:
+        checker = self._checker()
+        self._run(checker, self._refused, self._refused, self._ok)
+        ical = self.own.save_object.call_args.kwargs.get("ical") or self.own.save_object.call_args.args[1]
+        assert "RDATE" in ical and "RRULE" not in ical
+        assert self.event.delete.called
+        body = checker._client_obj.report.call_args_list[-1].args[1]
+        assert b"token-before-delete" in body
+
+    def test_both_probes_use_their_own_calendar_and_remove_it(self) -> None:
+        checker = self._checker()
+        self._run(checker, self._refused, self._refused, self._ok)
+        for call in checker._client_obj.report.call_args_list:
+            assert call.args[0] == "http://caldav.example.com/own/"
+        assert self.own.delete.called
+
+    def test_invalid_token_runs_before_the_rdate_event_exists(self) -> None:
+        checker = self._checker()
+        order = []
+        self.own.save_object.side_effect = lambda *a, **k: order.append("save") or self.event
+        checker._client_obj.report.side_effect = lambda *a, **k: (
+            order.append("report") or Mock(status=207, raw="<D:multistatus xmlns:D='DAV:'/>")
+        )
+        CheckSyncToken(checker)._run_check()
+        assert order == ["report", "report", "save", "report"]
+
+    def test_without_a_calendar_of_its_own_deleted_rdate_is_unknown(self) -> None:
+        checker = self._checker(own=False)
+        features = self._run(checker, self._refused, self._refused)
+        assert features.is_supported("sync-token.deleted-rdate", str) == "unknown"
+
+    def test_borrowed_calendar_invalid_token_is_unknown_unless_rdate_deletes_are_fine(self) -> None:
+        """Deterministic: on the checker's calendar, a server known to break on a
+        deleted RDATE-only event cannot tell us anything about never-issued tokens."""
+        checker = self._checker(own=False, expected={"sync-token.deleted-rdate": {"support": "ungraceful"}})
+        features = self._run(checker, (400, ""), (400, ""))
+        assert features.is_supported("sync-token.invalid-token", str) == "unknown"
+        assert not checker._client_obj.report.called
+
+    def test_borrowed_calendar_invalid_token_is_graded_where_rdate_deletes_are_fine(self) -> None:
+        checker = self._checker(own=False)
+        features = self._run(checker, self._refused, self._refused)
+        assert features.is_supported("sync-token.invalid-token", str) == "full"
+
+    def test_a_calendar_that_cannot_be_deleted_is_reused_not_fresh(self) -> None:
+        """Without delete-calendar an earlier run's calendar is reused, and may
+        hold an earlier run's tombstone: invalid-token is not graded there, and
+        the calendar is kept for the next run."""
+        checker = self._checker(expected={"sync-token.deleted-rdate": {"support": "ungraceful"}})
+        checker._features_checked.set_feature("delete-calendar", {"support": "unsupported"})
+        features = self._run(checker, self._ok)
+        assert features.is_supported("sync-token.invalid-token", str) == "unknown"
+        assert features.is_supported("sync-token.deleted-rdate", str) == "full"
+        assert not self.own.delete.called
+
+    def test_a_probe_event_that_cannot_be_saved_is_unknown(self) -> None:
+        checker = self._checker()
+        self.own.save_object.side_effect = DAVError("refused")
+        features = self._run(checker, self._refused, self._refused)
+        result = features.is_supported("sync-token.deleted-rdate", dict)
+        assert result["support"] == "unknown"
+        assert "could not set up" in result["behaviour"]
+
+    def test_a_probe_event_that_cannot_be_deleted_is_unknown(self) -> None:
+        checker = self._checker()
+        self.event.delete.side_effect = DAVError("refused")
+        features = self._run(checker, self._refused, self._refused)
+        result = features.is_supported("sync-token.deleted-rdate", dict)
+        assert result["support"] == "unknown"
+        assert "could not delete" in result["behaviour"]
+        assert features.is_supported("sync-token.invalid-token", str) == "full"

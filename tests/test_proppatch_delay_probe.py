@@ -22,7 +22,9 @@ from caldav_server_tester.checks import CheckCalendarProperties, CheckProppatchD
 TAG = dav.DisplayName.tag
 
 
-def _checker(monkeypatch, stale_reads: int, configured=None, read_time=0.0) -> tuple[ServerQuirkChecker, dict]:
+def _checker(
+    monkeypatch, stale_reads: int, configured=None, read_time=0.0, name="My calendar"
+) -> tuple[ServerQuirkChecker, dict]:
     """A calendar answering the first ``stale_reads`` PROPFINDs after a
     PROPPATCH with the old display name, each PROPFIND taking ``read_time``
     seconds on a fake clock that sleeping advances too."""
@@ -46,7 +48,7 @@ def _checker(monkeypatch, stale_reads: int, configured=None, read_time=0.0) -> t
     checker.principal = Mock()
     checker._checks_run.add(PrepareCalendar)
 
-    state = {"visible": "My calendar", "pending": None, "stale": 0, "reads": 0, "writes": [], "library": []}
+    state = {"visible": name, "pending": None, "stale": 0, "reads": 0, "writes": [], "library": []}
 
     def set_properties(elements):
         state["library"].append(client.features.is_supported("synchronous-write.proppatch", dict))
@@ -133,6 +135,14 @@ class TestProppatchDelay:
         checker, state = _checker(monkeypatch, stale_reads=3)
         _run(checker)
         assert state["writes"][-1][0] == "My calendar"
+
+    def test_a_name_left_by_an_interrupted_run_is_not_restored(self, monkeypatch) -> None:
+        """A run killed between the rename and the restore left the probe name
+        behind (seen on Ox); every later run then read it as the original and
+        put it back.  The checker calendar's own name goes back instead."""
+        checker, state = _checker(monkeypatch, stale_reads=0, name="csc proppatch probe 5e52c20a")
+        _run(checker)
+        assert state["writes"][-1][0] == "Calendar for checking server feature support"
 
     def test_measuring_suspends_both_waits(self, monkeypatch) -> None:
         """Neither the sleep after every write nor the library's own poll may
