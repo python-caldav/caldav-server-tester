@@ -98,7 +98,7 @@ class TestCheckSyncTokenAPI:
         # Mock exception on get_objects()
         from caldav.lib.error import ReportError
 
-        checker.calendar.get_objects.side_effect = ReportError()
+        checker.calendar.get_objects.side_effect = ReportError("400 Bad Request")
 
         check = CheckSyncToken(checker)
         check._run_check()
@@ -106,6 +106,13 @@ class TestCheckSyncTokenAPI:
         # Should set sync-token to unsupported
         result = checker._features_checked.is_supported("sync-token", return_type=bool)
         assert result is False
+
+    def test_a_client_side_attribute_error_is_still_ungraceful(self) -> None:
+        """Not an outage: the client tripped over what the server sent."""
+        checker = self.create_mock_checker()
+        checker.calendar.get_objects.side_effect = AttributeError("no sync_token")
+        CheckSyncToken(checker)._run_check()
+        assert checker._features_checked.is_supported("sync-token", str) == "ungraceful"
 
     def test_detects_time_based_tokens(self) -> None:
         """Should detect time-based tokens when changes aren't seen immediately"""
@@ -455,6 +462,23 @@ class TestSyncTokenDeletedRdate:
         checker = self._checker(own=False)
         features = self._run(checker, self._refused, self._refused)
         assert features.is_supported("sync-token.invalid-token", str) == "full"
+
+    @pytest.mark.parametrize("status", [429, 502, 503, 504])
+    def test_a_report_answered_by_a_gateway_ends_the_check_and_cleans_up(self, status) -> None:
+        """One gateway hiccup must not write the OX breakage into a profile;
+        run_check then records what is left as unknown."""
+        checker = self._checker()
+        with pytest.raises(DAVError):
+            self._run(checker, self._refused, self._refused, (status, ""))
+        assert self.own.delete.called
+
+    @pytest.mark.parametrize("status", [429, 503])
+    def test_a_never_issued_token_answered_by_a_gateway_is_not_graded(self, status) -> None:
+        checker = self._checker()
+        with pytest.raises(DAVError):
+            self._run(checker, (status, ""), (status, ""))
+        assert checker._features_checked.is_supported("sync-token.invalid-token", str) != "ungraceful"
+        assert self.own.delete.called
 
     def test_a_calendar_that_cannot_be_deleted_is_reused_not_fresh(self) -> None:
         """Without delete-calendar an earlier run's calendar is reused, and may

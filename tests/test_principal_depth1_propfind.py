@@ -67,7 +67,7 @@ def test_principal_depth1_400_is_unsupported() -> None:
     assert features.is_supported("propfind", str) == "full"
 
 
-@pytest.mark.parametrize("error", [DAVError("refused"), AuthorizationError("refused")])
+@pytest.mark.parametrize("error", [DAVError("400 Bad Request"), AuthorizationError(reason="Forbidden")])
 def test_principal_depth1_error_is_unsupported(error) -> None:
     features = _run(error)
     assert features.is_supported(FEATURE, str) == "unsupported"

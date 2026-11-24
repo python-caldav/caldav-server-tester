@@ -177,42 +177,32 @@ and a `not_spurious` check: `csc_simple_task3` (DTSTART=Jan 9) must NOT appear i
 Jan-18 range search. If a server returns it, the server is not actually filtering and the
 feature is reported as unsupported rather than full.
 
-## A broad `except DAVError` turns a transient failure into a permanent verdict
+## Probes that still grade a request nobody answered
 
-(Clean-context review 2026-09-05, filed rather than fixed.)
+(Clean-context review 2026-11-24, filed rather than fixed.)
 
-`DAVError` is the base of every error the caldav library raises, so every
-`except (AuthorizationError, DAVError)` in `checks.py` also catches a 500, a
-dropped connection and a `RateLimitError`.  Roughly 25 handlers then record a
-verdict from it — `False`/`unsupported` in most of them, `ungraceful` in the
-ones corrected in September 2026 — and either way a server having a bad minute
-gets an authoritative claim written about it.
+`require_answer()` and `refusal_status()` keep a gateway error, an overload,
+rate limiting and a stale-session 401 out of the verdicts of every handler
+that catches a caldav error by name; a test in
+`tests/test_no_answer_is_unknown.py` keeps it that way.  Left:
 
-That contradicts what the project settled on elsewhere: `fix: an unprobed
-feature is unknown, not unsupported`, and the `url.encode-at` probe, which
-records `unknown` for a 5xx precisely so that "a momentary outage must not
-become a permanent claim about the server's error handling".
-
-The fix is not local — narrowing two handlers while the other two dozen keep
-the broad catch buys nothing.  What it wants is one helper that classifies a
-caught `DAVError`: 4xx is evidence (`ungraceful`, or `unsupported` where the
-server answered rather than refused), while 5xx, a lost connection and
-rate-limiting are `unknown`.  Then every handler in the file goes through it.
-Worth its own round, and it will move recorded verdicts on servers that were
-merely unwell during a run.
-
-`refusal_status()` (with `graded_refusal()`, from the `save-load.event.no-dtend`
-work) is a start on that helper, and two gaps were found reviewing the
-October 2026 merges:
-
-- `CheckPropfindAllprop._check_principal_depth1` still grades any
-  `DAVError` and any non-2xx (502, 503, 429, a stale-session 401) as
-  `unsupported`; it should go through `refusal_status()` and record
-  `unknown` when that returns None.
-- `refusal_status()` tells a 401 from a 403 only by `exc.reason ==
-  "Unauthorized"`, the server's free-text reason phrase (caldav puts
-  "None given" there when there is none).  The robust fix is upstream:
-  caldav keeping the HTTP status on `AuthorizationError`.
+- Handlers catching only `Exception`, which the test skips: the
+  `get-current-user-principal.has-calendar` probe, the alarm lookup in
+  `CheckAlarmSearch`, `search.comp-type` and `search.comp-type.optional`
+  (the per-type `continue` also drops a type after a 503), and
+  `scheduling.mailbox` / `scheduling.calendar-user-address-set`.
+- The DELETE grading (`_probe_delete` → `_grade_failing_delete`): a DELETE
+  answering 503 until the timeout gives `delete-calendar` False, a 503 and
+  then success `fragile`.  Raising there would end a check every other
+  check depends on, and may leave the probe calendar behind.
+- Statuses that come back as responses rather than errors:
+  `_RawPut._grade`, `grade_move` and `_encode_at_request` grade a returned
+  429/502/503/504 like any other.  So does `CheckMove` outside
+  `grade_move`: `move.overwrite.free-name` is broken on a returned gateway
+  status, `_get_status` reads no answer as "still there", and `_uid_at`
+  reads a failed GET as moved.  Where an outage keeps a second calendar
+  from being made, the sync-token and MOVE probes say "have access to
+  only one calendar"; the verdict (unknown) is right, the text is not.
 
 ## `save-load.todo` on a server that stores a VTODO nowhere
 

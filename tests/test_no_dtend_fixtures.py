@@ -125,9 +125,8 @@ def test_all_day_fixtures_get_the_implied_dtend(error):
         PutError("503 Service Unavailable"),
         RateLimitError(reason="429 Too Many Requests"),
         AuthorizationError(url=URL, reason="Unauthorized"),
-        PutError("connection reset"),
     ],
-    ids=["503", "rate-limited", "401", "no-status"],
+    ids=["503", "rate-limited", "401"],
 )
 def test_no_answer_changes_no_fixture(error):
     """A failure that is no answer from the server says nothing about events

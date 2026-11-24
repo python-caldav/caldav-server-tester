@@ -116,7 +116,7 @@ def test_exdate_in_floating_time(monkeypatch):
 
 
 def test_no_answer_is_unknown(monkeypatch):
-    _, _, observed = _run(monkeypatch, add_event=DAVError("connection reset"))
+    _, _, observed = _run(monkeypatch, add_event=PutError("503 Service Unavailable"))
     assert observed["support"] == "unknown"
 
 

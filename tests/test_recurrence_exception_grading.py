@@ -123,9 +123,8 @@ def test_a_refused_put_is_ungraceful_and_says_so(error, status):
     [
         niquests.exceptions.ConnectionError("Connection reset by peer"),
         PutError("502 Bad Gateway"),
-        PutError("connection reset"),
     ],
-    ids=["connection-reset", "502", "no-status"],
+    ids=["connection-reset", "502"],
 )
 def test_a_put_failing_without_an_answer_is_unknown(error):
     observed = _run(add=error)

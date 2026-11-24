@@ -25,6 +25,7 @@ from caldav.lib.error import (
     DAVError,
     NotFoundError,
     PutError,
+    RateLimitError,
     ReportError,
     UidConflictError,
     parse_preconditions,
@@ -715,12 +716,17 @@ class CheckPropfindAllprop(Check):
         except (DAVError, AuthorizationError) as e:
             self.set_feature(
                 "propfind.principal-depth-1",
-                {"support": "unsupported", "behaviour": f"raised {type(e).__name__}"},
+                {"support": "unsupported", "behaviour": f"raised {type(require_answer(e)).__name__}"},
             )
             return
         raw = to_local(response.raw) or ""
         if 200 <= response.status < 300 and "multistatus" in raw:
             self.set_feature("propfind.principal-depth-1", True)
+        elif response.status == 429 or response.status in TRANSIENT_STATUSES:
+            self.set_feature(
+                "propfind.principal-depth-1",
+                {"support": "unknown", "behaviour": f"cannot test, HTTP {response.status}"},
+            )
         else:
             self.set_feature(
                 "propfind.principal-depth-1",
@@ -1219,12 +1225,16 @@ class CheckMakeDeleteCalendar(Check):
             cal = self.checker.principal.calendar(cal_id="this_should_not_exist")
             cal.events()
             self.set_feature("create-calendar.auto")
-        except DAVError:
+        except DAVError as exc:
             ## Any DAV-level error (404 NotFound, 403 robur, ReportError, or the
             ## 500 some servers return) just means the non-existent calendar was
             ## not auto-created.  Catch the DAVError base class so a 500 doesn't
-            ## escape and abort the rest of the make/delete probing below.
-            self.set_feature("create-calendar.auto", False)
+            ## escape and abort the rest of the make/delete probing below - nor
+            ## a 503, which says nothing either way.
+            if refusal_status(exc) is None:
+                self.set_feature("create-calendar.auto", {"support": "unknown", "behaviour": f"cannot test ({exc})"})
+            else:
+                self.set_feature("create-calendar.auto", False)
 
         ## Check on "no_default_calendar" flag
         try:
@@ -1395,7 +1405,9 @@ class CheckMakeDeleteCalendar(Check):
             fetched = cal.get_property(dav.DisplayName(), use_cached=False)
         except DAVError as e:
             ## The server answered, with an error.  Catchable, so "ungraceful".
-            self.set_feature("propfind.displayname", {"support": "ungraceful", "behaviour": str(e)})
+            ## No answer is unknown, recorded here rather than raised: the
+            ## caller has a probe calendar to delete.
+            self.set_feature("propfind.displayname", graded_refusal(e, f"the PROPFIND fails ({{answer}}): {e}"))
             return
         except Exception as e:
             ## A dropped connection or a client-side failure says nothing about
@@ -1819,8 +1831,8 @@ class PrepareCalendar(Check):
                     uid="csc_simple_task1",
                     dtstart=date(base, 1, 7),
                 )
-            except DAVError as e:  ## exception e for debugging purposes
-                self.set_feature("save-load.todo", "ungraceful")
+            except DAVError as e:
+                self.set_feature("save-load.todo", graded_refusal(e, "saving a task is refused ({answer})"))
                 return False
 
             task_with_dtstart.load()
@@ -1853,8 +1865,13 @@ class PrepareCalendar(Check):
                         name=f"{name} - journals",
                         supported_calendar_component_set=["VJOURNAL"],
                     )
-                except Exception:
-                    self.set_feature("save-load.journal", False)
+                except Exception as exc:
+                    self.set_feature(
+                        "save-load.journal",
+                        False
+                        if refusal_status(exc) is not None
+                        else {"support": "unknown", "behaviour": f"cannot test, no journal calendar ({exc})"},
+                    )
                     journallist = None
             if journallist is not None:
                 self.checker.journallist = journallist
@@ -1868,8 +1885,15 @@ class PrepareCalendar(Check):
                     simple_journal.load()
                     self.set_feature("save-load.journal")
                     self.set_feature("save-load.journal.mixed-calendar", False)
-                except Exception:
-                    self.set_feature("save-load.journal", "ungraceful")
+                except Exception as exc:
+                    ## A caldav error or a lost connection is classified; the
+                    ## client failing on what came back is graded as before
+                    self.set_feature(
+                        "save-load.journal",
+                        graded_refusal(exc, "saving a journal fails ({answer})")
+                        if isinstance(exc, (DAVError, OSError))
+                        else "ungraceful",
+                    )
 
     def _add_without_end(self, add_if_not_existing, **kwargs):
         """Add a VEVENT with neither DTEND nor DURATION, as RFC 5545 allows.
@@ -2213,8 +2237,10 @@ END:VCALENDAR""",
                 )
                 recurring_task.load()
                 self.set_feature("save-load.todo.recurrences")
-            except DAVError:
-                self.set_feature("save-load.todo.recurrences", "ungraceful")
+            except DAVError as exc:
+                self.set_feature(
+                    "save-load.todo.recurrences", graded_refusal(exc, "saving a recurring task fails ({answer})")
+                )
 
             try:
                 task_with_rrule_and_count = add_if_not_existing(
@@ -2240,8 +2266,11 @@ END:VCALENDAR""",
                 rrule = component.get("RRULE", None)
                 count = rrule and rrule.get("COUNT")
                 self.set_feature("save-load.todo.recurrences.count", count == [3])
-            except DAVError:
-                self.set_feature("save-load.todo.recurrences.count", "ungraceful")
+            except DAVError as exc:
+                self.set_feature(
+                    "save-load.todo.recurrences.count",
+                    graded_refusal(exc, "saving a recurring task with COUNT fails ({answer})"),
+                )
 
         self._store_recurrence_with_exception(calendar, add_if_not_existing, base)
 
@@ -2360,8 +2389,9 @@ END:VCALENDAR""",
         """
         try:
             response = send()
-        except (AuthorizationError, NotFoundError):
-            return False
+        except (AuthorizationError, NotFoundError) as exc:
+            ## ...unless a 401 on a session already logged in, which is no answer
+            return False if refusal_status(exc) is not None else None
         except Exception:
             return None
         if response.status >= 500:
@@ -3816,8 +3846,8 @@ class CheckSupportedComponentSet(Check):
                 obj = cal.save_todo(summary="component set probe", uid=uid)
             else:
                 obj = cal.save_journal(summary="component set probe", uid=uid)
-        except AuthorizationError:
-            return "refused"
+        except AuthorizationError as exc:
+            return "refused" if refusal_status(exc) is not None else None
         except DAVError as exc:
             status = dav_error_status(exc)
             if status is not None and 400 <= status < 500:
@@ -3917,6 +3947,7 @@ class CheckTodoNoDtstartSearch(Check):
             ## The server raised rather than quietly answering wrong, so the
             ## client can catch it.  Leaving it unset instead would let this
             ## feature's "full" default stand as an observation nobody made.
+            require_answer(e)
             self.set_feature(feature, {"support": "ungraceful", "behaviour": str(e)})
             return
         found = any("csc_simple_task2" in (getattr(o, "data", "") or "") for o in results)
@@ -4004,18 +4035,23 @@ class CheckTodoUncomplete(Check):
 def dav_error_status(exc):
     """The HTTP status a ``DAVError`` carries, when it carries one at all.
 
-    There is no structured status on the exception: ``DAVObject`` raises its
-    errors as ``SomeError(errmsg(response))``, and ``errmsg`` renders
-    ``"<status> <reason>\n\n<body>"`` into what the exception then stores as
-    its ``url``.  So the status has to be read back off that string, and
-    anything that does not start with one gives ``None``.
+    caldav 3.7 keeps it as ``status`` where the error came from a response.
+    Older ways of raising carry it in the message only: ``DAVObject`` raises
+    ``SomeError(errmsg(response))``, and ``errmsg`` renders ``"<status>
+    <reason>\n\n<body>"`` into what the exception then stores as its ``url``;
+    a ``ResponseError`` starts with the status line, ``"HTTP/1.1 <status>"``.
+    So the status is read back off that string where there is no attribute,
+    and anything that does not start with one gives ``None``.
 
     Worth the ugliness because a 5xx means the server broke, not that it
     answered the wrong error - and this suite's verdicts are copied into
     server profiles, where "answers 403 instead of 404" is read as a
     statement about the server rather than about the minute it was probed.
     """
-    match = re.match(r"\s*(\d{3})\b", str(getattr(exc, "url", "") or ""))
+    status = getattr(exc, "status", None)
+    if isinstance(status, int):
+        return status
+    match = re.match(r"\s*(?:HTTP/[\d.]+\s+)?(\d{3})\b", str(getattr(exc, "url", "") or ""))
     if not match:
         return None
     return int(match.group(1))
@@ -4030,19 +4066,46 @@ TRANSIENT_STATUSES = frozenset({502, 503, 504})
 
 def refusal_status(exc):
     """The status the server refused a request with, or None for a gateway, an
-    overload, rate limiting or no answer, which say nothing about the request."""
+    overload, rate limiting or no answer, which say nothing about the request.
+
+    An error that is not a ``DAVError`` - a lost connection, a timeout - got
+    no answer.  A ``DAVError`` without a status did: caldav keeps the status of
+    every error response, so one without is the client refusing what came back
+    (no iCalendar data, an inconsistent object) and is named by its class.
+    """
+    if not isinstance(exc, DAVError) or isinstance(exc, RateLimitError):
+        return None
+    status = dav_error_status(exc)
     if isinstance(exc, AuthorizationError):
         ## Raised alike for 401 and 403, carrying the URL rather than the
-        ## status, so only the reason tells them apart.  A 401 on a session
-        ## that is already authenticated is no answer to the request: iCloud
-        ## answers 401 to anything for a while after a run of 429s.
-        if exc.reason == "Unauthorized":
+        ## status in the message; where caldav kept no status either, only the
+        ## reason tells them apart.  A 401 on a session that is already
+        ## authenticated is no answer to the request: iCloud answers 401 to
+        ## anything for a while after a run of 429s.
+        if status == 401 or status is None and exc.reason == "Unauthorized":
             return None
-        return dav_error_status(exc) or "401/403"
-    status = dav_error_status(exc)
-    if status is None or status in TRANSIENT_STATUSES:
+        return status or "401/403"
+    if status is None:
+        ## A NotFoundError is raised for a 404 only, also where the message
+        ## carries no status
+        return 404 if isinstance(exc, NotFoundError) else type(exc).__name__
+    if status == 429 or status in TRANSIENT_STATUSES:
         return None
     return status
+
+
+def require_answer(exc):
+    """``exc``, when the server answered with it; raised again when it did not.
+
+    For a handler about to grade a caught ``DAVError``: a gateway, an overload,
+    rate limiting or a lost connection is no statement about the feature, and
+    a verdict drawn from it would end up in a server profile.  Raised, it ends
+    the check, and ``Check.run_check`` records what the check had not probed
+    yet as unknown.
+    """
+    if refusal_status(exc) is None:
+        raise exc
+    return exc
 
 
 def graded_refusal(exc, refused):
@@ -4102,6 +4165,8 @@ class CheckNonExistingResource(Check):
         ``deviation`` is the behaviour text for the first, with ``{name}``
         standing in for the exception class.
         """
+        if refusal_status(exc) is None:
+            return {"support": "unknown", "behaviour": f"cannot test, no answer from the server ({exc})"}
         status = dav_error_status(exc)
         if is_server_failure(status):
             return {
@@ -4134,7 +4199,7 @@ class CheckNonExistingResource(Check):
         except DAVError as e:
             ## AuthorizationError (a DAVError subclass) is the common case: a
             ## 403 rather than a 404, which is a legitimate choice.
-            raw_error = type(e).__name__
+            raw_error = type(require_answer(e)).__name__
         else:
             self.set_feature(feature, self.NO_ERROR)
             return
@@ -4528,7 +4593,8 @@ class CheckMutable(Check):
                     "save-load.mutable",
                     {"support": "broken", "behaviour": "modification not reflected after save and reload"},
                 )
-        except (DAVError, AuthorizationError):
+        except (DAVError, AuthorizationError) as exc:
+            require_answer(exc)
             self.set_feature("save-load.mutable", False)
         finally:
             try:
@@ -4611,8 +4677,9 @@ class CheckCalendarProperties(Check):
         try:
             got1 = self._set_get(element, v1, cal)
             got2 = self._set_get(element, v2, cal)
-        except (DAVError, AuthorizationError):
+        except (DAVError, AuthorizationError) as exc:
             ## The server declined the nonstandard property with an error.
+            require_answer(exc)
             self.set_feature(feature, False)
             return
         finally:
@@ -4710,7 +4777,8 @@ class CheckIfMatchOptional(Check):
             for _ in range(2):
                 Event(cal.client, data=data, parent=cal).save()
             self.set_feature("save-load.mutable.if-match-optional")
-        except (DAVError, PutError):
+        except (DAVError, PutError) as exc:
+            require_answer(exc)
             self.set_feature("save-load.mutable.if-match-optional", False)
         finally:
             try:
@@ -4735,8 +4803,9 @@ class _StatusOnly(NamedTuple):
 
 
 class _Unauthorized(int):
-    """A 401 or a 403, which the client raises alike, carrying the request URL
-    rather than the status: compares as 403, and says "401/403" in text."""
+    """An authorization refusal whose status the client did not keep: compares
+    as 403, and says "401/403" in text.  A recognisable 401 never gets here, it
+    is no answer (see refusal_status)."""
 
     def __new__(cls):
         return super().__new__(cls, 403)
@@ -4806,7 +4875,10 @@ class _RawPut:
         try:
             return request(*args)
         except AuthorizationError as exc:
-            ## 401/403 are raised before a response exists, but they are answers.
+            ## 401/403 are raised before a response exists, but they are answers
+            ## - except a 401 on a session already logged in.
+            if refusal_status(exc) is None:
+                return None
             return _StatusOnly(
                 dav_error_status(exc) or _Unauthorized(),
                 tuple(getattr(exc, "preconditions", ())),
@@ -4836,8 +4908,8 @@ class _RawPut:
     @staticmethod
     def _status(response):
         """The status of an answer that says something about the server: None
-        for no answer, and for a gateway or overload status."""
-        if response is None or response.status in TRANSIENT_STATUSES:
+        for no answer, and for a gateway, overload or rate-limit status."""
+        if response is None or response.status == 429 or response.status in TRANSIENT_STATUSES:
             return None
         return response.status
 
@@ -5045,6 +5117,8 @@ class CheckPutEtag(_RawPut, Check):
             return self._graded("ungraceful", f"If-None-Match: * on a missing object answered {absent}")
         return "full"
 
+    NO_ANSWER = {"support": "unknown", "behaviour": "cannot test, the If-Match PUT got no answer from the server"}
+
     def _grade_etag(self, url, ical, etag) -> None:
         if not etag:
             ## RFC 9110 lets a PUT response leave it out; nothing to grade.
@@ -5088,8 +5162,10 @@ class CheckPutEtag(_RawPut, Check):
                     )
                 else:
                     self.set_feature("save.etag")
+            elif self._status(replay) is None:
+                self.set_feature("save.etag", self.NO_ANSWER)
             else:
-                answer = replay.status if replay is not None else "an error"
+                answer = replay.status
                 self.set_feature(
                     "save.etag",
                     {"support": "broken", "behaviour": f"the PUT etag {etag} is refused in If-Match ({answer})"},
@@ -5099,8 +5175,11 @@ class CheckPutEtag(_RawPut, Check):
             ## Not an entity-tag RFC 9110 allows, but the CalDAV library decodes
             ## a leading %22, so where the decoded form is taken back a client
             ## gets a working etag: a quirk.  Refused decoded too, nothing helps.
-            if self._ok(self._put(url, ical, unquote(etag))):
+            decoded = self._put(url, ical, unquote(etag))
+            if self._ok(decoded):
                 self.set_feature("save.etag", {"support": "quirk", "behaviour": "percent-encoded"})
+            elif self._status(decoded) is None:
+                self.set_feature("save.etag", self.NO_ANSWER)
             else:
                 self.set_feature(
                     "save.etag",
@@ -5112,8 +5191,11 @@ class CheckPutEtag(_RawPut, Check):
             ## quotes a bare ETag header itself (python-caldav/caldav e2bcb7c8),
             ## so where the quoted form is taken back a client gets a working
             ## etag: a quirk.
-            if self._ok(self._put(url, ical, f'"{etag}"')):
+            quoted = self._put(url, ical, f'"{etag}"')
+            if self._ok(quoted):
                 self.set_feature("save.etag", {"support": "quirk", "behaviour": "unquoted"})
+            elif self._status(quoted) is None:
+                self.set_feature("save.etag", self.NO_ANSWER)
             else:
                 self.set_feature(
                     "save.etag",
@@ -6292,7 +6374,8 @@ class CheckAttendeePartstat(Check):
         try:
             ev.save()
             self.set_feature("save-load.mutable.attendee-partstat")
-        except (DAVError, AuthorizationError):
+        except (DAVError, AuthorizationError) as exc:
+            require_answer(exc)
             self.set_feature("save-load.mutable.attendee-partstat", False)
         finally:
             try:
@@ -6519,6 +6602,7 @@ class CheckRescheduleRecurrenceSeries(Check):
             ## The server refused (OX answers 409 Conflict even with a matching
             ## etag).  It raised rather than quietly ignoring us, so the client
             ## can catch it: that is "ungraceful", not "unsupported".
+            require_answer(e)
             self.set_feature(feature, {"support": "ungraceful", "behaviour": str(e)})
         finally:
             try:
@@ -6651,7 +6735,8 @@ class CheckSearch(Check):
         uid = "csc_event_with_categories"
         try:
             events = self.checker.calendar.search(uid=uid, event=True, post_filter=False)
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.text.uid", "ungraceful")
             return
         if len(events) == 1 and str(events[0].icalendar_component.get("UID")) == uid:
@@ -6700,7 +6785,8 @@ class CheckSearch(Check):
                 post_filter=False,
             )
             self.set_feature("search.time-range.event", len(events) >= 1)
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.time-range.event", "ungraceful")
         finally:
             if recent_event:
@@ -6726,7 +6812,8 @@ class CheckSearch(Check):
                 post_filter=False,
             )
             self.set_feature("search.time-range.todo", len(tasks) >= 1)
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.time-range.todo", "ungraceful")
         finally:
             if recent_task:
@@ -6978,7 +7065,8 @@ class CheckSearch(Check):
             )
             old_event_ok = _found(events, OLDDATE_EVENT_UID) and not _found(events, "csc_simple_event1")
             self.set_feature("search.time-range.event.old-dates", old_event_ok)
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.time-range.event.old-dates", "ungraceful")
 
         ## Where todo time-range search is ungood there is nothing to build on -
@@ -6995,14 +7083,16 @@ class CheckSearch(Check):
                 )
                 old_todo_ok = _found(tasks, OLDDATE_TASK_UID) and not _found(tasks, "csc_simple_task3")
                 self.set_feature("search.time-range.todo.old-dates", old_todo_ok)
-            except (AuthorizationError, DAVError):
+            except (AuthorizationError, DAVError) as exc:
+                require_answer(exc)
                 self.set_feature("search.time-range.todo.old-dates", "ungraceful")
 
         ## search.text.category
         try:
             events = cal.search(category="hands", event=True, post_filter=False)
             self.set_feature("search.text.category", len(events) == 1)
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.text.category", "ungraceful")
         self._probe_text_uid()
         ## search.combined - category "hands" AND a time-range.  Uses the
@@ -7025,7 +7115,8 @@ class CheckSearch(Check):
                     post_filter=False,
                 )
                 self.set_feature("search.combined-is-logical-and", len(events1) == 1 and len(events2) == 0)
-            except (AuthorizationError, DAVError):
+            except (AuthorizationError, DAVError) as exc:
+                require_answer(exc)
                 self.set_feature("search.combined-is-logical-and", "ungraceful")
         else:
             ## Can't test combined search without category search support
@@ -7081,7 +7172,8 @@ class CheckSearch(Check):
                         "description": "comp-type-less time-range query returns nothing (server silently ignores it or requires a component type)",
                     },
                 )
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature(
                 "search.time-range.comp-type-optional",
                 {
@@ -7130,7 +7222,8 @@ class CheckSearch(Check):
                             "description": "comp-type-less prop-filter query returns nothing (prop-filter under VCALENDAR matches no component property)",
                         },
                     )
-            except (ReportError, AuthorizationError, DAVError):
+            except (ReportError, AuthorizationError, DAVError) as exc:
+                require_answer(exc)
                 self.set_feature(
                     "search.text.comp-type-optional",
                     {
@@ -7209,7 +7302,8 @@ class CheckSearch(Check):
             else:
                 ## Server returned nothing at all for a no-time-range search
                 self.set_feature("search.unlimited-time-range", "unsupported")
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.unlimited-time-range", "ungraceful")
 
 
@@ -7249,7 +7343,8 @@ class CheckIsNotDefined(Check):
                 category_works = True
             else:
                 category_works = False
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             category_works = "ungraceful"
 
         ## Set the category-specific sub-feature
@@ -7276,7 +7371,8 @@ class CheckIsNotDefined(Check):
                 class_works = True
             else:
                 class_works = False
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             class_works = "ungraceful"
 
         ## Set the class-specific sub-feature
@@ -7305,7 +7401,8 @@ class CheckIsNotDefined(Check):
                 dtend_works = True
             else:
                 dtend_works = False
-        except (ReportError, AuthorizationError, DAVError):
+        except (ReportError, AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             dtend_works = "ungraceful"
 
         ## Set the dtend-specific sub-feature
@@ -7645,7 +7742,8 @@ class CheckAlarmSearch(Check):
                 alarm_end=datetime(base, 1, 10, 7, 55, tzinfo=utc),
                 post_filter=False,
             )
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.time-range.alarm", "ungraceful")
             return
 
@@ -7661,7 +7759,8 @@ class CheckAlarmSearch(Check):
                 alarm_end=datetime(base, 1, 10, 8, 15, tzinfo=utc),
                 post_filter=False,
             )
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.time-range.alarm", "ungraceful")
             return
 
@@ -7695,11 +7794,12 @@ class CheckRecurrenceSearch(Check):
                 event=True,
                 post_filter=False,
             )
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
             ## The server rejected the range outright (e.g. CCS, which enforces a
             ## min/max-date-time).  It raised rather than answering wrongly, so
             ## this is "ungraceful" - the same reading the far-future probe below
             ## gives the very same 403.
+            require_answer(exc)
             for feat in self.features_to_be_checked:
                 self.set_feature(feat, "ungraceful")
             return
@@ -7728,7 +7828,7 @@ class CheckRecurrenceSearch(Check):
                 )
                 todo_testable = len(todos) == 1
             except (AuthorizationError, DAVError):
-                todo_testable = False
+                pass  ## not testable, so unknown: no verdict either way
         if not todo_testable:
             logging.warning(
                 "Recurring-todo precondition not met (VTODO time-range search unreliable in Jan %d); "
@@ -7756,9 +7856,10 @@ class CheckRecurrenceSearch(Check):
             )
             implicit_allday = len(allday_events) == 1
             allday_raised = False
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
             ## Don't fold a raise into the datetime verdict: the server refusing
             ## the all-day query is not evidence that all-day recurrence works.
+            require_answer(exc)
             implicit_allday = False
             allday_raised = True
         if allday_raised:
@@ -7843,7 +7944,8 @@ class CheckRecurrenceSearch(Check):
                 post_filter=False,
             )
             self.set_feature("search.recurrences.includes-implicit.infinite-scope", len(far_future_recurrence) == 1)
-        except (AuthorizationError, DAVError):
+        except (AuthorizationError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("search.recurrences.includes-implicit.infinite-scope", "ungraceful")
 
         ## server-side expansion
@@ -8023,6 +8125,7 @@ class CheckCaseSensitiveSearch(Check):
             if len(results_sensitive) > 1:
                 text_search_filters = False
         except (ReportError, DAVError) as e:
+            require_answer(e)
             self.set_feature(
                 "search.text.case-sensitive",
                 {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
@@ -8045,6 +8148,7 @@ class CheckCaseSensitiveSearch(Check):
 
             self.set_feature("search.text.case-insensitive", len(results_insensitive) >= 1)
         except (ReportError, DAVError) as e:
+            require_answer(e)
             self.set_feature(
                 "search.text.case-insensitive",
                 {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
@@ -8088,6 +8192,7 @@ class CheckSubstringSearch(Check):
 
             self.set_feature("search.text.substring", len(results_sub) == 1)
         except (ReportError, DAVError) as e:
+            require_answer(e)
             self.set_feature(
                 "search.text.substring",
                 {"support": "ungraceful", "behaviour": f"{type(e).__name__}: {e}"},
@@ -8143,7 +8248,8 @@ class CheckPrincipalSearch(Check):
                 self.set_feature("principal-search.by-name.self", found_self)
                 if found_self:
                     any_search_worked = True
-            except (ReportError, DAVError):
+            except (ReportError, DAVError) as exc:
+                require_answer(exc)
                 self.set_feature("principal-search.by-name.self", "ungraceful")
                 any_ungraceful = True
         else:
@@ -8156,7 +8262,8 @@ class CheckPrincipalSearch(Check):
             self.set_feature("principal-search.list-all", found_any)
             if found_any:
                 any_search_worked = True
-        except (ReportError, DAVError):
+        except (ReportError, DAVError) as exc:
+            require_answer(exc)
             self.set_feature("principal-search.list-all", "ungraceful")
             any_ungraceful = True
 
@@ -8205,15 +8312,17 @@ class CheckDuplicateEvent(Check):
         try:
             try:
                 saved = cal.save_event(dup_data)
-            except (DAVError, AuthorizationError):
+            except (DAVError, AuthorizationError) as exc:
                 ## The server rejected the duplicate with an error.
+                require_answer(exc)
                 self.set_feature(feature, {"support": "ungraceful"})
                 return
             ## Did the duplicate persist as a separate object?
             try:
                 saved.load()
                 persisted = dup_uid in saved.data
-            except (NotFoundError, AuthorizationError, DAVError):
+            except (NotFoundError, AuthorizationError, DAVError) as exc:
+                require_answer(exc)
                 persisted = False
             self.set_feature(feature, persisted)
         finally:
@@ -8328,6 +8437,7 @@ class CheckDuplicateUID(Check):
 
             except (DAVError, AuthorizationError) as e:
                 ## Server rejected the duplicate with an error
+                require_answer(e)
                 self.set_feature(
                     "save.duplicate-uid.cross-calendar",
                     {"support": "ungraceful", "behaviour": f"Server error: {type(e).__name__}"},
@@ -8387,12 +8497,17 @@ class CheckSyncToken(Check):
         try:
             response = self.client.report(str(cal.url), query, depth=0)
         except AuthorizationError as e:
+            require_answer(e)
             if dav.ValidSyncToken.tag in e.preconditions:
                 return "full", "401/403 with valid-sync-token"
             return "ungraceful", "401/403 without valid-sync-token"
         except DAVError as e:
+            require_answer(e)
             return "ungraceful", f"{type(e).__name__}"
         status = response.status
+        if status == 429 or status in TRANSIENT_STATUSES:
+            ## No answer to the token: raised like one caldav would raise
+            raise ReportError(f"sync-collection answered {status}", status=status)
         if 200 <= status < 300:
             return "broken", f"{status}, no error"
         if dav.ValidSyncToken.tag in parse_preconditions(response.raw):
@@ -8522,6 +8637,8 @@ class CheckSyncToken(Check):
             sync_support = "full"
             sync_behaviour = None
         except (ReportError, DAVError, AttributeError) as e:
+            if isinstance(e, DAVError):
+                require_answer(e)
             self.set_feature(
                 "sync-token",
                 {"support": "ungraceful", "behaviour": f"Server error on sync-collection REPORT: {type(e).__name__}"},
@@ -8626,6 +8743,7 @@ class CheckSyncToken(Check):
                 ## errors.  The sync does not silently come back wrong, it raises - so
                 ## this is "ungraceful", the same grading Test 1 above gives its own
                 ## failed REPORT.
+                require_answer(e)
                 self.set_feature(
                     "sync-token.delete", {"support": "ungraceful", "behaviour": f"sync fails after deletion: {e}"}
                 )
@@ -8702,7 +8820,7 @@ class _RawSync:
         if limit and response.status == 507 and "number-of-matches-within-limits" in str(response.raw):
             raise LimitRefused()
         if response.status not in (200, 207) or response.tree is None:
-            raise ReportError(f"sync-collection answered {response.status}")
+            raise ReportError(f"sync-collection answered {response.status}", status=response.status)
         (entries, truncated) = self._parse_entries(response)
         new_token = response.tree.find(f".//{dav.SyncToken.tag}")
         return (entries, truncated, new_token.text if new_token is not None else None)
@@ -8780,6 +8898,7 @@ class CheckSyncTokenLimit(_RawSync, Check):
             try:
                 token = self._report("", limit=None)[2]
             except (DAVError, ReportError) as e:
+                require_answer(e)
                 for feature in self.features_to_be_checked:
                     self.set_feature(feature, {"support": "ungraceful", "behaviour": f"sync-collection failed: {e}"})
                 return
@@ -8814,6 +8933,7 @@ class CheckSyncTokenLimit(_RawSync, Check):
         except LimitRefused:
             return {"support": "unsupported", "behaviour": self.REFUSED}
         except (DAVError, ReportError) as e:
+            require_answer(e)
             return {"support": "ungraceful", "behaviour": f"sync-collection with DAV:limit failed: {e}"}
         missing = expected - seen
         if missing:
@@ -8909,6 +9029,7 @@ class CheckSyncMembers(_RawPut, _RawSync, Check):
             self._probe()
         except (DAVError, ReportError) as e:
             ## A report failing later leaves the verdicts the earlier ones gave
+            require_answer(e)
             for feature in self.features_to_be_checked - self._graded_here:
                 self.set_feature(feature, {"support": "ungraceful", "behaviour": f"sync-collection failed: {e}"})
         finally:
@@ -9077,13 +9198,14 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         )
         response = self.client.report(str(self.cal_url), body, depth=1)
         if response.status not in (200, 207) or response.tree is None:
-            raise ReportError(f"calendar-multiget answered {response.status}")
+            raise ReportError(f"calendar-multiget answered {response.status}", status=response.status)
         return self._parse_entries(response, propstat_status=True)
 
     def _grade_missing(self):
         try:
             (entries, _) = self._multiget((self.PRESENT, self.ABSENT))
         except (DAVError, ReportError) as e:
+            require_answer(e)
             return self._graded("ungraceful", f"a multiget naming a missing object failed: {e}")
         statuses = [status for name, status in entries if name == f"{self.ABSENT}.ics"]
         if not statuses:
@@ -9176,6 +9298,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
                 except (DAVError, ReportError) as e:
                     ## A server refusing the whole listing; Stalwart lists up
                     ## to its limit and adds a 507 for the collection instead
+                    require_answer(e)
                     if re.search(r"answered 507\b", str(e)) or dav_error_status(e) == 507:
                         verdict = self._graded("unsupported", f"the whole answer was a 507, with {count} objects")
                     else:
@@ -9201,7 +9324,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         )
         response = self.client.report(str(self.cal_url), body, depth=1)
         if response.status not in (200, 207) or response.tree is None:
-            raise ReportError(f"calendar-query answered {response.status}")
+            raise ReportError(f"calendar-query answered {response.status}", status=response.status)
         return self._parse_entries(response, propstat_status=True)
 
     def _propfind(self):
@@ -9209,7 +9332,7 @@ class CheckMultiget(_RawPut, _RawSync, Check):
         ## raises on the collection's 507, hiding the members listed before it
         response = self.client.request(str(self.cal_url), "PROPFIND", self.PROPFIND, {"Depth": "1"})
         if response.status not in (200, 207) or response.tree is None:
-            raise ReportError(f"PROPFIND answered {response.status}")
+            raise ReportError(f"PROPFIND answered {response.status}", status=response.status)
         return self._parse_entries(response)
 
     def _grade_limit(self, seen, count, truncated, listed):
@@ -9258,6 +9381,7 @@ class CheckFreeBusyQuery(Check):
         except (ReportError, DAVError, NotFoundError) as e:
             ## Server doesn't support freebusy queries
             ## Common responses: 500 Internal Server Error, 501 Not Implemented
+            require_answer(e)
             self.set_feature("freebusy-query", {"support": "ungraceful", "behaviour": f"freebusy query failed: {e}"})
         except Exception as e:
             ## Unexpected error
@@ -9408,6 +9532,7 @@ class CheckFreeBusyQueryRFC6638(Check):
             principal.freebusy_request(dtstart, dtend, [attendee_address])
             self.set_feature("scheduling.freebusy-query")
         except (AuthorizationError, DAVError, NotFoundError) as e:
+            require_answer(e)
             self.set_feature("scheduling.freebusy-query", {"support": "ungraceful", "behaviour": str(e)})
         except Exception as e:
             self.set_feature("scheduling.freebusy-query", {"support": "broken", "behaviour": str(e)})
@@ -9508,6 +9633,7 @@ class CheckScheduleTag(Check):
                 },
             )
         except (DAVError, PutError) as e:
+            require_answer(e)
             self.set_feature("scheduling.schedule-tag", {"support": "ungraceful", "behaviour": str(e)})
         except Exception as e:
             self.set_feature("scheduling.schedule-tag", {"support": "broken", "behaviour": str(e)})
@@ -9923,7 +10049,7 @@ class CheckMove(Check):
         try:
             return self.client.request(source, "MOVE", "", {"Destination": destination, **headers}).status
         except DAVError as e:
-            return getattr(e, "status", None) or 500
+            return getattr(require_answer(e), "status", None) or 500
 
     def _moved(self, cal1, cal2, obj) -> bool:
         """Whether ``obj`` left ``cal1``, or turned up in ``cal2`` under its own
@@ -10097,12 +10223,14 @@ class CheckTimezone(Check):
         except AuthorizationError as e:
             ## Server rejected the event with a 403 Forbidden
             ## This is the specific issue reported in GitHub #372
+            require_answer(e)
             self.set_feature(
                 "save-load.event.timezone",
                 {"support": "unsupported", "behaviour": f"Server rejected event with timezone (403 Forbidden): {e}"},
             )
         except DAVError as e:
             ## Other DAV error (e.g., 400 Bad Request, 500 Internal Server Error)
+            require_answer(e)
             self.set_feature(
                 "save-load.event.timezone",
                 {"support": "ungraceful", "behaviour": f"Server error when saving event with timezone: {e}"},
@@ -10165,6 +10293,7 @@ END:VCALENDAR""",
                 assert count == 2
                 self.set_feature("save-load.icalendar.related-to")
         except (AuthorizationError, DAVError) as e:
+            require_answer(e)
             self.set_feature("save-load.icalendar.related-to", {"support": "ungraceful", "behaviour": str(e)})
         finally:
             if test_obj:
@@ -10261,6 +10390,7 @@ class CheckOpenTimeRangeSearch(Check):
             else:
                 todo_dur_ok = found_a and found_b
         except (AuthorizationError, DAVError) as e:
+            require_answer(e)
             todo_dur_ok = False
             dur_err = str(e)
 
@@ -10290,6 +10420,7 @@ class CheckOpenTimeRangeSearch(Check):
                 ev_not_spurious = not any(r.component.get("UID") == "csc_simple_event1" for r in ev_a)
                 event_dur_ok = ev_found_a and ev_found_b and ev_not_spurious
             except (AuthorizationError, DAVError) as e:
+                require_answer(e)
                 event_dur_ok = False
                 if not dur_err:
                     dur_err = str(e)
@@ -10355,6 +10486,7 @@ class CheckOpenTimeRangeSearch(Check):
             else:
                 self.set_feature("search.time-range.open.start")
         except (AuthorizationError, DAVError) as e:
+            require_answer(e)
             self.set_feature("search.time-range.open.start", {"support": "ungraceful", "behaviour": str(e)})
 
         ## Test 3: open-end search (only start bound, end assumed +infinity).
@@ -10372,6 +10504,7 @@ class CheckOpenTimeRangeSearch(Check):
             found = any(r.component.get("UID") == "csc_simple_task3" for r in results)
             self.set_feature("search.time-range.open.end", found)
         except (AuthorizationError, DAVError) as e:
+            require_answer(e)
             self.set_feature("search.time-range.open.end", {"support": "ungraceful", "behaviour": str(e)})
 
 
@@ -10439,6 +10572,7 @@ class CheckTodoTimeRangeStrict(Check):
             else:
                 self.set_feature("search.time-range.todo.strict")
         except (AuthorizationError, DAVError) as e:
+            require_answer(e)
             self.set_feature("search.time-range.todo.strict", {"support": "ungraceful", "behaviour": str(e)})
         finally:
             if temp_todo:

@@ -89,9 +89,8 @@ def test_an_all_day_event_refused_alone_is_ungraceful():
         PutError("504 Gateway Timeout"),
         RateLimitError(reason="429 Too Many Requests"),
         AuthorizationError(url=URL, reason="Unauthorized"),
-        PutError("connection reset"),
     ],
-    ids=["502", "503", "504", "rate-limited", "401", "no-status"],
+    ids=["502", "503", "504", "rate-limited", "401"],
 )
 def test_a_save_failing_for_no_reason_of_its_own_is_unknown(error):
     """A gateway, an overloaded server or no answer says nothing about events

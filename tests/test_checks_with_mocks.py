@@ -361,6 +361,7 @@ class TestCheckMakeDeleteCalendar:
         relocate,
         name_sticks=True,
         get_displayname_raises=False,
+        get_displayname_error=None,
         make_calendar_raises=False,
         existing_displayname=None,
         cal_id_reachable=True,
@@ -421,7 +422,7 @@ class TestCheckMakeDeleteCalendar:
             direct_cal_mock.events.side_effect = DAVError("cal_id not found")
         if get_displayname_raises:
             direct_cal_mock.get_display_name.side_effect = Exception("not supported")
-            direct_cal_mock.get_property.side_effect = DAVError("PROPFIND refused")
+            direct_cal_mock.get_property.side_effect = get_displayname_error or DAVError("403 Forbidden")
         else:
             direct_cal_mock.get_display_name.return_value = "some-name"
         principal.calendar.return_value = direct_cal_mock
@@ -450,6 +451,7 @@ class TestCheckMakeDeleteCalendar:
 
         check = CheckMakeDeleteCalendar(checker)
         check._check_set_displayname()
+        return direct_cal_mock
 
     def test_set_displayname_stable_url(self) -> None:
         """A normal server keeps the calendar at the requested cal_id URL -> stable."""
@@ -506,6 +508,21 @@ class TestCheckMakeDeleteCalendar:
         checker, client, principal = self.create_checker_with_principal()
         self._run_displayname_probe(checker, principal, relocate=False, get_displayname_raises=True)
         assert checker.features_checked.is_supported("propfind.displayname", str) == "ungraceful"
+
+    def test_get_displayname_without_an_answer_still_cleans_up(self) -> None:
+        """A 503 on the display-name read is unknown, and the probe calendar
+        is still deleted - also where the name did not stick."""
+        checker, client, principal = self.create_checker_with_principal()
+        direct = self._run_displayname_probe(
+            checker,
+            principal,
+            relocate=False,
+            name_sticks=False,
+            get_displayname_raises=True,
+            get_displayname_error=DAVError("503 Service Unavailable"),
+        )
+        assert checker.features_checked.is_supported("propfind.displayname", str) == "unknown"
+        direct.delete.assert_called()
 
     def test_set_displayname_probe_calendar_creation_fails(self) -> None:
         """If the probe calendar can't be created (e.g. Infomaniak), the probe
@@ -1062,7 +1079,7 @@ class TestCheckSearch:
 
         def search_side_effect(**kwargs):
             if "category" in kwargs:
-                raise ReportError("Category not supported")
+                raise ReportError("400 Bad Request")
             elif "event" in kwargs and kwargs.get("event"):
                 return [Mock()]
             elif "todo" in kwargs:
@@ -1267,7 +1284,7 @@ class TestCheckIsNotDefined:
         """Server throws error on is-not-defined search"""
         checker, calendar = self.create_checker_with_prepared_calendar()
 
-        calendar.search.side_effect = ReportError("is-not-defined not supported")
+        calendar.search.side_effect = ReportError("400 Bad Request")
 
         check = CheckIsNotDefined(checker)
         check.run_check()
@@ -1276,6 +1293,16 @@ class TestCheckIsNotDefined:
         assert result == "ungraceful"
         assert checker.features_checked.is_supported("search.is-not-defined.category", str) == "ungraceful"
         assert checker.features_checked.is_supported("search.is-not-defined.dtend", str) == "ungraceful"
+
+    def test_is_not_defined_without_an_answer_is_unknown(self) -> None:
+        """A 503 on the search says nothing about is-not-defined"""
+        checker, calendar = self.create_checker_with_prepared_calendar()
+        calendar.search.side_effect = ReportError("503 Service Unavailable")
+
+        CheckIsNotDefined(checker).run_check()
+
+        for feature in CheckIsNotDefined.features_to_be_checked:
+            assert checker.features_checked.is_supported(feature, str) == "unknown", feature
 
 
 class TestCheckWellKnown:

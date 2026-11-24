@@ -440,12 +440,11 @@ def test_forbidden_on_wildcard_is_ungraceful():
     assert "403" in wildcard["behaviour"]
 
 
-def test_unauthorized_on_wildcard_is_not_called_forbidden():
-    """The client raises 401 and 403 alike, carrying the request URL rather
-    than the status, so which of the two it was cannot be told."""
+def test_unauthorized_on_wildcard_is_not_graded():
+    """A 401 on a session that is already logged in is no answer to the
+    request (iCloud answers 401 to anything for a while after a run of 429s)."""
     _, wildcard = _run(EtagServer(answers={("If-Match", True): AuthorizationError(url=URL, reason="Unauthorized")}))
-    assert wildcard["support"] == "ungraceful"
-    assert "401/403" in wildcard["behaviour"]
+    assert wildcard["support"] == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -559,3 +558,18 @@ def test_an_unusable_etag_is_not_asked_whether_it_matches():
     fs = _run_all(EtagServer(put_etag="a22ccfb2985aed13f50b4991a110d32253fd99aa"))
     assert fs.is_supported(STORED, return_type=dict) == fs.is_supported("save.etag", return_type=dict)
     assert fs.is_supported(STORED, return_type=dict)["support"] == "broken"
+
+
+@pytest.mark.parametrize(
+    "put_etag", ['"tag-1"', "%22tag-1%22", "tag-1", 'W/"tag-1"'], ids=["quoted", "encoded", "bare", "weak"]
+)
+@pytest.mark.parametrize(
+    "answer",
+    [503, 429, AuthorizationError(url=URL, reason="Unauthorized", status=401)],
+    ids=["503", "429", "stale-401"],
+)
+def test_if_match_put_without_an_answer_is_not_graded(put_etag, answer):
+    """A gateway, an overload or a stale session on the If-Match PUT says
+    nothing about the etag."""
+    etag, _ = _run(EtagServer(put_etag=put_etag, answers={("If-Match", True): answer}))
+    assert etag["support"] == "unknown", etag
